@@ -3,6 +3,26 @@
 > **Orchestrate a cluster of containerized local LLMs — each with its own
 > persona, role, and goal — that collaborate until the work is done.**
 
+---
+
+> [!NOTE]
+> **AI-assisted development notice**
+>
+> A significant portion of the code and documentation in this repository
+> was written **with the assistance of a Large Language Model (LLM)**.
+> All LLM-generated contributions have been reviewed, tested, and curated
+> by the human maintainers, but — as with any software — bugs may exist.
+> Please review the code critically, run the test suite, and open an issue
+> if you find something unexpected.
+>
+> **Pull requests are very welcome**, including those written or
+> co-authored with the help of an LLM.  We only ask that you review and
+> test your changes before submitting, and disclose AI assistance in your
+> PR description (e.g. *"co-authored with GitHub Copilot"*) so reviewers
+> can calibrate their review accordingly.
+
+---
+
 `team` lets you describe a small "organisation" of LLMs in a single YAML
 file and then bring it to life: every member runs in **its own isolated
 Docker container** with its own [Ollama](https://ollama.com/) daemon and
