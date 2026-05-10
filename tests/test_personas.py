@@ -34,3 +34,8 @@ def test_extra_system_appended() -> None:
     team.members[0].extra_system = "ALWAYS REPLY IN HAIKU"
     out = render_system_prompt(team, team.members[0])
     assert "ALWAYS REPLY IN HAIKU" in out
+
+
+def test_protocol_mentions_private_workspace() -> None:
+    assert "/private" in PROTOCOL
+    assert "private workspace" in PROTOCOL.lower()

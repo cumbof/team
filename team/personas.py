@@ -40,10 +40,14 @@ PROTOCOL = dedent(
        The orchestrator will atomically write the contents to that path under
        the shared workspace.  Paths must be relative and may not escape the
        workspace.  Any number of file blocks per reply is allowed.
-    4. To read an existing file, ask the team in plain text and a member with
+    4. You also have a PRIVATE workspace (`/private` inside your container)
+       for personal scratch files — drafts, notes, intermediate results — that
+       are not shared with the team.  Files you create there persist between
+       turns and are listed at the top of each of your turn prompts.
+    5. To read an existing file, ask the team in plain text and a member with
        file access (or the orchestrator-provided context) will surface it.
        Recently written/changed files are listed at the top of every turn.
-    5. When YOU believe the team's goal is fully achieved, end your reply
+    6. When YOU believe the team's goal is fully achieved, end your reply
        with a line containing exactly: `[[TEAM_DONE]]`.
        Use this sparingly — only when the deliverables are complete and you
        have verified them.

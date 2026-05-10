@@ -299,6 +299,11 @@ deterministic protocol so the orchestrator can parse replies reliably:
 
   The orchestrator atomically writes the body to that path under
   `<workspace>/shared/`.  Path-traversal attempts (`..`) are rejected.
+* **Private workspace**: each member has `/private` inside its container
+  (mapped to `runs/<name>/members/<member>/` on the host) for personal
+  scratch files, drafts, and notes that are not shared with the team.
+  The list of files currently in `/private` is shown at the top of each
+  of the member's turn prompts.
 * **Declare the goal achieved**: end the reply with a line containing
   exactly `[[TEAM_DONE]]`.  Workflows interpret this as "stop now".
 * **Manager workflow**: end the reply with `NEXT: @<member>` to nominate
@@ -378,7 +383,11 @@ runs/<name>/
 
 * `shared/` is the canonical place for deliverables and is visible to
   every member at every turn.
-* `members/<name>/` is private scratch space for that member.
+* `members/<name>/` is the **private workspace** for that member.  Its
+  contents are listed in the member's turn prompt under *"Files in your
+  private workspace (/private)"*, so the member can reference its own
+  previous work, intermediate files, or notes across turns.  Other members
+  cannot see these files.
 * `transcript.jsonl` is appended to as the run progresses; one record per
   turn, with `speaker`, `role`, `content`, `files_written`, and
   `timestamp` fields.

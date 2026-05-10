@@ -13,7 +13,7 @@ from team.config import MemberConfig, TeamConfig, resolve_member_setting
 from team.container import MemberRuntime
 from team.ollama_client import ChatMessage, OllamaClient, OllamaError
 from team.personas import render_system_prompt
-from team.workspace import SharedWorkspace
+from team.workspace import SharedWorkspace, list_dir_files
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +68,8 @@ class Member:
         prompt: str | None,
     ) -> list[ChatMessage]:
         ctx_lines: list[str] = []
+
+        # Shared workspace -------------------------------------------------- #
         files = workspace.list_files()
         if files:
             ctx_lines.append("## Files currently in the shared workspace")
@@ -78,6 +80,16 @@ class Member:
             ctx_lines.append("## Most recently changed files")
             ctx_lines.extend(f"- {f}" for f in recent)
             ctx_lines.append("")
+
+        # Private workspace ------------------------------------------------- #
+        private_root = self.team.workspace / "members" / self.config.name
+        private_files = list_dir_files(private_root, limit=30)
+        if private_files:
+            ctx_lines.append("## Files in your private workspace (/private)")
+            ctx_lines.extend(f"- {f}" for f in private_files)
+            ctx_lines.append("")
+
+        # Transcript -------------------------------------------------------- #
         ctx_lines.append("## Conversation so far")
         ctx_lines.append(transcript.render(viewer=self.name) or "(no turns yet)")
         if prompt:

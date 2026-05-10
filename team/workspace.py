@@ -5,6 +5,11 @@ bind-mounted as ``/workspace`` inside every member container.  The orchestrator
 also writes files there (when parsed from member replies) so that the next
 turn's prompt can reference them via :func:`recent_changes`.
 
+Each member also has a **private workspace** at ``team.workspace/members/<name>``
+on the host, bind-mounted as ``/private`` inside its container.  The orchestrator
+lists those files in every turn prompt so the member can reference its own
+scratch files.
+
 We parse file blocks of the form::
 
     ```file:relative/path.ext
@@ -37,6 +42,20 @@ class FileWrite:
 def parse_file_blocks(text: str) -> list[tuple[str, str]]:
     """Return a list of ``(path, body)`` tuples for every ``file:`` block."""
     return [(m.group("path").strip(), m.group("body")) for m in _FILE_BLOCK_RE.finditer(text)]
+
+
+def list_dir_files(root: Path, limit: int = 30) -> list[str]:
+    """Return relative paths of all files under *root* (up to *limit*).
+
+    Returns an empty list if *root* does not exist or is not a directory.
+    """
+    if not root.is_dir():
+        return []
+    return sorted(
+        str(p.relative_to(root))
+        for p in root.rglob("*")
+        if p.is_file()
+    )[:limit]
 
 
 def _safe_join(root: Path, rel: str) -> Path:

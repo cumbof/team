@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from team.workspace import SharedWorkspace, parse_file_blocks
+from team.workspace import SharedWorkspace, list_dir_files, parse_file_blocks
 
 
 def test_parse_file_blocks_basic() -> None:
@@ -54,3 +54,32 @@ def test_workspace_touch_updates_recent(tmp_path: Path) -> None:
     # touch a path that was not written in this session
     ws.touch("existing/file.md")
     assert "existing/file.md" in ws.recent_changes()
+
+
+# --------------------------------------------------------------------------- #
+# list_dir_files (private workspace helper)
+# --------------------------------------------------------------------------- #
+
+
+def test_list_dir_files_returns_relative_paths(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "x.py").write_text("code")
+    (tmp_path / "notes.md").write_text("notes")
+    files = list_dir_files(tmp_path)
+    assert "a/x.py" in files
+    assert "notes.md" in files
+
+
+def test_list_dir_files_empty_dir(tmp_path: Path) -> None:
+    assert list_dir_files(tmp_path) == []
+
+
+def test_list_dir_files_missing_dir(tmp_path: Path) -> None:
+    assert list_dir_files(tmp_path / "no_such") == []
+
+
+def test_list_dir_files_respects_limit(tmp_path: Path) -> None:
+    for i in range(10):
+        (tmp_path / f"file{i}.txt").write_text("x")
+    result = list_dir_files(tmp_path, limit=3)
+    assert len(result) == 3
