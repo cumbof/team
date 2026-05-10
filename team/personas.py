@@ -63,6 +63,7 @@ PROTOCOL = dedent(
 
 
 def render_system_prompt(team: TeamConfig, member: MemberConfig) -> str:
+    # Build the teammate list excluding the member itself.
     teammates = [
         f"- @{m.name} — {m.role}"
         for m in team.members
@@ -84,6 +85,8 @@ def render_system_prompt(team: TeamConfig, member: MemberConfig) -> str:
         "",
         PROTOCOL.strip(),
     ]
+    # Append extra instructions last so they can override or extend the
+    # boilerplate sections above without modifying the shared PROTOCOL constant.
     if member.extra_system:
         parts.extend(["", "## Additional instructions", member.extra_system.strip()])
     return "\n".join(parts)

@@ -18,8 +18,8 @@ from typing import Iterable
 @dataclass
 class Turn:
     index: int
-    speaker: str  # member name or "orchestrator"
-    role: str     # member role or "system"
+    speaker: str  # member name, "orchestrator", or "human" (injected directive)
+    role: str     # member role, "system", or "director"
     content: str
     timestamp: float = field(default_factory=time.time)
     files_written: list[str] = field(default_factory=list)
@@ -32,12 +32,20 @@ class Transcript:
         if persist_path:
             persist_path.parent.mkdir(parents=True, exist_ok=True)
             if resume and persist_path.is_file() and persist_path.stat().st_size > 0:
+                # Resuming: load existing turns so the orchestrator can fast-forward
+                # through them without re-calling the LLM.
                 self._load_from_disk()
             else:
+                # Fresh run: truncate any leftover transcript from a previous run.
                 persist_path.write_text("", encoding="utf-8")
 
     def _load_from_disk(self) -> None:
-        """Load existing turns from the persisted JSONL file (used when resuming)."""
+        """Load existing turns from the persisted JSONL file (used when resuming).
+
+        JSONL (newline-delimited JSON) is used because each turn can be appended
+        with a single write and the file stays readable even if a run is
+        interrupted mid-write (the partial last line is simply skipped).
+        """
         for line in self.persist_path.read_text(encoding="utf-8").splitlines():  # type: ignore[union-attr]
             if not line.strip():
                 continue
@@ -45,6 +53,7 @@ class Transcript:
                 data = json.loads(line)
                 self.turns.append(Turn(**data))
             except (json.JSONDecodeError, TypeError):
+                # Silently skip any malformed lines (e.g. a truncated final write).
                 continue
 
     def append(
@@ -63,6 +72,8 @@ class Transcript:
         )
         self.turns.append(turn)
         if self.persist_path:
+            # Append-only write: one JSON object per line.  Keeps disk I/O minimal
+            # and allows the file to be tailed live (e.g. by `team transcript`).
             with self.persist_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(asdict(turn), ensure_ascii=False) + "\n")
         return turn
@@ -72,6 +83,10 @@ class Transcript:
 
         ``viewer`` is the member who will *read* this rendering; their own
         previous turns are tagged so they recognise themselves.
+
+        ``max_turns`` caps how many of the most-recent turns are included —
+        useful for very long runs where the full history would exceed a model's
+        context window.
         """
         turns = self.turns
         if max_turns is not None and len(turns) > max_turns:

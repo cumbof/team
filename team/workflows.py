@@ -56,6 +56,8 @@ def round_robin(orch: "Orchestrator") -> None:
 # --------------------------------------------------------------------------- #
 
 
+# Matches "NEXT: @alice" or "NEXT: alice" (case-insensitive).
+# The manager uses this marker to nominate the next speaker.
 _NEXT_RE = re.compile(r"NEXT:\s*@?([a-z0-9_-]+)", re.IGNORECASE)
 
 
@@ -109,6 +111,8 @@ def _parse_next(content: str, orch: "Orchestrator") -> str | None:
 
 
 def _next_default(orch: "Orchestrator", current: str) -> str:
+    # Circular round-robin fallback: used when the manager's reply contains no
+    # parseable NEXT: marker so the conversation doesn't stall.
     names = list(orch.members.keys())
     i = names.index(current)
     return names[(i + 1) % len(names)]
@@ -210,6 +214,9 @@ def sequential_chain(orch: "Orchestrator") -> None:
     max_rounds = orch.team.workflow.max_rounds
     prompt_template: str = opts.get("prompt_template", _DEFAULT_CHAIN_TEMPLATE)
 
+    # `prev_content` and `prev_speaker` are maintained *outside* the round loop
+    # so the first member of round N+1 receives the last member of round N's
+    # reply — creating a continuous pipeline that wraps across rounds.
     prev_content: str | None = None
     prev_speaker: str | None = None
 

@@ -79,6 +79,8 @@ def check_docker_daemon(cfg: TeamConfig) -> list[CheckResult]:
     """Check Docker daemon reachability, server version, and Ollama image."""
     results: list[CheckResult] = []
     try:
+        # Lazy import: the docker package is an optional dependency.
+        # We report FAIL rather than crashing at import time if it's missing.
         import docker  # type: ignore[import-untyped]
         from docker.errors import DockerException  # type: ignore[import-untyped]
     except ImportError:
@@ -176,6 +178,8 @@ def run_all_checks(cfg: TeamConfig) -> list[CheckResult]:
 def _version_ok(version_str: str, *, min_major: int, min_minor: int) -> bool:
     match = re.match(r"(\d+)\.(\d+)", version_str)
     if not match:
-        return True  # can't parse; assume ok
+        # If we can't parse the version string, assume it's OK rather than
+        # blocking the user on a version check we can't perform reliably.
+        return True
     major, minor = int(match.group(1)), int(match.group(2))
     return (major, minor) >= (min_major, min_minor)

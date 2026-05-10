@@ -64,6 +64,9 @@ class TeamConfigError(ValueError):
 # --------------------------------------------------------------------------- #
 
 
+# Member names must start with a lowercase letter and contain only
+# lowercase alphanumerics, hyphens, and underscores.  This mirrors Docker
+# container naming rules and keeps names safe for use in file paths.
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,30}$")
 
 
@@ -150,6 +153,8 @@ def _parse_defaults(data: dict) -> Defaults:
     for k, v in (data or {}).items():
         if not hasattr(d, k):
             raise TeamConfigError(f"defaults: unknown key {k!r}")
+        # Use setattr to apply every key from the YAML without a long
+        # if/elif chain — relies on Defaults being a flat dataclass.
         setattr(d, k, v)
     return d
 
@@ -247,7 +252,11 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
 def resolve_member_setting(
     member: MemberConfig, defaults: Defaults, key: str
 ) -> Any:
-    """Return the member-level value for ``key``, falling back to defaults."""
+    """Return the member-level value for ``key``, falling back to defaults.
+
+    Member-level settings (e.g. ``temperature``) override the team-wide
+    defaults.  If neither is set the function returns ``None``.
+    """
     val = getattr(member, key, None)
     if val is None:
         val = getattr(defaults, key, None)

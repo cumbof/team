@@ -56,6 +56,10 @@ class MemberRuntime:
 
 
 def _free_port() -> int:
+    # Bind to port 0 to let the OS pick a free ephemeral port, then read it
+    # back and release the socket.  The chosen port may theoretically be taken
+    # by another process in the brief window before Docker binds it, but in
+    # practice this is safe enough for local development.
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -77,8 +81,10 @@ def _gpu_device_requests(gpus: Any) -> list[dict] | None:
     if not gpus or gpus == "none":
         return None
     if gpus == "all":
+        # Count=-1 means "all available GPUs" in the Docker device-requests API.
         return [{"Driver": "nvidia", "Count": -1, "Capabilities": [["gpu"]]}]
     if isinstance(gpus, list):
+        # Individual GPU indices, e.g. [0, 1] → DeviceIDs ["0", "1"].
         return [
             {
                 "Driver": "nvidia",
@@ -148,12 +154,16 @@ class ContainerManager:
         vol = _volume_name(self.team.name, member.name)
         self.ensure_volume(vol)
 
-        # Workspace bind mounts ----------------------------------------- #
+        # Create workspace directories on the host before bind-mounting them.
+        # Each member gets its own private directory; all members share one
+        # shared directory.
         shared = self.team.workspace / "shared"
         private = self.team.workspace / "members" / member.name
         shared.mkdir(parents=True, exist_ok=True)
         private.mkdir(parents=True, exist_ok=True)
 
+        # Reuse a container that already exists (e.g. after `team up` without
+        # `team down`).  Just restart it if stopped; no need to recreate it.
         existing = self._existing(member)
         if existing is not None:
             if existing.status != "running":
@@ -173,13 +183,15 @@ class ContainerManager:
         gpus = resolve_member_setting(member, defaults, "gpus")
         device_requests = _gpu_device_requests(gpus)
 
+        # Build the host-config dict only with keys that have values, because
+        # passing mem_limit=None or nano_cpus=None to the Docker SDK causes errors.
         mem_limit = member.memory_limit or defaults.memory_limit
         cpu_limit = member.cpu_limit if member.cpu_limit is not None else defaults.cpu_limit
         host_config: dict[str, Any] = {}
         if mem_limit:
             host_config["mem_limit"] = mem_limit
         if cpu_limit:
-            # Docker SDK uses nano_cpus (1e9 == 1 CPU)
+            # Docker SDK expresses CPU quota in "nano CPUs" (1 CPU = 1_000_000_000).
             host_config["nano_cpus"] = int(float(cpu_limit) * 1_000_000_000)
 
         log.info(
@@ -191,14 +203,22 @@ class ContainerManager:
             name=_container_name(self.team.name, member.name),
             detach=True,
             network=net.name,
+            # Bind to 127.0.0.1 on the host so the Ollama port is NOT reachable
+            # from outside the machine.
             ports={"11434/tcp": ("127.0.0.1", host_port)},
             volumes={
+                # Per-member named volume for the Ollama model cache.  Keeping
+                # volumes separate prevents one member's model downloads from
+                # interfering with another's and allows independent purging.
                 vol: {"bind": "/root/.ollama", "mode": "rw"},
                 str(shared.resolve()): {"bind": "/workspace", "mode": "rw"},
                 str(private.resolve()): {"bind": "/private", "mode": "rw"},
             },
             environment={
+                # OLLAMA_HOST must bind on all interfaces inside the container
+                # (not just localhost) so the host can reach it via the mapped port.
                 "OLLAMA_HOST": "0.0.0.0:11434",
+                # Convenience env vars: accessible to any scripts running inside.
                 "TEAM_NAME": self.team.name,
                 "TEAM_MEMBER": member.name,
                 "TEAM_ROLE": member.role,
@@ -208,6 +228,8 @@ class ContainerManager:
                 MEMBER_LABEL: member.name,
             },
             device_requests=device_requests,
+            # "unless-stopped" survives Docker daemon restarts without restarting
+            # on manual `docker stop`, which is how `team down` stops containers.
             restart_policy={"Name": "unless-stopped"},
             **host_config,
         )
@@ -235,10 +257,10 @@ class ContainerManager:
             try:
                 c.stop(timeout=15)
             except APIError:
-                pass
+                pass  # container may already be stopped; remove it anyway
             c.remove(force=True)
         except NotFound:
-            pass
+            pass  # container was never created or was already removed
         if remove_volume:
             try:
                 self.client.volumes.get(_volume_name(self.team.name, member_name)).remove(force=True)

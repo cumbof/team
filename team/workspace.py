@@ -26,6 +26,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+# Matches fenced code blocks whose info-string starts with "file:".
+# Named groups: `path` (the relative target path) and `body` (raw file contents).
+# re.DOTALL is required so `body` can span multiple lines.
 _FILE_BLOCK_RE = re.compile(
     r"```file:(?P<path>[^\s`]+)\n(?P<body>.*?)```",
     re.DOTALL,
@@ -59,10 +62,14 @@ def list_dir_files(root: Path, limit: int = 30) -> list[str]:
 
 
 def _safe_join(root: Path, rel: str) -> Path:
+    # Strip leading slashes so that absolute paths like `/etc/passwd` are
+    # treated as relative to the workspace root rather than the filesystem root.
     rel = rel.lstrip("/")
     target = (root / rel).resolve()
     root_resolved = root.resolve()
     try:
+        # `relative_to` raises ValueError if `target` is not under `root_resolved`,
+        # catching symlink-based traversal attacks as well as plain `../../` paths.
         target.relative_to(root_resolved)
     except ValueError as exc:
         raise ValueError(f"path {rel!r} escapes the workspace") from exc
@@ -72,8 +79,13 @@ def _safe_join(root: Path, rel: str) -> Path:
 class SharedWorkspace:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
+        # Files are always written under the `shared/` sub-directory so the
+        # workspace root itself can hold other runtime files (transcript.jsonl,
+        # inject.txt, member private dirs, …) without polluting the shared area.
         self.shared = self.root / "shared"
         self.shared.mkdir(parents=True, exist_ok=True)
+        # Maps relative path → last-modified timestamp (float, from time.time()).
+        # Used to report "recently changed files" to members on each turn.
         self._touched: dict[str, float] = {}
 
     def write(self, rel_path: str, body: str) -> FileWrite:
@@ -82,11 +94,18 @@ class SharedWorkspace:
         existed = target.exists()
         data = body.encode("utf-8")
         target.write_bytes(data)
+        # Record the timestamp so this path appears near the top of
+        # `recent_changes()` for the next few turns.
         self._touched[rel_path] = time.time()
         return FileWrite(path=rel_path, bytes_written=len(data), created=not existed)
 
     def touch(self, rel_path: str) -> None:
-        """Mark a path as recently changed (used when resuming a run)."""
+        """Mark a path as recently changed (used when resuming a run).
+
+        During a resume, files written in previous turns are not re-written,
+        but we still want them to appear in the "recently changed" section of
+        the next turn's prompt so members have the right context.
+        """
         self._touched[rel_path] = time.time()
 
     def apply_reply(self, text: str) -> list[FileWrite]:
@@ -95,6 +114,9 @@ class SharedWorkspace:
             try:
                 writes.append(self.write(path, body))
             except ValueError:
+                # Skip any file block whose path fails the safety check rather
+                # than aborting the whole turn — one bad path shouldn't prevent
+                # other valid file blocks in the same reply from being written.
                 continue
         return writes
 
@@ -106,5 +128,6 @@ class SharedWorkspace:
         )
 
     def recent_changes(self, limit: int = 10) -> list[str]:
+        # Sort by timestamp descending so the most recently written file is first.
         items = sorted(self._touched.items(), key=lambda kv: kv[1], reverse=True)
         return [p for p, _ in items[:limit]]

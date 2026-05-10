@@ -34,7 +34,6 @@ def _load(team_file: str):
         console.print(f"[red]config error:[/red] {e}")
         sys.exit(2)
 
-
 # --------------------------------------------------------------------------- #
 # Top-level group
 # --------------------------------------------------------------------------- #
@@ -209,7 +208,13 @@ def _print_status(orch: Orchestrator) -> None:
 
 
 def _setup_streaming(orch: Orchestrator, console: Console) -> None:
-    """Wire token-by-token output to the console for live turns."""
+    """Wire token-by-token output to the console for live turns.
+
+    Three closures are attached to the orchestrator as hook attributes.
+    They are called by ``Orchestrator.run_turn()`` during live (non-replay)
+    turns.  Using closures rather than subclassing keeps the orchestrator
+    decoupled from the CLI.
+    """
     import sys
 
     def on_turn_start(name: str) -> None:
@@ -220,6 +225,8 @@ def _setup_streaming(orch: Orchestrator, console: Console) -> None:
             console.print(f"\n[bold cyan]@{name}[/bold cyan]")
 
     def on_token(token: str) -> None:
+        # Write directly to stdout (bypassing Rich) so the token appears
+        # immediately without any markup processing or buffering.
         sys.stdout.write(token)
         sys.stdout.flush()
 
@@ -253,6 +260,8 @@ def _setup_interactive(orch: Orchestrator, console: Console) -> None:
         try:
             text = input()
         except (EOFError, KeyboardInterrupt):
+            # Non-interactive environment (piped stdin) or user pressed Ctrl-C —
+            # treat as "no directive" and let the run continue.
             return
         if text.strip():
             orch.inject_directive(text)
@@ -306,7 +315,9 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
     if not no_up:
         orch.up(prepare_deadline_seconds=prepare_timeout)
     else:
-        # Re-attach to existing containers + prepare clients.
+        # Re-attach to containers that were started by a previous `team up`
+        # without stopping and re-starting them.  We still need to build the
+        # Member objects and wait for Ollama to be ready.
         runtimes = orch.containers.start_all()
         from team.member import Member
         for rt in runtimes:

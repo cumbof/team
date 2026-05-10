@@ -44,6 +44,7 @@ class Member:
             retry_backoff=team.defaults.retry_backoff,
         )
         self._system_prompt = render_system_prompt(team, config)
+        # Guards against calling take_turn() before prepare() has run.
         self._ready = False
 
     @property
@@ -69,6 +70,20 @@ class Member:
         workspace: SharedWorkspace,
         prompt: str | None,
     ) -> list[ChatMessage]:
+        """Build the two-message list sent to the Ollama chat endpoint.
+
+        The chat API expects a list of messages; we always send exactly two:
+
+        1. A ``system`` message with the rendered system prompt (persona,
+           team goal, teammates, collaboration protocol).  This is computed
+           once at construction time and cached in ``self._system_prompt``.
+
+        2. A ``user`` message with all dynamic context: shared-workspace
+           file listing, recent changes, private workspace listing, the full
+           rendered transcript, and the per-turn instruction or prompt.
+           This is rebuilt from scratch on every call so members always see
+           up-to-date state.
+        """
         ctx_lines: list[str] = []
 
         # Shared workspace -------------------------------------------------- #
@@ -84,6 +99,8 @@ class Member:
             ctx_lines.append("")
 
         # Private workspace ------------------------------------------------- #
+        # The private workspace is the member's own scratch area; list its files
+        # so the member knows what it has already written there.
         private_root = self.team.workspace / "members" / self.config.name
         private_files = list_dir_files(private_root, limit=30)
         if private_files:
@@ -99,6 +116,7 @@ class Member:
             ctx_lines.append("## Your turn")
             ctx_lines.append(prompt)
         else:
+            # Default instruction when no workflow-specific prompt is given.
             ctx_lines.append("")
             ctx_lines.append("## Your turn")
             ctx_lines.append(
@@ -130,6 +148,9 @@ class Member:
             num_ctx=resolve_member_setting(self.config, defaults, "context_window"),
         )
         if token_callback is not None:
+            # Streaming path: feed each token to the callback as it arrives
+            # (used by the CLI to print output live) and accumulate the full
+            # reply in a list to avoid O(n²) string concatenation.
             chunks: list[str] = []
             for token in self.client.stream_chat(**kwargs):
                 token_callback(token)
@@ -138,6 +159,7 @@ class Member:
             if not content:
                 raise OllamaError(f"stream returned no content for @{self.name}")
         else:
+            # Non-streaming path: block until the complete reply is returned.
             content = self.client.chat(**kwargs)
         declared_done = DONE_TOKEN in content
         writes: list[str] = []

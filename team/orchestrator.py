@@ -28,14 +28,18 @@ class Orchestrator:
             resume=resume,
         )
         self.members: dict[str, Member] = {}
-        # Member turns already persisted — used to fast-forward past them on resume.
+        # Build a list of already-persisted member turns so we can replay them
+        # on resume.  Orchestrator turns (the kickoff message, human directives)
+        # are excluded — only per-member LLM responses need to be replayed.
         self._replay_queue: list = [
-            t for t in self.transcript.turns if t.speaker != "orchestrator"
+            t for t in self.transcript.turns if t.speaker not in ("orchestrator", "human")
         ]
-        # Optional streaming hooks — set by the CLI or other callers.
-        # _on_turn_start(member_name) is called before a live LLM turn begins.
-        # _on_token(token)            is called for each streamed content chunk.
-        # _on_turn_end(member_name)   is called after the full reply is received.
+        # Optional hooks — attached by the CLI or tests; all default to None.
+        # Callers can set these to Callable objects to intercept turn events:
+        #   _on_turn_start(member_name) → called before a live LLM turn begins
+        #   _on_token(token)            → called for each streamed content chunk
+        #   _on_turn_end(member_name)   → called after the full reply is received
+        #   _on_round_end(round_idx)    → called by workflows at end of each round
         self._on_turn_start: Callable[[str], None] | None = None
         self._on_token: Callable[[str], None] | None = None
         self._on_turn_end: Callable[[str], None] | None = None
@@ -116,12 +120,17 @@ class Orchestrator:
     def run_turn(self, member_name: str, prompt: str | None = None) -> TurnResult:
         # If a cached turn for this member is next in the replay queue, replay it
         # without calling the LLM (the result is already persisted on disk).
+        # We match on speaker name so that a workflow path change (e.g. a different
+        # manager decision) naturally falls through to the live path instead of
+        # replaying the wrong cached turn.
         if self._replay_queue and self._replay_queue[0].speaker == member_name:
             cached = self._replay_queue.pop(0)
             log.info(
                 "resume: replaying turn %d for @%s (skipping LLM call)",
                 cached.index, member_name,
             )
+            # Restore the "recently changed" tracking so the next live turn's
+            # context section lists the replayed files correctly.
             for path in cached.files_written:
                 self.workspace.touch(path)
             return TurnResult(
@@ -131,6 +140,9 @@ class Orchestrator:
             )
 
         # Check for a human directive dropped into inject.txt before this turn.
+        # inject.txt is only consumed on the live path — not during replay —
+        # so human directives always land in the correct position in the
+        # transcript relative to the new live turns.
         self._check_inject()
 
         member = self.members[member_name]

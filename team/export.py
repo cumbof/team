@@ -78,6 +78,8 @@ def _load_shared_files(shared_dir: Path) -> dict[str, str]:
             continue
         rel = str(p.relative_to(shared_dir))
         try:
+            # errors="replace" ensures binary or non-UTF-8 files still appear
+            # in the report (garbled but present) rather than raising an exception.
             files[rel] = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
@@ -150,6 +152,9 @@ def _render_markdown(cfg: TeamConfig, turns: list[dict], shared_files: dict[str,
 def _render_html(cfg: TeamConfig, turns: list[dict], shared_files: dict[str, str]) -> str:
     env = Environment(
         loader=PackageLoader("team", "templates"),
+        # autoescape is enabled for HTML so that member-generated content
+        # (which may contain < > & " etc.) is safely escaped and cannot
+        # inject unexpected markup into the report.
         autoescape=select_autoescape(["html", "j2"]),
     )
     env.filters["fmt_ts"] = _fmt_timestamp

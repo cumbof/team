@@ -47,8 +47,13 @@ class OllamaClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Number of *additional* attempts after the first failure.
+        # Total attempts = max_retries + 1.
         self.max_retries = max_retries
+        # Wait before attempt N = retry_backoff ** N seconds.
+        # With the default 2.0: 1 s, 2 s, 4 s for attempts 0/1/2.
         self.retry_backoff = retry_backoff
+        # Reuse one requests.Session for connection pooling across calls.
         self._session = requests.Session()
 
     # ----- low level ---------------------------------------------------- #
@@ -152,11 +157,14 @@ class OllamaClient:
                     self._url("/api/chat"), json=payload, timeout=self.timeout
                 )
                 if r.status_code >= 500:
-                    # Server-side error — safe to retry.
+                    # 5xx = server-side error — safe to retry because the request
+                    # never completed from the server's perspective.
                     raise requests.HTTPError(
                         f"server error {r.status_code}", response=r
                     )
                 if r.status_code >= 400:
+                    # 4xx = client error (wrong model name, malformed request, …).
+                    # These won't self-heal on retry, so raise immediately.
                     raise OllamaError(f"chat failed ({r.status_code}): {r.text}")
                 data = r.json()
                 content = data.get("message", {}).get("content", "")
@@ -213,6 +221,10 @@ class OllamaClient:
         }
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
+            # Track whether we've yielded any tokens during this attempt.
+            # Once tokens have been yielded to the caller we cannot retry:
+            # the caller already received partial output and restarting the
+            # stream would produce duplicate tokens.
             tokens_yielded = False
             try:
                 with self._session.post(
@@ -239,6 +251,9 @@ class OllamaClient:
                             tokens_yielded = True
                             yield token
                         if data.get("done"):
+                            # The `done=True` chunk may still carry a final
+                            # content token (yielded above); stop consuming
+                            # after this line regardless.
                             break
                 return  # generator exhausted normally
             except OllamaError:
