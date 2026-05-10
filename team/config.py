@@ -83,6 +83,12 @@ class Defaults:
     request_timeout: int = 600
     max_retries: int = 3
     retry_backoff: float = 2.0
+    # F1: backend selection
+    backend: str = "ollama"   # "ollama" | "openai_compat"
+    api_key: str | None = None
+    # F2: context management
+    context_strategy: str = "none"  # "none" | "sliding_window" | "truncate" | "summarize"
+    context_budget: int = 0         # >0: max turns (sliding_window) or approx token budget
 
 
 @dataclass
@@ -106,6 +112,15 @@ class MemberConfig:
     gpus: str | list[int] | None = None
     can_write_files: bool = True
     extra_system: str | None = None  # appended to the rendered system prompt
+    # F10: skip Docker and connect to an existing Ollama instance
+    ollama_url: str | None = None
+    # F1: OpenAI-compatible backend
+    backend: str | None = None       # overrides defaults.backend; "ollama" | "openai_compat"
+    api_base: str | None = None      # base URL for openai_compat (required when backend=openai_compat)
+    api_key: str | None = None       # overrides defaults.api_key; supports "env:VAR"
+    # F2: per-member context management overrides
+    context_strategy: str | None = None
+    context_budget: int | None = None
 
 
 @dataclass
@@ -163,10 +178,11 @@ def _parse_workflow(data: dict) -> WorkflowConfig:
     if not data:
         return WorkflowConfig()
     wf_type = data.get("type", "round_robin")
-    if wf_type not in {"round_robin", "manager", "review_loop", "sequential_chain"}:
+    valid_types = {"round_robin", "manager", "review_loop", "sequential_chain", "debate"}
+    if wf_type not in valid_types:
         raise TeamConfigError(
             f"workflow.type={wf_type!r} is not one of "
-            "round_robin | manager | review_loop | sequential_chain"
+            + " | ".join(sorted(valid_types))
         )
     opts = {k: v for k, v in data.items() if k not in {"type", "max_rounds"}}
     return WorkflowConfig(
@@ -193,6 +209,12 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         gpus=data.get("gpus"),
         can_write_files=bool(data.get("can_write_files", True)),
         extra_system=data.get("extra_system"),
+        ollama_url=data.get("ollama_url"),
+        backend=data.get("backend"),
+        api_base=data.get("api_base"),
+        api_key=data.get("api_key"),
+        context_strategy=data.get("context_strategy"),
+        context_budget=data.get("context_budget"),
     )
 
 
@@ -237,6 +259,20 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
             raise TeamConfigError(
                 "workflow.producer and workflow.reviewer must reference members"
             )
+
+    if workflow.type == "debate":
+        pro = workflow.options.get("pro")
+        con = workflow.options.get("con")
+        judge = workflow.options.get("judge")
+        if not pro or not con or not judge:
+            raise TeamConfigError(
+                "workflow type=debate requires pro, con, and judge options"
+            )
+        for role_name in (pro, con, judge):
+            if role_name not in seen:
+                raise TeamConfigError(
+                    f"debate role {role_name!r} is not a member"
+                )
 
     return TeamConfig(
         name=name,

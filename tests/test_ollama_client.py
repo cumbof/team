@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 import requests
 
-from team.ollama_client import ChatMessage, OllamaClient, OllamaError
+from team.ollama_client import ChatMessage, OllamaClient, OllamaError, TokenUsage
 
 
 # --------------------------------------------------------------------------- #
@@ -33,18 +33,31 @@ def _stream_response(tokens: list[str], *, status: int = 200) -> MagicMock:
         for i, token in enumerate(tokens):
             done = i == len(tokens) - 1
             chunk = {"message": {"role": "assistant", "content": token}, "done": done}
+            if done:
+                chunk["prompt_eval_count"] = 10
+                chunk["eval_count"] = len(tokens)
             lines.append(json.dumps(chunk).encode())
         mock.iter_lines.return_value = iter(lines)
     return mock
 
 
-def _chat_response(content: str, *, status: int = 200) -> MagicMock:
+def _chat_response(
+    content: str,
+    *,
+    status: int = 200,
+    prompt_eval_count: int = 5,
+    eval_count: int = 3,
+) -> MagicMock:
     """Return a plain (non-streaming) mock response for chat()."""
     mock = MagicMock()
     mock.status_code = status
     mock.text = "error body" if status >= 400 else ""
     if status < 400:
-        mock.json.return_value = {"message": {"role": "assistant", "content": content}}
+        mock.json.return_value = {
+            "message": {"role": "assistant", "content": content},
+            "prompt_eval_count": prompt_eval_count,
+            "eval_count": eval_count,
+        }
     return mock
 
 
@@ -276,3 +289,143 @@ def test_stream_chat_raises_after_exhausting_retries() -> None:
         with patch("team.ollama_client.time.sleep"):
             with pytest.raises(OllamaError, match="3 attempt"):
                 list(client.stream_chat("m", [ChatMessage("user", "hi")]))
+
+
+# --------------------------------------------------------------------------- #
+# F6: Token usage tracking
+# --------------------------------------------------------------------------- #
+
+
+def test_chat_sets_last_usage() -> None:
+    client = _client()
+    with patch.object(
+        client._session, "post",
+        return_value=_chat_response("hi", prompt_eval_count=11, eval_count=3),
+    ):
+        client.chat("m", [ChatMessage("user", "hello")])
+    assert client.last_usage is not None
+    assert client.last_usage.prompt_tokens == 11
+    assert client.last_usage.completion_tokens == 3
+    assert client.last_usage.total_tokens == 14
+
+
+def test_stream_chat_sets_last_usage() -> None:
+    """Token counts from the done=True chunk are stored in last_usage."""
+    client = _client()
+    tokens = ["a", "b", "c"]
+    with patch.object(client._session, "post", return_value=_stream_response(tokens)):
+        list(client.stream_chat("m", [ChatMessage("user", "hi")]))
+    assert client.last_usage is not None
+    assert client.last_usage.prompt_tokens == 10
+    assert client.last_usage.completion_tokens == len(tokens)
+
+
+def test_token_usage_total() -> None:
+    u = TokenUsage(prompt_tokens=100, completion_tokens=50)
+    assert u.total_tokens == 150
+
+
+# --------------------------------------------------------------------------- #
+# F1: OpenAICompatClient
+# --------------------------------------------------------------------------- #
+
+from team.ollama_client import OpenAICompatClient
+
+
+def _openai_chat_response(content: str, *, status: int = 200) -> MagicMock:
+    mock = MagicMock()
+    mock.status_code = status
+    mock.text = "error" if status >= 400 else ""
+    if status < 400:
+        mock.json.return_value = {
+            "choices": [{"message": {"role": "assistant", "content": content}}],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+        }
+    return mock
+
+
+def _openai_stream_response(tokens: list[str], *, status: int = 200) -> MagicMock:
+    mock = MagicMock()
+    mock.status_code = status
+    mock.text = "error" if status >= 400 else ""
+    mock.__enter__ = lambda s: s
+    mock.__exit__ = MagicMock(return_value=False)
+    if status < 400:
+        lines: list[bytes] = []
+        for i, t in enumerate(tokens):
+            chunk = {"choices": [{"delta": {"content": t}}]}
+            if i == len(tokens) - 1:
+                chunk["usage"] = {
+                    "prompt_tokens": 7,
+                    "completion_tokens": len(tokens),
+                    "total_tokens": 7 + len(tokens),
+                }
+            lines.append(f"data: {json.dumps(chunk)}".encode())
+        lines.append(b"data: [DONE]")
+        mock.iter_lines.return_value = iter(lines)
+    return mock
+
+
+def _oa_client() -> OpenAICompatClient:
+    return OpenAICompatClient(
+        base_url="http://localhost:8080",
+        timeout=10,
+        max_retries=0,
+    )
+
+
+def test_openai_compat_chat_returns_content() -> None:
+    client = _oa_client()
+    with patch.object(client._session, "post", return_value=_openai_chat_response("hello")):
+        result = client.chat("gpt-4o", [ChatMessage("user", "hi")])
+    assert result == "hello"
+
+
+def test_openai_compat_chat_sets_usage() -> None:
+    client = _oa_client()
+    with patch.object(client._session, "post", return_value=_openai_chat_response("hi")):
+        client.chat("gpt-4o", [ChatMessage("user", "hi")])
+    assert client.last_usage is not None
+    assert client.last_usage.prompt_tokens == 8
+    assert client.last_usage.completion_tokens == 4
+
+
+def test_openai_compat_stream_chat_yields_tokens() -> None:
+    client = _oa_client()
+    tokens = ["Hello", " world"]
+    with patch.object(client._session, "post", return_value=_openai_stream_response(tokens)):
+        result = list(client.stream_chat("gpt-4o", [ChatMessage("user", "hi")]))
+    assert result == tokens
+
+
+def test_openai_compat_stream_chat_sets_usage() -> None:
+    client = _oa_client()
+    tokens = ["a", "b"]
+    with patch.object(client._session, "post", return_value=_openai_stream_response(tokens)):
+        list(client.stream_chat("gpt-4o", [ChatMessage("user", "hi")]))
+    assert client.last_usage is not None
+    assert client.last_usage.prompt_tokens == 7
+    assert client.last_usage.completion_tokens == len(tokens)
+
+
+def test_openai_compat_chat_raises_on_4xx() -> None:
+    client = _oa_client()
+    with patch.object(
+        client._session, "post", return_value=_openai_chat_response("", status=401)
+    ):
+        with pytest.raises(OllamaError, match="chat failed"):
+            client.chat("gpt-4o", [ChatMessage("user", "hi")])
+
+
+def test_openai_compat_api_key_header() -> None:
+    """api_key is set as a Bearer header on the session."""
+    client = OpenAICompatClient(base_url="http://x", api_key="sk-test")
+    assert client._session.headers.get("Authorization") == "Bearer sk-test"
+
+
+def test_openai_compat_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """api_key='env:VAR' resolves from the environment."""
+    monkeypatch.setenv("MY_KEY", "secret")
+    client = OpenAICompatClient(base_url="http://x", api_key="env:MY_KEY")
+    assert client._session.headers.get("Authorization") == "Bearer secret"
+

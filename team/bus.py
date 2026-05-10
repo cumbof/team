@@ -23,6 +23,8 @@ class Turn:
     content: str
     timestamp: float = field(default_factory=time.time)
     files_written: list[str] = field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 class Transcript:
@@ -62,6 +64,8 @@ class Transcript:
         role: str,
         content: str,
         files_written: Iterable[str] = (),
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
     ) -> Turn:
         turn = Turn(
             index=len(self.turns),
@@ -69,6 +73,8 @@ class Transcript:
             role=role,
             content=content,
             files_written=list(files_written),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
         self.turns.append(turn)
         if self.persist_path:

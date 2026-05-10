@@ -45,9 +45,9 @@ MEMBER_LABEL = "team.member"
 @dataclass
 class MemberRuntime:
     member: MemberConfig
-    container: Container
-    host_port: int
-    base_url: str  # http://127.0.0.1:<port>
+    container: Container | None  # None for remote/external Ollama members
+    host_port: int | None
+    base_url: str  # http://127.0.0.1:<port> or remote URL
 
 
 # --------------------------------------------------------------------------- #
@@ -147,6 +147,40 @@ class ContainerManager:
             return None
 
     def start_member(self, member: MemberConfig) -> MemberRuntime:
+        # Remote Ollama (F10): bypass all Docker management entirely.
+        if member.ollama_url:
+            log.info(
+                "member %s uses remote Ollama at %s (skipping Docker)",
+                member.name,
+                member.ollama_url,
+            )
+            return MemberRuntime(
+                member=member,
+                container=None,
+                host_port=None,
+                base_url=member.ollama_url,
+            )
+
+        # OpenAI-compat backend (F1): also needs no container.
+        effective_backend = member.backend or self.team.defaults.backend
+        if effective_backend == "openai_compat":
+            api_base = member.api_base or ""
+            if not api_base:
+                raise ValueError(
+                    f"member {member.name!r}: backend=openai_compat requires api_base"
+                )
+            log.info(
+                "member %s uses openai_compat backend at %s (skipping Docker)",
+                member.name,
+                api_base,
+            )
+            return MemberRuntime(
+                member=member,
+                container=None,
+                host_port=None,
+                base_url=api_base,
+            )
+
         defaults = self.team.defaults
         image = defaults.ollama_image
         self.ensure_image(image)
@@ -250,6 +284,11 @@ class ContainerManager:
     # --- teardown ------------------------------------------------------- #
 
     def stop_member(self, member_name: str, *, remove_volume: bool = False) -> None:
+        # Skip teardown for members with no Docker container.
+        member = next((m for m in self.team.members if m.name == member_name), None)
+        if member and (member.ollama_url or (member.backend or self.team.defaults.backend) == "openai_compat"):
+            log.debug("member %s has no container, skipping teardown", member_name)
+            return
         name = _container_name(self.team.name, member_name)
         try:
             c = self.client.containers.get(name)
@@ -278,6 +317,25 @@ class ContainerManager:
     def status(self) -> list[dict]:
         out: list[dict] = []
         for m in self.team.members:
+            if m.ollama_url:
+                out.append({
+                    "member": m.name,
+                    "role": m.role,
+                    "model": m.model,
+                    "container": "(remote)",
+                    "status": "remote",
+                })
+                continue
+            effective_backend = m.backend or self.team.defaults.backend
+            if effective_backend == "openai_compat":
+                out.append({
+                    "member": m.name,
+                    "role": m.role,
+                    "model": m.model,
+                    "container": "(openai_compat)",
+                    "status": "external",
+                })
+                continue
             c = self._existing(m)
             out.append(
                 {

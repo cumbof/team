@@ -108,15 +108,36 @@ class SharedWorkspace:
         """
         self._touched[rel_path] = time.time()
 
-    def apply_reply(self, text: str) -> list[FileWrite]:
+    def apply_reply(self, text: str, private_root: Path | None = None) -> list[FileWrite]:
+        """Parse and apply all file blocks in *text*.
+
+        If *private_root* is provided, any block whose path starts with
+        ``private/`` is written to *private_root* (the member's own scratch
+        directory) instead of the shared workspace.  The ``private/`` prefix
+        is stripped before writing so ``file:private/notes.md`` becomes
+        ``private_root/notes.md`` on disk (still reported as ``private/notes.md``
+        in the returned :class:`FileWrite` list).
+        """
         writes: list[FileWrite] = []
         for path, body in parse_file_blocks(text):
             try:
-                writes.append(self.write(path, body))
+                if private_root is not None and path.startswith("private/"):
+                    rel = path[len("private/"):]
+                    if not rel:
+                        continue
+                    target = _safe_join(private_root, rel)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    existed = target.exists()
+                    data = body.encode("utf-8")
+                    target.write_bytes(data)
+                    writes.append(FileWrite(
+                        path=path,
+                        bytes_written=len(data),
+                        created=not existed,
+                    ))
+                else:
+                    writes.append(self.write(path, body))
             except ValueError:
-                # Skip any file block whose path fails the safety check rather
-                # than aborting the whole turn — one bad path shouldn't prevent
-                # other valid file blocks in the same reply from being written.
                 continue
         return writes
 

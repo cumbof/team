@@ -111,3 +111,127 @@ def test_member_lookup(tmp_path: Path) -> None:
     assert cfg.member("b").role == "Eng"
     with pytest.raises(KeyError):
         cfg.member("nope")
+
+
+# --------------------------------------------------------------------------- #
+# F10: Remote Ollama
+# --------------------------------------------------------------------------- #
+
+
+def test_member_ollama_url_is_parsed(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        members:
+          - name: a
+            role: r
+            model: m
+            persona: p
+            ollama_url: http://192.168.1.10:11434
+        """,
+    )
+    cfg = load_team(p)
+    assert cfg.members[0].ollama_url == "http://192.168.1.10:11434"
+
+
+# --------------------------------------------------------------------------- #
+# F1: OpenAI-compat backend
+# --------------------------------------------------------------------------- #
+
+
+def test_member_backend_and_api_base_parsed(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        members:
+          - name: a
+            role: r
+            model: gpt-4o
+            persona: p
+            backend: openai_compat
+            api_base: https://api.openai.com
+            api_key: env:OPENAI_API_KEY
+        """,
+    )
+    cfg = load_team(p)
+    m = cfg.members[0]
+    assert m.backend == "openai_compat"
+    assert m.api_base == "https://api.openai.com"
+    assert m.api_key == "env:OPENAI_API_KEY"
+
+
+# --------------------------------------------------------------------------- #
+# F2: Context window management
+# --------------------------------------------------------------------------- #
+
+
+def test_context_strategy_in_defaults(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        defaults:
+          context_strategy: sliding_window
+          context_budget: 20
+        members:
+          - {name: a, role: r, model: m, persona: p}
+        """,
+    )
+    cfg = load_team(p)
+    assert cfg.defaults.context_strategy == "sliding_window"
+    assert cfg.defaults.context_budget == 20
+
+
+def test_context_strategy_per_member(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        members:
+          - name: a
+            role: r
+            model: m
+            persona: p
+            context_strategy: truncate
+            context_budget: 4096
+        """,
+    )
+    cfg = load_team(p)
+    assert cfg.members[0].context_strategy == "truncate"
+    assert cfg.members[0].context_budget == 4096
+
+
+# --------------------------------------------------------------------------- #
+# F3: Debate workflow config
+# --------------------------------------------------------------------------- #
+
+
+def test_debate_workflow_valid(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        workflow:
+          type: debate
+          max_rounds: 2
+          pro: alice
+          con: bob
+          judge: carol
+        members:
+          - {name: alice, role: r, model: m, persona: p}
+          - {name: bob, role: r, model: m, persona: p}
+          - {name: carol, role: r, model: m, persona: p}
+        """,
+    )
+    cfg = load_team(p)
+    assert cfg.workflow.type == "debate"
+    assert cfg.workflow.options["pro"] == "alice"
+    assert cfg.workflow.options["judge"] == "carol"
+

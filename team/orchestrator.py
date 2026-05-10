@@ -28,27 +28,16 @@ class Orchestrator:
             resume=resume,
         )
         self.members: dict[str, Member] = {}
-        # Build a list of already-persisted member turns so we can replay them
-        # on resume.  Orchestrator turns (the kickoff message, human directives)
-        # are excluded — only per-member LLM responses need to be replayed.
         self._replay_queue: list = [
             t for t in self.transcript.turns if t.speaker not in ("orchestrator", "human")
         ]
-        # Optional hooks — attached by the CLI or tests; all default to None.
-        # Callers can set these to Callable objects to intercept turn events:
-        #   _on_turn_start(member_name) → called before a live LLM turn begins
-        #   _on_token(token)            → called for each streamed content chunk
-        #   _on_turn_end(member_name)   → called after the full reply is received
-        #   _on_round_end(round_idx)    → called by workflows at end of each round
         self._on_turn_start: Callable[[str], None] | None = None
         self._on_token: Callable[[str], None] | None = None
         self._on_turn_end: Callable[[str], None] | None = None
-        # Optional round-end hook — set by the CLI for interactive mode.
-        # _on_round_end(round_idx) is called by workflows at the end of each round.
         self._on_round_end: Callable[[int], None] | None = None
-        # Path to the inject file: drop text here to inject a human directive
-        # into the transcript before the next live member turn.
         self.inject_path: Path = team.workspace / "inject.txt"
+        # F6: token usage accumulated across live turns (not replayed ones).
+        self._token_totals: dict[str, dict[str, int]] = {}
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -161,7 +150,13 @@ class Orchestrator:
             role=member.config.role,
             content=result.content,
             files_written=result.files_written,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
         )
+        # Accumulate token usage for the live turn (F6).
+        totals = self._token_totals.setdefault(member_name, {"prompt": 0, "completion": 0})
+        totals["prompt"] += result.prompt_tokens
+        totals["completion"] += result.completion_tokens
         return result
 
     # ------------------------------------------------------------------ #

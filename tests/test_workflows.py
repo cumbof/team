@@ -8,13 +8,15 @@ workflow only interacts with the orchestrator via :meth:`run_turn` and the
 from dataclasses import dataclass
 from typing import Callable
 
+import pytest
+
 from team.config import (
     Defaults,
     MemberConfig,
     TeamConfig,
     WorkflowConfig,
 )
-from team.workflows import manager_driven, review_loop, round_robin, sequential_chain
+from team.workflows import manager_driven, review_loop, round_robin, sequential_chain, debate
 
 
 @dataclass
@@ -231,3 +233,100 @@ def test_sequential_chain_custom_template() -> None:
     orch = PromptCapture(team, scripts)
     sequential_chain(orch)
     assert received_prompts["editor"][0] == "INPUT: my draft"
+
+
+# --------------------------------------------------------------------------- #
+# debate (F3)
+# --------------------------------------------------------------------------- #
+
+
+def test_debate_full_flow() -> None:
+    """Opening → max_rounds rebuttals per side → closing → judge [[TEAM_DONE]]."""
+    team = _team(
+        WorkflowConfig(
+            type="debate",
+            max_rounds=2,
+            options={"pro": "pro", "con": "con", "judge": "judge"},
+        ),
+        ["pro", "con", "judge"],
+    )
+    scripts = {
+        "pro": lambda i: FakeResult("pro turn"),
+        "con": lambda i: FakeResult("con turn"),
+        "judge": lambda i: FakeResult("verdict [[TEAM_DONE]]", declared_done=True),
+    }
+    orch = FakeOrch(team, scripts)
+    debate(orch)
+
+    speakers = [c[0] for c in orch.calls]
+    # opening pro, opening con,
+    # rebuttal round 1: pro, con
+    # rebuttal round 2: pro, con
+    # closing pro, closing con
+    # judge
+    assert speakers == ["pro", "con", "pro", "con", "pro", "con", "pro", "con", "judge"]
+
+
+def test_debate_early_done_by_pro() -> None:
+    """If pro declares [[TEAM_DONE]] the workflow exits immediately."""
+    team = _team(
+        WorkflowConfig(
+            type="debate",
+            max_rounds=3,
+            options={"pro": "pro", "con": "con", "judge": "judge"},
+        ),
+        ["pro", "con", "judge"],
+    )
+    scripts = {
+        "pro": lambda i: FakeResult("done [[TEAM_DONE]]", declared_done=(i == 0)),
+        "con": lambda i: FakeResult("nope"),
+        "judge": lambda i: FakeResult("verdict"),
+    }
+    orch = FakeOrch(team, scripts)
+    debate(orch)
+    # Only pro's opening turn fires before early exit
+    assert [c[0] for c in orch.calls] == ["pro"]
+
+
+def test_debate_config_requires_pro_con_judge(tmp_path) -> None:
+    from pathlib import Path
+    import textwrap
+    from team.config import TeamConfigError, load_team
+
+    p = tmp_path / "t.yaml"
+    p.write_text(textwrap.dedent("""
+        name: t1
+        goal: g
+        workflow:
+          type: debate
+          pro: alice
+          con: bob
+        members:
+          - {name: alice, role: r, model: m, persona: p}
+          - {name: bob, role: r, model: m, persona: p}
+    """), encoding="utf-8")
+    with pytest.raises(TeamConfigError, match="judge"):
+        load_team(p)
+
+
+def test_debate_config_validates_members(tmp_path) -> None:
+    from pathlib import Path
+    import textwrap
+    from team.config import TeamConfigError, load_team
+
+    p = tmp_path / "t.yaml"
+    p.write_text(textwrap.dedent("""
+        name: t1
+        goal: g
+        workflow:
+          type: debate
+          pro: alice
+          con: bob
+          judge: ghost
+        members:
+          - {name: alice, role: r, model: m, persona: p}
+          - {name: bob, role: r, model: m, persona: p}
+    """), encoding="utf-8")
+    with pytest.raises(TeamConfigError, match="ghost"):
+        load_team(p)
+

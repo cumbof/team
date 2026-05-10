@@ -243,6 +243,132 @@ def sequential_chain(orch: "Orchestrator") -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Debate
+# --------------------------------------------------------------------------- #
+
+
+def debate(orch: "Orchestrator") -> None:
+    """Two members argue opposing sides; a judge delivers the final verdict.
+
+    Required workflow options:
+
+    * ``pro``   — name of the member arguing *in favour* of the proposition
+    * ``con``   — name of the member arguing *against* the proposition
+    * ``judge`` — name of the member who delivers the impartial verdict
+
+    Optional:
+
+    * ``topic`` — explicit proposition text (defaults to ``team.goal``)
+
+    Example YAML::
+
+        workflow:
+          type: debate
+          max_rounds: 3          # rebuttal rounds per side (default 6 → 3 per side)
+          pro: advocate
+          con: critic
+          judge: arbiter
+          topic: "Open-source LLMs will surpass proprietary ones within 5 years"
+    """
+    opts = orch.team.workflow.options
+    pro_name = opts["pro"]
+    con_name = opts["con"]
+    judge_name = opts["judge"]
+    max_rounds = orch.team.workflow.max_rounds
+    topic = opts.get("topic") or orch.team.goal.strip()
+
+    # Opening statements ---------------------------------------------------- #
+    res = orch.run_turn(
+        pro_name,
+        prompt=(
+            f"Deliver your OPENING ARGUMENT in favour of the proposition:\n\n"
+            f"> {topic}\n\n"
+            "Structure your case with distinct, well-reasoned points. "
+            "Be clear, logical, and evidence-driven. Do not simply restate the proposition."
+        ),
+    )
+    if res.declared_done:
+        return
+
+    res = orch.run_turn(
+        con_name,
+        prompt=(
+            f"Deliver your OPENING ARGUMENT against the proposition:\n\n"
+            f"> {topic}\n\n"
+            f"Structure your case with distinct points. Directly rebut at least one "
+            f"claim made by @{pro_name} in their opening."
+        ),
+    )
+    if res.declared_done:
+        return
+
+    # Rebuttal rounds ------------------------------------------------------- #
+    for round_idx in range(max_rounds):
+        log.info("debate rebuttal round %d/%d", round_idx + 1, max_rounds)
+        res = orch.run_turn(
+            pro_name,
+            prompt=(
+                f"REBUTTAL round {round_idx + 1}/{max_rounds} (PRO).\n"
+                f"Address @{con_name}'s most recent argument specifically. "
+                "Reinforce your strongest points with new reasoning or evidence. "
+                "Be concise and stay on topic."
+            ),
+        )
+        if res.declared_done:
+            return
+
+        res = orch.run_turn(
+            con_name,
+            prompt=(
+                f"REBUTTAL round {round_idx + 1}/{max_rounds} (CON).\n"
+                f"Address @{pro_name}'s most recent argument specifically. "
+                "Reinforce your strongest points with new reasoning or evidence. "
+                "Be concise and stay on topic."
+            ),
+        )
+        if res.declared_done:
+            return
+
+        if orch._on_round_end:
+            orch._on_round_end(round_idx)
+
+    # Closing statements ---------------------------------------------------- #
+    res = orch.run_turn(
+        pro_name,
+        prompt=(
+            "Deliver your CLOSING STATEMENT. Summarise your three strongest arguments, "
+            "explain why they were not adequately rebutted, and state your conclusion clearly."
+        ),
+    )
+    if res.declared_done:
+        return
+
+    res = orch.run_turn(
+        con_name,
+        prompt=(
+            "Deliver your CLOSING STATEMENT. Summarise your three strongest arguments, "
+            "explain why they were not adequately rebutted, and state your conclusion clearly."
+        ),
+    )
+    if res.declared_done:
+        return
+
+    # Judge's verdict ------------------------------------------------------- #
+    orch.run_turn(
+        judge_name,
+        prompt=(
+            f"You are the impartial judge of this debate on the proposition:\n\n"
+            f"> {topic}\n\n"
+            "Review the full transcript. Evaluate both sides on: "
+            "(1) logical coherence, (2) quality of evidence, "
+            "(3) effectiveness of rebuttals, (4) clarity of communication.\n\n"
+            "Name the stronger side and explain your reasoning in detail. "
+            "End your verdict with `[[TEAM_DONE]]`."
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Dispatch
 # --------------------------------------------------------------------------- #
 
@@ -252,6 +378,7 @@ WORKFLOWS = {
     "manager": manager_driven,
     "review_loop": review_loop,
     "sequential_chain": sequential_chain,
+    "debate": debate,
 }
 
 

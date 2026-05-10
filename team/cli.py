@@ -99,6 +99,23 @@ def init(path: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# new (wizard)
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("path", type=click.Path(dir_okay=False, writable=True), default="team.yaml")
+def new(path: str) -> None:
+    """Interactively create a new team YAML via a guided wizard."""
+    p = Path(path)
+    if p.exists():
+        console.print(f"[red]refusing to overwrite[/red] {p}")
+        sys.exit(1)
+    from team.wizard import run_wizard
+    run_wizard(p)
+
+
+# --------------------------------------------------------------------------- #
 # validate
 # --------------------------------------------------------------------------- #
 
@@ -113,6 +130,27 @@ def validate(team_file: str) -> None:
         console.print(f"  • @{m.name} ({m.role}) — model={m.model}")
     console.print(f"  workflow={cfg.workflow.type} max_rounds={cfg.workflow.max_rounds}")
     console.print(f"  workspace={cfg.workspace}")
+
+
+# --------------------------------------------------------------------------- #
+# visualize
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--format", "fmt",
+    type=click.Choice(["ascii", "mermaid"], case_sensitive=False),
+    default="ascii",
+    show_default=True,
+    help="Output format.",
+)
+def visualize(team_file: str, fmt: str) -> None:
+    """Print an ASCII or Mermaid diagram of the team workflow."""
+    from team.visualize import render_diagram
+    cfg = _load(team_file)
+    console.print(render_diagram(cfg, fmt=fmt))
 
 
 # --------------------------------------------------------------------------- #
@@ -204,6 +242,27 @@ def _print_status(orch: Orchestrator) -> None:
         table.add_column(col)
     for row in orch.status():
         table.add_row(row["member"], row["role"], row["model"], row["container"], row["status"])
+    console.print(table)
+
+
+def _print_token_summary(orch: Orchestrator) -> None:
+    """Print a token usage summary table after a workflow completes (F6)."""
+    totals = orch._token_totals
+    if not any(v["prompt"] + v["completion"] for v in totals.values()):
+        return  # all-zero (e.g. pure replay run or backend doesn't report tokens)
+    table = Table(title="Token usage (live turns)")
+    table.add_column("member")
+    table.add_column("prompt", justify="right")
+    table.add_column("completion", justify="right")
+    table.add_column("total", justify="right")
+    grand_p = grand_c = 0
+    for name, counts in totals.items():
+        p, c = counts["prompt"], counts["completion"]
+        grand_p += p
+        grand_c += c
+        table.add_row(f"@{name}", str(p), str(c), str(p + c))
+    table.add_section()
+    table.add_row("[bold]total[/bold]", str(grand_p), str(grand_c), str(grand_p + grand_c))
     console.print(table)
 
 
@@ -332,6 +391,7 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
     finally:
         if not keep_up:
             orch.down()
+    _print_token_summary(orch)
     console.print(f"[green]done[/green] — transcript: {orch.transcript_path()}")
 
 
