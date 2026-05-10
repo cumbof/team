@@ -448,6 +448,7 @@ team status     <team.yaml>           Show container status per member.
 team logs       <team.yaml> [--member NAME] [--tail N]
                                        Tail per-member Ollama logs.
 team run        <team.yaml> [--no-up] [--keep-up] [--resume] [--no-stream]
+                                       [--interactive]
                                        Up + run workflow + (down).
 team transcript <team.yaml>           Render the persisted transcript.
 team export     <team.yaml> [--format markdown|html] [--output PATH]
@@ -478,6 +479,30 @@ team run my-team.yaml --no-stream
 
 With `--no-stream` the full reply is printed at once after each turn
 completes.
+
+---
+
+## Retry and back-off
+
+When an Ollama request fails due to a transient network problem or a 5xx
+server error, `team` retries automatically with exponential back-off before
+giving up.  Configure it in `defaults`:
+
+```yaml
+defaults:
+  max_retries: 3        # total extra attempts after the first (default: 3)
+  retry_backoff: 2.0    # wait = backoff ** attempt → 1 s, 2 s, 4 s … (default: 2.0)
+```
+
+| Condition | Retried? |
+|---|---|
+| `requests.ConnectionError` / `Timeout` | ✓ yes |
+| HTTP 5xx (server error) | ✓ yes |
+| HTTP 4xx (client error, bad model name, …) | ✗ no — fails immediately |
+| Empty response body | ✗ no — fails immediately |
+
+For streaming turns, retries only happen if no tokens have been yielded yet
+(a partial stream cannot be safely replayed).
 
 ---
 
@@ -547,6 +572,59 @@ live from the first missing turn.
   the run starts fresh.
 * If the previous run completed, resuming is a harmless no-op: the workflow
   will detect `[[TEAM_DONE]]` in the first replayed turn and exit immediately.
+
+---
+
+## Human-in-the-loop intervention
+
+You can inject new directives into a running team at any time without
+stopping or restarting.  Two mechanisms are available:
+
+### Interactive mode (foreground runs)
+
+Pass `--interactive` to `team run`.  After every workflow round completes
+you are prompted for an optional directive.  Press **Enter** with no text to
+let the run continue, or type instructions and press **Enter** to have them
+injected before the next round:
+
+```bash
+team run my-team.yaml --interactive
+```
+
+```text
+── round 1/4 complete ──
+Enter a directive for the team (or press Enter to continue): Focus only on the auth module for now.
+↳ directive injected
+```
+
+### File-based injection (background / CI runs)
+
+At any point during a run you can write a plain-text file called
+`inject.txt` into the workspace directory:
+
+```bash
+echo "Switch to Python 3.12 syntax only." > ./runs/my-team/inject.txt
+```
+
+Before the **next member turn** begins, the orchestrator checks for this
+file.  If it exists, the content is read, the file is deleted, and the
+directive is appended to the transcript as a `@human (director)` turn.
+All members see it in their next turn's conversation context.
+
+The file is consumed once and automatically removed.  Drop a new file to
+inject again at any later point.
+
+### What the team sees
+
+Both mechanisms produce the same type of transcript entry:
+
+```text
+--- Turn N | @human | director ---
+<your directive here>
+```
+
+The entry is visible to every member in their next turn prompt, just like
+any other speaker's turn.
 
 ---
 

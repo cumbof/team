@@ -78,6 +78,8 @@ class Defaults:
     gpus: str | list[int] = "none"
     pull_timeout: int = 1800
     request_timeout: int = 600
+    max_retries: int = 3
+    retry_backoff: float = 2.0
 
 
 @dataclass

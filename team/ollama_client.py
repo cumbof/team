@@ -14,11 +14,14 @@ Python SDK so that the server can be any Ollama-compatible HTTP endpoint
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Iterable, Iterator
 
 import requests
+
+log = logging.getLogger(__name__)
 
 
 class OllamaError(RuntimeError):
@@ -35,15 +38,41 @@ class ChatMessage:
 
 
 class OllamaClient:
-    def __init__(self, base_url: str, timeout: int = 600):
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 600,
+        max_retries: int = 3,
+        retry_backoff: float = 2.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
         self._session = requests.Session()
 
     # ----- low level ---------------------------------------------------- #
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
+
+    @staticmethod
+    def _build_options(
+        temperature: float | None,
+        top_p: float | None,
+        num_ctx: int | None,
+        stop: list[str] | None,
+    ) -> dict:
+        options: dict = {}
+        if temperature is not None:
+            options["temperature"] = temperature
+        if top_p is not None:
+            options["top_p"] = top_p
+        if num_ctx is not None:
+            options["num_ctx"] = num_ctx
+        if stop:
+            options["stop"] = stop
+        return options
 
     # ----- health / lifecycle ------------------------------------------- #
 
@@ -109,33 +138,52 @@ class OllamaClient:
         num_ctx: int | None = None,
         stop: list[str] | None = None,
     ) -> str:
-        options: dict = {}
-        if temperature is not None:
-            options["temperature"] = temperature
-        if top_p is not None:
-            options["top_p"] = top_p
-        if num_ctx is not None:
-            options["num_ctx"] = num_ctx
-        if stop:
-            options["stop"] = stop
-
+        options = self._build_options(temperature, top_p, num_ctx, stop)
         payload = {
             "model": model,
             "messages": [m.to_dict() for m in messages],
             "stream": False,
             "options": options,
         }
-        r = self._session.post(
-            self._url("/api/chat"), json=payload, timeout=self.timeout
-        )
-        if r.status_code >= 400:
-            raise OllamaError(f"chat failed ({r.status_code}): {r.text}")
-        data = r.json()
-        msg = data.get("message", {})
-        content = msg.get("content", "")
-        if not content:
-            raise OllamaError(f"chat returned no content: {data}")
-        return content
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                r = self._session.post(
+                    self._url("/api/chat"), json=payload, timeout=self.timeout
+                )
+                if r.status_code >= 500:
+                    # Server-side error — safe to retry.
+                    raise requests.HTTPError(
+                        f"server error {r.status_code}", response=r
+                    )
+                if r.status_code >= 400:
+                    raise OllamaError(f"chat failed ({r.status_code}): {r.text}")
+                data = r.json()
+                content = data.get("message", {}).get("content", "")
+                if not content:
+                    raise OllamaError(f"chat returned no content: {data}")
+                return content
+            except OllamaError:
+                raise  # 4xx and empty-content errors are not retried
+            except (
+                requests.ConnectionError,
+                requests.Timeout,
+                requests.HTTPError,
+            ) as exc:
+                last_exc = exc
+                if attempt < self.max_retries:
+                    wait = self.retry_backoff**attempt
+                    log.warning(
+                        "chat: transient error (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1,
+                        self.max_retries + 1,
+                        wait,
+                        exc,
+                    )
+                    time.sleep(wait)
+        raise OllamaError(
+            f"chat failed after {self.max_retries + 1} attempt(s): {last_exc}"
+        ) from last_exc
 
     def stream_chat(
         self,
@@ -149,39 +197,73 @@ class OllamaClient:
     ) -> Iterator[str]:
         """Yield content tokens as they stream from the Ollama API.
 
+        Retries the entire request on transient network/server errors, but
+        only if no tokens have been yielded yet (a partial stream cannot be
+        safely replayed).
+
         Each yielded string is one raw token chunk from the model.  Callers
         that need the full response should join the chunks themselves.
         """
-        options: dict = {}
-        if temperature is not None:
-            options["temperature"] = temperature
-        if top_p is not None:
-            options["top_p"] = top_p
-        if num_ctx is not None:
-            options["num_ctx"] = num_ctx
-        if stop:
-            options["stop"] = stop
-
+        options = self._build_options(temperature, top_p, num_ctx, stop)
         payload = {
             "model": model,
             "messages": [m.to_dict() for m in messages],
             "stream": True,
             "options": options,
         }
-        with self._session.post(
-            self._url("/api/chat"), json=payload, stream=True, timeout=self.timeout
-        ) as r:
-            if r.status_code >= 400:
-                raise OllamaError(f"chat failed ({r.status_code}): {r.text}")
-            for line in r.iter_lines():
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                token = data.get("message", {}).get("content", "")
-                if token:
-                    yield token
-                if data.get("done"):
-                    break
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            tokens_yielded = False
+            try:
+                with self._session.post(
+                    self._url("/api/chat"),
+                    json=payload,
+                    stream=True,
+                    timeout=self.timeout,
+                ) as r:
+                    if r.status_code >= 500:
+                        raise requests.HTTPError(
+                            f"server error {r.status_code}", response=r
+                        )
+                    if r.status_code >= 400:
+                        raise OllamaError(f"chat failed ({r.status_code}): {r.text}")
+                    for line in r.iter_lines():
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        token = data.get("message", {}).get("content", "")
+                        if token:
+                            tokens_yielded = True
+                            yield token
+                        if data.get("done"):
+                            break
+                return  # generator exhausted normally
+            except OllamaError:
+                raise
+            except (
+                requests.ConnectionError,
+                requests.Timeout,
+                requests.HTTPError,
+            ) as exc:
+                if tokens_yielded:
+                    # Cannot retry a partially consumed stream — raise immediately.
+                    raise OllamaError(
+                        f"stream interrupted after partial output: {exc}"
+                    ) from exc
+                last_exc = exc
+                if attempt < self.max_retries:
+                    wait = self.retry_backoff**attempt
+                    log.warning(
+                        "stream_chat: transient error (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1,
+                        self.max_retries + 1,
+                        wait,
+                        exc,
+                    )
+                    time.sleep(wait)
+        raise OllamaError(
+            f"stream_chat failed after {self.max_retries + 1} attempt(s): {last_exc}"
+        ) from last_exc

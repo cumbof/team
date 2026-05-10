@@ -40,6 +40,8 @@ class Member:
         self.client = OllamaClient(
             base_url=runtime.base_url,
             timeout=team.defaults.request_timeout,
+            max_retries=team.defaults.max_retries,
+            retry_backoff=team.defaults.retry_backoff,
         )
         self._system_prompt = render_system_prompt(team, config)
         self._ready = False
