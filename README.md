@@ -39,6 +39,8 @@ Reviewer — and pick a workflow that matches how the work should flow:
 - [Remote / no-Docker Ollama](#remote--no-docker-ollama)
 - [Context window management](#context-window-management)
 - [Agent mode and tool use](#agent-mode-and-tool-use)
+  - [Built-in tools](#built-in-tools)
+  - [Custom skill plugins](#custom-skill-plugins)
 - [Token usage tracking](#token-usage-tracking)
 - [Interactive wizard](#interactive-wizard)
 - [Workflow visualization](#workflow-visualization)
@@ -263,6 +265,7 @@ members:
 | `tools` | list | `[]` | Built-in tools enabled for all members by default. |
 | `max_tool_rounds` | int | `10` | Maximum agentic tool-call rounds per member turn. |
 | `tool_timeout` | int | `30` | Seconds budget per individual tool execution. |
+| `skills` | list | `[]` | Skill plugin sources (local paths or remote URLs) available to all members. |
 
 ### `workflow`
 
@@ -308,6 +311,7 @@ workflow:
 | `tools` | no | List of tool names this member may use (e.g. `[web_search, run_python]`). |
 | `max_tool_rounds` | no | Per-member override of the tool-round limit. |
 | `tool_timeout` | no | Per-member override of the per-tool execution timeout (seconds). |
+| `skills` | no | Member-specific skill sources merged with `defaults.skills`. |
 
 ---
 
@@ -869,6 +873,115 @@ Based on the search, the key findings are…
 
 ---
 
+### Custom skill plugins
+
+The built-in tool set is a starting point.  You can extend it with any
+Python file — local or fetched from a URL — and make those tools
+available to any member.  This gives agents effectively **unlimited**
+capabilities depending on what skills you provide.
+
+#### Skill file format
+
+A skill file must expose tools in one of two formats:
+
+**Single-tool format** (`TOOL_NAME` + `execute`):
+
+```python
+# skills/my_calculator.py
+TOOL_NAME = "my_calculator"
+TOOL_DESCRIPTION = "Evaluate a Python arithmetic expression."
+
+def execute(body, *, workspace_path=None, timeout=30, **kwargs):
+    try:
+        return str(eval(body.strip(), {"__builtins__": {}}, {}))
+    except Exception as exc:
+        return f"ERROR: {exc}"
+```
+
+**Multi-tool format** (`TOOLS` dict + optional `TOOL_DESCRIPTIONS`):
+
+```python
+# skills/db_tools.py
+import sqlite3
+
+def _query(body, *, workspace_path=None, **kwargs):
+    db_path = workspace_path / "data.sqlite"
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(body.strip()).fetchall()
+    conn.close()
+    return "\n".join(str(r) for r in rows)
+
+def _schema(body, *, workspace_path=None, **kwargs):
+    db_path = workspace_path / "data.sqlite"
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table'").fetchall()
+    conn.close()
+    return "\n".join(f"{r[0]}: {r[1]}" for r in rows)
+
+TOOLS = {"sql_query": _query, "sql_schema": _schema}
+TOOL_DESCRIPTIONS = {
+    "sql_query":  "Run an SQL SELECT on the shared SQLite database.",
+    "sql_schema": "Return the schema of all tables in the shared SQLite database.",
+}
+```
+
+Both formats can coexist in the same file.
+
+#### Configuring skills
+
+Add skill sources under `defaults.skills` (inherited by all members) or
+`members[*].skills` (member-specific, merged with defaults on top):
+
+```yaml
+defaults:
+  skills:
+    - path: ./skills/my_calculator.py     # local path (relative to CWD)
+    - path: ./skills/db_tools.py
+    - url: https://example.com/skill.py   # remote URL (see security note below)
+      checksum: sha256:e3b0c44298fc…      # optional integrity check
+    - ./skills/shorthand.py               # plain string = auto-detect local/remote
+
+  tools: [web_search, my_calculator, sql_query, sql_schema]  # opt-in by name
+
+members:
+  - name: analyst
+    tools: [sql_query, sql_schema, run_python]   # member-specific tool set
+    skills:
+      - ./skills/analyst_helpers.py              # member-specific extra skill
+```
+
+Tool names from skills are used exactly like built-in tool names everywhere
+(`tools:` lists, `tool:` fenced blocks, system prompts).
+
+#### Checksum verification
+
+For any skill (local or remote) you can supply a checksum to verify
+integrity before execution:
+
+```yaml
+skills:
+  - url: https://example.com/skill.py
+    checksum: sha256:<hex-digest>
+  - path: ./skills/local.py
+    checksum: sha256:<hex-digest>
+```
+
+Supported algorithms: any name accepted by Python's `hashlib` (e.g.
+`sha256`, `sha512`, `md5`).  `team` raises an error and refuses to load
+the skill if the digest does not match.
+
+#### Security
+
+> **Remote skills execute arbitrary Python code on the host machine with
+> the privileges of the `team` process.**  Treat a remote skill URL with
+> the same caution as `curl URL | python`.  Always use `checksum:` for
+> remote skills in production.
+
+Local skills (from your own filesystem) are as trustworthy as any other
+code you run; they are loaded in the same security context as `run_python`.
+
+---
+
 ## Token usage tracking
 
 After every `team run` a token usage summary is printed:
@@ -1012,6 +1125,7 @@ team/
 ├── bus.py           # transcript with on-disk JSONL persistence
 ├── personas.py      # render the system prompt + collaboration protocol + tool section
 ├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file
+├── skills.py        # skill plugin loader: local files and remote URLs → tool registry
 ├── member.py        # Member: persona + container runtime + chat client + agentic loop
 ├── workflows.py     # round_robin / manager / review_loop / sequential_chain / debate
 ├── orchestrator.py  # ties everything together, drives the workflow

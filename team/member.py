@@ -14,7 +14,8 @@ from team.config import MemberConfig, TeamConfig, resolve_member_setting
 from team.container import MemberRuntime
 from team.ollama_client import ChatMessage, OllamaClient, OllamaError, OpenAICompatClient
 from team.personas import render_system_prompt
-from team.tools import TOOLS, execute_tool, parse_tool_blocks
+from team.skills import load_skills
+from team.tools import TOOL_DESCRIPTIONS, TOOLS, execute_tool, parse_tool_blocks
 from team.workspace import SharedWorkspace, list_dir_files
 
 log = logging.getLogger(__name__)
@@ -63,14 +64,31 @@ class Member:
                 retry_backoff=team.defaults.retry_backoff,
             )
 
+        # Resolve skill sources (member override → defaults) and load them.
+        member_skill_sources = (
+            config.skills if config.skills is not None else team.defaults.skills
+        )
+        skill_tools, skill_descs = load_skills(member_skill_sources or [])
+
+        # Build the complete per-member tool registry (built-ins + skills).
+        self._member_tools: dict = {**TOOLS, **skill_tools}
+        self._member_tool_descs: dict[str, str] = {**TOOL_DESCRIPTIONS, **skill_descs}
+
         # Resolve the effective tool list (member override → defaults).
         raw_tools = config.tools if config.tools is not None else team.defaults.tools
-        self._enabled_tools: list[str] = [t for t in (raw_tools or []) if t in TOOLS]
-        unknown = [t for t in (raw_tools or []) if t not in TOOLS]
+        self._enabled_tools: list[str] = [
+            t for t in (raw_tools or []) if t in self._member_tools
+        ]
+        unknown = [t for t in (raw_tools or []) if t not in self._member_tools]
         if unknown:
             log.warning("member %s: unknown tools ignored: %s", config.name, unknown)
 
-        self._system_prompt = render_system_prompt(team, config, enabled_tools=self._enabled_tools)
+        self._system_prompt = render_system_prompt(
+            team,
+            config,
+            enabled_tools=self._enabled_tools,
+            tool_descriptions=self._member_tool_descs,
+        )
         self._ready = False
 
     @property
@@ -253,6 +271,7 @@ class Member:
                 result = execute_tool(
                     tool_name,
                     tool_body,
+                    tools=self._member_tools,
                     workspace_path=workspace_path,
                     timeout=tool_timeout,
                 )

@@ -287,14 +287,31 @@ def execute_tool(
     *,
     workspace_path: Path | None = None,
     timeout: int = 30,
+    tools: dict | None = None,
 ) -> str:
     """Execute the named tool and return its string output.
 
-    Raises :class:`KeyError` if *name* is not a registered tool.
+    Parameters
+    ----------
+    name:
+        Tool name to execute.
+    body:
+        Body text passed to the tool callable.
+    workspace_path:
+        Shared workspace directory, forwarded to the tool.
+    timeout:
+        Per-tool execution timeout in seconds.
+    tools:
+        Optional tool registry override.  Defaults to the built-in
+        :data:`TOOLS` dict.  Pass a merged built-ins + skills dict to
+        support custom skill tools.
+
+    Raises :class:`KeyError` if *name* is not in the registry.
     All exceptions from the tool implementation are caught and returned
     as error strings so a single bad tool call does not abort the turn.
     """
-    fn = TOOLS[name]
+    registry = tools if tools is not None else TOOLS
+    fn = registry[name]
     log.info("tool:%s executing", name)
     result = fn(body, workspace_path=workspace_path, timeout=timeout)
     log.debug("tool:%s → %d chars", name, len(result))

@@ -93,6 +93,8 @@ class Defaults:
     tools: list[str] = field(default_factory=list)  # built-in tool names enabled by default
     max_tool_rounds: int = 10  # max agentic tool-call rounds per member turn
     tool_timeout: int = 30     # seconds budget per individual tool execution
+    # F4 skills: external tool plugins (local paths or remote URLs)
+    skills: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -129,6 +131,7 @@ class MemberConfig:
     tools: list[str] | None = None     # None = inherit from defaults; [] = disable tools
     max_tool_rounds: int | None = None  # None = inherit from defaults
     tool_timeout: int | None = None     # None = inherit from defaults
+    skills: list[Any] | None = None     # None = inherit from defaults; [] = no skills
 
 
 @dataclass
@@ -226,6 +229,7 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         tools=data.get("tools"),
         max_tool_rounds=data.get("max_tool_rounds"),
         tool_timeout=data.get("tool_timeout"),
+        skills=data.get("skills"),
     )
 
 
