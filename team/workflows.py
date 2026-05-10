@@ -47,6 +47,8 @@ def round_robin(orch: "Orchestrator") -> None:
             if res.declared_done:
                 log.info("member %s declared TEAM_DONE", m.name)
                 return
+        if orch._on_round_end:
+            orch._on_round_end(round_idx)
 
 
 # --------------------------------------------------------------------------- #
@@ -94,6 +96,8 @@ def manager_driven(orch: "Orchestrator") -> None:
                 return
             chosen = _parse_next(mres.content, orch)
         next_speaker = chosen or _next_default(orch, next_speaker)
+        if orch._on_round_end:
+            orch._on_round_end(turn)
 
 
 def _parse_next(content: str, orch: "Orchestrator") -> str | None:
@@ -166,6 +170,8 @@ def review_loop(orch: "Orchestrator") -> None:
         )
         if pres.declared_done:
             return
+        if orch._on_round_end:
+            orch._on_round_end(revision - 1)
 
     log.info("review loop hit max_rounds=%d", max_rounds)
 
@@ -223,6 +229,8 @@ def sequential_chain(orch: "Orchestrator") -> None:
                 return
             prev_content = res.content
             prev_speaker = m.name
+        if orch._on_round_end:
+            orch._on_round_end(round_idx)
 
     log.info("sequential chain completed %d round(s)", max_rounds)
 

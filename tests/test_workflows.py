@@ -31,6 +31,7 @@ class FakeOrch:
         self.scripts = scripts
         self.calls: list[tuple[str, str | None]] = []
         self._counts: dict[str, int] = {n: 0 for n in self.members}
+        self._on_round_end: Callable[[int], None] | None = None
 
     def run_turn(self, member_name: str, prompt: str | None = None) -> FakeResult:
         self.calls.append((member_name, prompt))

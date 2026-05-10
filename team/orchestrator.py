@@ -39,6 +39,12 @@ class Orchestrator:
         self._on_turn_start: Callable[[str], None] | None = None
         self._on_token: Callable[[str], None] | None = None
         self._on_turn_end: Callable[[str], None] | None = None
+        # Optional round-end hook — set by the CLI for interactive mode.
+        # _on_round_end(round_idx) is called by workflows at the end of each round.
+        self._on_round_end: Callable[[int], None] | None = None
+        # Path to the inject file: drop text here to inject a human directive
+        # into the transcript before the next live member turn.
+        self.inject_path: Path = team.workspace / "inject.txt"
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -76,6 +82,34 @@ class Orchestrator:
         self.containers.stop_all(remove_volumes=remove_volumes)
 
     # ------------------------------------------------------------------ #
+    # Human-in-the-loop injection
+    # ------------------------------------------------------------------ #
+
+    def inject_directive(self, content: str) -> None:
+        """Inject a human directive into the transcript immediately.
+
+        The directive is appended as a ``speaker="human"`` turn so every
+        member sees it in the next turn's conversation context.
+        """
+        text = content.strip()
+        if not text:
+            return
+        self.transcript.append(speaker="human", role="director", content=text)
+        log.info("inject: human directive added to transcript (%d chars)", len(text))
+
+    def _check_inject(self) -> None:
+        """Read and consume the inject file if it exists, adding its contents
+        to the transcript as a human directive."""
+        try:
+            if self.inject_path.is_file():
+                content = self.inject_path.read_text(encoding="utf-8").strip()
+                self.inject_path.unlink()
+                if content:
+                    self.inject_directive(content)
+        except OSError as exc:
+            log.warning("inject: failed to read/delete inject.txt: %s", exc)
+
+    # ------------------------------------------------------------------ #
     # Turn execution (used by workflows)
     # ------------------------------------------------------------------ #
 
@@ -95,6 +129,9 @@ class Orchestrator:
                 declared_done=DONE_TOKEN in cached.content,
                 files_written=cached.files_written,
             )
+
+        # Check for a human directive dropped into inject.txt before this turn.
+        self._check_inject()
 
         member = self.members[member_name]
         log.info("turn: @%s", member_name)

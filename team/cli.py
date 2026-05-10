@@ -232,6 +232,35 @@ def _setup_streaming(orch: Orchestrator, console: Console) -> None:
     orch._on_turn_end = on_turn_end
 
 
+def _setup_interactive(orch: Orchestrator, console: Console) -> None:
+    """Attach a round-end callback that pauses for human input.
+
+    After every workflow round the user is prompted for an optional directive.
+    Anything typed is injected into the transcript before the next round
+    begins so every member sees it in their next turn.  Pressing Enter with
+    no text continues without interruption.
+    """
+    max_rounds = orch.team.workflow.max_rounds
+
+    def on_round_end(round_idx: int) -> None:
+        console.print(
+            f"\n[bold yellow]── round {round_idx + 1}/{max_rounds} complete ──[/bold yellow]"
+        )
+        console.print(
+            "[dim]Enter a directive for the team (or press Enter to continue):[/dim] ",
+            end="",
+        )
+        try:
+            text = input()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if text.strip():
+            orch.inject_directive(text)
+            console.print("[bold yellow]↳ directive injected[/bold yellow]")
+
+    orch._on_round_end = on_round_end
+
+
 # --------------------------------------------------------------------------- #
 # run
 # --------------------------------------------------------------------------- #
@@ -257,7 +286,12 @@ def _setup_streaming(orch: Orchestrator, console: Console) -> None:
     is_flag=True,
     help="Disable token-by-token streaming output; wait for each full reply before printing.",
 )
-def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume: bool, no_stream: bool) -> None:
+@click.option(
+    "--interactive",
+    is_flag=True,
+    help="Pause at the end of each round and prompt for an optional human directive.",
+)
+def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume: bool, no_stream: bool, interactive: bool) -> None:
     """Bring the team up and execute its workflow until completion."""
     cfg = _load(team_file)
     orch = Orchestrator(cfg, resume=resume)
@@ -267,6 +301,8 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
         )
     if not no_stream:
         _setup_streaming(orch, console)
+    if interactive:
+        _setup_interactive(orch, console)
     if not no_up:
         orch.up(prepare_deadline_seconds=prepare_timeout)
     else:
