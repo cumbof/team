@@ -136,3 +136,52 @@ class OllamaClient:
         if not content:
             raise OllamaError(f"chat returned no content: {data}")
         return content
+
+    def stream_chat(
+        self,
+        model: str,
+        messages: Iterable[ChatMessage],
+        *,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        num_ctx: int | None = None,
+        stop: list[str] | None = None,
+    ) -> Iterator[str]:
+        """Yield content tokens as they stream from the Ollama API.
+
+        Each yielded string is one raw token chunk from the model.  Callers
+        that need the full response should join the chunks themselves.
+        """
+        options: dict = {}
+        if temperature is not None:
+            options["temperature"] = temperature
+        if top_p is not None:
+            options["top_p"] = top_p
+        if num_ctx is not None:
+            options["num_ctx"] = num_ctx
+        if stop:
+            options["stop"] = stop
+
+        payload = {
+            "model": model,
+            "messages": [m.to_dict() for m in messages],
+            "stream": True,
+            "options": options,
+        }
+        with self._session.post(
+            self._url("/api/chat"), json=payload, stream=True, timeout=self.timeout
+        ) as r:
+            if r.status_code >= 400:
+                raise OllamaError(f"chat failed ({r.status_code}): {r.text}")
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                token = data.get("message", {}).get("content", "")
+                if token:
+                    yield token
+                if data.get("done"):
+                    break

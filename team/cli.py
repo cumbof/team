@@ -169,6 +169,30 @@ def _print_status(orch: Orchestrator) -> None:
     console.print(table)
 
 
+def _setup_streaming(orch: Orchestrator, console: Console) -> None:
+    """Wire token-by-token output to the console for live turns."""
+    import sys
+
+    def on_turn_start(name: str) -> None:
+        try:
+            role = orch.team.member(name).role
+            console.print(f"\n[bold cyan]@{name}[/bold cyan] [dim]({role})[/dim]")
+        except KeyError:
+            console.print(f"\n[bold cyan]@{name}[/bold cyan]")
+
+    def on_token(token: str) -> None:
+        sys.stdout.write(token)
+        sys.stdout.flush()
+
+    def on_turn_end(name: str) -> None:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    orch._on_turn_start = on_turn_start
+    orch._on_token = on_token
+    orch._on_turn_end = on_turn_end
+
+
 # --------------------------------------------------------------------------- #
 # run
 # --------------------------------------------------------------------------- #
@@ -189,7 +213,12 @@ def _print_status(orch: Orchestrator) -> None:
     is_flag=True,
     help="Resume from an existing transcript, skipping already-completed turns.",
 )
-def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume: bool) -> None:
+@click.option(
+    "--no-stream",
+    is_flag=True,
+    help="Disable token-by-token streaming output; wait for each full reply before printing.",
+)
+def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume: bool, no_stream: bool) -> None:
     """Bring the team up and execute its workflow until completion."""
     cfg = _load(team_file)
     orch = Orchestrator(cfg, resume=resume)
@@ -197,6 +226,8 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
         console.print(
             f"[cyan]resuming[/cyan] — replaying {len(orch._replay_queue)} completed turn(s)"
         )
+    if not no_stream:
+        _setup_streaming(orch, console)
     if not no_up:
         orch.up(prepare_deadline_seconds=prepare_timeout)
     else:

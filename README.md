@@ -406,7 +406,7 @@ team up         <team.yaml>           Start containers, pull models.
 team status     <team.yaml>           Show container status per member.
 team logs       <team.yaml> [--member NAME] [--tail N]
                                        Tail per-member Ollama logs.
-team run        <team.yaml> [--no-up] [--keep-up] [--resume]
+team run        <team.yaml> [--no-up] [--keep-up] [--resume] [--no-stream]
                                        Up + run workflow + (down).
 team transcript <team.yaml>           Render the persisted transcript.
 team down       <team.yaml> [--purge] Stop & remove containers (and volumes).
@@ -418,6 +418,23 @@ Common flags:
 * `--prepare-timeout SECONDS` (on `up`/`run`) — how long to wait for each
   member's Ollama daemon to become ready and its model to finish pulling
   (default 600).
+
+---
+
+## Streaming output
+
+By default `team run` streams each member's reply **token-by-token** to the
+terminal as it is generated.  You see a header like `@alice (Lead)` followed
+by the reply appearing live — no waiting for the full response.
+
+To disable streaming (e.g. for CI or when redirecting output to a file):
+
+```bash
+team run my-team.yaml --no-stream
+```
+
+With `--no-stream` the full reply is printed at once after each turn
+completes.
 
 ---
 

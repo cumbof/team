@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Callable
 
 from team.bus import Transcript
 from team.config import MemberConfig, TeamConfig, resolve_member_setting
 from team.container import MemberRuntime
-from team.ollama_client import ChatMessage, OllamaClient
+from team.ollama_client import ChatMessage, OllamaClient, OllamaError
 from team.personas import render_system_prompt
 from team.workspace import SharedWorkspace
 
@@ -101,18 +102,29 @@ class Member:
         transcript: Transcript,
         workspace: SharedWorkspace,
         prompt: str | None = None,
+        token_callback: Callable[[str], None] | None = None,
     ) -> TurnResult:
         if not self._ready:
             raise RuntimeError(f"member {self.name!r} not prepared")
         defaults = self.team.defaults
         messages = self._build_messages(transcript, workspace, prompt)
-        content = self.client.chat(
+        kwargs = dict(
             model=self.config.model,
             messages=messages,
             temperature=resolve_member_setting(self.config, defaults, "temperature"),
             top_p=resolve_member_setting(self.config, defaults, "top_p"),
             num_ctx=resolve_member_setting(self.config, defaults, "context_window"),
         )
+        if token_callback is not None:
+            chunks: list[str] = []
+            for token in self.client.stream_chat(**kwargs):
+                token_callback(token)
+                chunks.append(token)
+            content = "".join(chunks)
+            if not content:
+                raise OllamaError(f"stream returned no content for @{self.name}")
+        else:
+            content = self.client.chat(**kwargs)
         declared_done = DONE_TOKEN in content
         writes: list[str] = []
         if self.config.can_write_files:

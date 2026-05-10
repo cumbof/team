@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Callable
 
 from team.bus import Transcript
 from team.config import TeamConfig
@@ -31,6 +32,13 @@ class Orchestrator:
         self._replay_queue: list = [
             t for t in self.transcript.turns if t.speaker != "orchestrator"
         ]
+        # Optional streaming hooks — set by the CLI or other callers.
+        # _on_turn_start(member_name) is called before a live LLM turn begins.
+        # _on_token(token)            is called for each streamed content chunk.
+        # _on_turn_end(member_name)   is called after the full reply is received.
+        self._on_turn_start: Callable[[str], None] | None = None
+        self._on_token: Callable[[str], None] | None = None
+        self._on_turn_end: Callable[[str], None] | None = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -90,7 +98,15 @@ class Orchestrator:
 
         member = self.members[member_name]
         log.info("turn: @%s", member_name)
-        result = member.take_turn(self.transcript, self.workspace, prompt=prompt)
+        if self._on_turn_start:
+            self._on_turn_start(member_name)
+        result = member.take_turn(
+            self.transcript, self.workspace,
+            prompt=prompt,
+            token_callback=self._on_token,
+        )
+        if self._on_turn_end:
+            self._on_turn_end(member_name)
         self.transcript.append(
             speaker=member.name,
             role=member.config.role,
