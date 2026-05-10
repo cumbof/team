@@ -70,6 +70,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 - [Pre-flight checks](#pre-flight-checks)
 - [Exporting a run report](#exporting-a-run-report)
 - [Resuming an interrupted run](#resuming-an-interrupted-run)
+- [Workspace checkpoints](#workspace-checkpoints)
 - [Human-in-the-loop intervention](#human-in-the-loop-intervention)
 - [Examples](#examples)
 - [Architecture overview](#architecture-overview)
@@ -449,6 +450,10 @@ runs/<name>/
 ├── transcript.jsonl       # one JSON object per turn
 ├── shared/                # mounted as /workspace inside every container
 │   └── <files written by members>
+├── checkpoints/           # automatic point-in-time snapshots (one per live turn)
+│   ├── 0001_alice_20240501T120000/
+│   ├── 0002_bob_20240501T120145/
+│   └── ...
 └── members/
     ├── pi/                # mounted as /private inside the pi container
     ├── postdoc/
@@ -529,6 +534,8 @@ team run         <team.yaml>          Up + run workflow + (down).
 team transcript  <team.yaml>          Render the persisted transcript.
 team export      <team.yaml>          Export transcript + artifacts to a report.
                  [--format markdown|html] [--output PATH]
+team checkpoints <team.yaml>          List all workspace checkpoints.
+team restore     <team.yaml> <ID>     Restore the shared workspace to a checkpoint.
 team down        <team.yaml>          Stop & remove containers (and volumes).
                  [--purge]
 ```
@@ -649,6 +656,66 @@ live from the first missing turn.
   the run starts fresh.
 * If the previous run completed, resuming is a harmless no-op: the workflow
   will detect `[[TEAM_DONE]]` in the first replayed turn and exit immediately.
+
+---
+
+## Workspace checkpoints
+
+Every time a live member turn is about to execute, the orchestrator
+automatically snapshots the current state of the **shared workspace** before
+any files are written.  Snapshots are stored under
+`<workspace>/checkpoints/` with names that encode the turn index, the
+member about to speak, and the timestamp:
+
+```
+checkpoints/
+├── 0001_alice_20240501T120000/   # state before alice's 1st turn
+├── 0003_bob_20240501T120145/     # state before bob's 2nd turn
+└── ...
+```
+
+If the shared workspace is empty (no files have been produced yet), the
+snapshot is silently skipped — there is nothing to back up.
+
+### Listing checkpoints
+
+```bash
+team checkpoints my-team.yaml
+```
+
+```
+┌──────────────────────────────┬──────┬─────────────────────┬─────────────────────┬───────┐
+│ ID                           │ Turn │ Before member's turn │ Timestamp           │ Files │
+├──────────────────────────────┼──────┼─────────────────────┼─────────────────────┼───────┤
+│ 0001_alice_20240501T120000   │    1 │ @alice               │ 2024-05-01 12:00:00 │     3 │
+│ 0003_bob_20240501T120145     │    3 │ @bob                 │ 2024-05-01 12:01:45 │     5 │
+└──────────────────────────────┴──────┴─────────────────────┴─────────────────────┴───────┘
+```
+
+### Restoring a checkpoint
+
+Copy the checkpoint ID from the table and pass it to `team restore`:
+
+```bash
+team restore my-team.yaml 0001_alice_20240501T120000
+```
+
+```
+restored checkpoint 0001_alice_20240501T120000 — 3 file(s) now in the shared workspace.
+```
+
+The current contents of `shared/` are replaced with the snapshot.
+**This cannot be undone** unless a later checkpoint already captured the
+state you are overwriting, so check `team checkpoints` before restoring.
+
+### Use cases
+
+* **Undo a bad turn** — a member produced unwanted file changes; restore the
+  checkpoint taken just before that turn.
+* **Branch from a known-good state** — restore an earlier checkpoint, edit
+  `team.yaml` (e.g. change the goal or persona), and re-run from there.
+* **Audit the evolution of the workspace** — inspect any checkpoint
+  directory directly; it is a plain copy of `shared/` at that point in time.
 
 ---
 
@@ -1141,7 +1208,7 @@ team/
 ├── config.py        # YAML → TeamConfig (dataclasses, validation)
 ├── ollama_client.py # HTTP clients for Ollama and OpenAI-compat APIs; token usage
 ├── container.py     # Docker lifecycle: per-team network/volumes/containers
-├── workspace.py     # parse `file:` blocks, atomic writes, traversal guard
+├── workspace.py     # parse `file:` blocks, atomic writes, traversal guard, CheckpointManager
 ├── bus.py           # transcript with on-disk JSONL persistence
 ├── personas.py      # render the system prompt + collaboration protocol + tool section
 ├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file
