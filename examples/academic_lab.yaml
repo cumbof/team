@@ -1,0 +1,81 @@
+# Example: a small academic computational-biology lab.
+#
+# Run with:
+#     team run examples/academic_lab.yaml
+#
+# The PI uses a large, generalist model; the data scientist uses a smaller,
+# code-tuned model; the reviewer is medium-sized and tuned for critical reading.
+# Adjust model names to whatever you have available locally.
+
+name: academic-lab
+goal: |
+  Investigate whether the expression of gene XYZ correlates with patient
+  survival in the publicly available TCGA-BRCA cohort.  Produce:
+    1. A short, reproducible analysis plan (analysis/plan.md).
+    2. A Python analysis script (analysis/run.py) that, given a CSV of
+       expression + survival data, performs Kaplan–Meier analysis and a
+       Cox proportional-hazards regression with at least age and stage
+       as covariates.
+    3. A manuscript draft in IMRaD format (manuscript/manuscript.md)
+       with a 150-word abstract, methods, results placeholders, and a
+       references section.  The reviewer must approve the manuscript
+       before the team finishes.
+
+workspace: ./runs/academic-lab
+
+workflow:
+  type: review_loop
+  max_rounds: 4
+  producer: postdoc
+  reviewer: reviewer
+
+defaults:
+  ollama_image: ollama/ollama:latest
+  context_window: 8192
+  temperature: 0.3
+  gpus: all
+
+members:
+  - name: pi
+    role: Principal Investigator
+    model: llama3.1:70b
+    temperature: 0.2
+    persona: |
+      You are the Principal Investigator of a computational biology lab.
+      You set scientific direction, ask sharp clarifying questions, and
+      ensure the work is methodologically sound and clinically relevant.
+      You do NOT write code yourself; you delegate implementation to the
+      data scientist and writing to the postdoc.
+
+  - name: postdoc
+    role: PostDoc / Lead Author
+    model: llama3.1:8b
+    temperature: 0.3
+    persona: |
+      You are a senior postdoctoral researcher.  You synthesise the PI's
+      direction and the data scientist's results into a coherent
+      manuscript.  You write the analysis plan and the manuscript.  You
+      cite literature critically and never fabricate citations — if you
+      need a citation you don't know, mark it `[CITATION NEEDED]`.
+
+  - name: data_scientist
+    role: Data Scientist
+    model: qwen2.5-coder:7b
+    temperature: 0.2
+    persona: |
+      You are a precise, pragmatic data scientist.  You write small,
+      well-tested Python (numpy, pandas, lifelines, statsmodels).  Every
+      analysis script you write must be runnable with `python <script>`
+      and must print clearly labelled results.  Prefer correctness over
+      cleverness.
+
+  - name: reviewer
+    role: Peer Reviewer
+    model: llama3.1:8b
+    temperature: 0.2
+    persona: |
+      You are a strict but fair peer reviewer for a top-tier journal.
+      You evaluate clarity, methodological rigor, statistical validity,
+      and reproducibility.  You give numbered, line-referenced feedback.
+      You only output `APPROVED` when the manuscript is genuinely ready
+      for submission.

@@ -1,0 +1,33 @@
+# Optional custom image that augments the upstream Ollama image with a
+# few command-line tools that are useful when members are allowed to
+# write/execute artifacts inside the shared workspace.  The default
+# `ollama/ollama:latest` works fine; build & use this one only if you
+# want richer in-container tooling.
+#
+# Build:
+#     docker build -f docker/Dockerfile.ollama -t team/ollama:latest docker/
+# Use:
+#     defaults:
+#       ollama_image: team/ollama:latest
+#
+# The container still runs as root, which is what gives each member full
+# root inside its own isolated filesystem (one container per member).
+
+FROM ollama/ollama:latest
+
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        jq \
+        python3 \
+        python3-pip \
+        vim-tiny \
+    && rm -rf /var/lib/apt/lists/*
+
+# Reasonable working directory for a member that wants to inspect its
+# shared / private workspaces.
+WORKDIR /workspace

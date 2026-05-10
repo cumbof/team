@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "team"
+version = "0.1.0"
+description = "Orchestrate a cluster of containerized local LLMs (via Ollama), each with a specific persona and role, that collaborate to solve a goal."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "Fabio Cumbo" }]
+keywords = ["llm", "ollama", "multi-agent", "orchestration", "docker", "agents"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "requests>=2.28",
+    "docker>=6.1",
+    "click>=8.1",
+    "rich>=13.0",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-mock>=3.10",
+]
+
+[project.scripts]
+team = "team.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/cumbof/team"
+Issues = "https://github.com/cumbof/team/issues"
+
+[tool.setuptools.packages.find]
+include = ["team*"]
+exclude = ["tests*", "examples*"]
+
+[tool.setuptools.package-data]
+team = ["templates/*.j2", "docker/*"]

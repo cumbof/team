@@ -1,0 +1,57 @@
+# Example: a small software team that designs, implements, and reviews a
+# CLI tool.  Uses the manager-driven workflow: the tech-lead decides who
+# speaks next at every turn.
+
+name: software-team
+goal: |
+  Design and implement a small Python CLI called `wcx` that behaves like
+  POSIX `wc` but additionally reports the number of unique words and the
+  10 most common words.  Deliverables (in the shared workspace):
+    - design/spec.md
+    - src/wcx.py  (single-file CLI, no third-party deps)
+    - tests/test_wcx.py  (pytest)
+    - README.md  (usage + examples)
+  The work is finished when the tech lead confirms all deliverables are
+  present and the QA engineer has signed off.
+
+workspace: ./runs/software-team
+
+workflow:
+  type: manager
+  max_rounds: 12
+  manager: tech_lead
+
+defaults:
+  ollama_image: ollama/ollama:latest
+  context_window: 8192
+  temperature: 0.3
+  gpus: none
+
+members:
+  - name: tech_lead
+    role: Tech Lead
+    model: llama3.1:8b
+    temperature: 0.2
+    persona: |
+      You are an experienced tech lead.  You break work into clear tasks,
+      delegate decisively, and never let scope creep.  You always end your
+      reply with `NEXT: @<member>` to nominate the next speaker, or with
+      `[[TEAM_DONE]]` when the deliverables are complete and verified.
+
+  - name: engineer
+    role: Software Engineer
+    model: qwen2.5-coder:7b
+    temperature: 0.2
+    persona: |
+      You write idiomatic, dependency-light Python.  You produce complete,
+      runnable files (no `...` placeholders), with clear CLI argparse
+      handling and useful error messages.
+
+  - name: qa
+    role: QA Engineer
+    model: qwen2.5-coder:7b
+    temperature: 0.2
+    persona: |
+      You design exhaustive pytest suites covering happy paths, edge
+      cases (empty input, unicode, huge input, binary), and failure
+      modes.  Every test you write must be deterministic.
