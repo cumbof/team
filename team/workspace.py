@@ -21,10 +21,15 @@ with safety checks against path traversal.
 
 from __future__ import annotations
 
+import datetime
+import logging
 import re
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # Matches fenced code blocks whose info-string starts with "file:".
 # Named groups: `path` (the relative target path) and `body` (raw file contents).
@@ -87,6 +92,11 @@ class SharedWorkspace:
         # Maps relative path → last-modified timestamp (float, from time.time()).
         # Used to report "recently changed files" to members on each turn.
         self._touched: dict[str, float] = {}
+
+    @property
+    def shared_dir(self) -> Path:
+        """Alias for :attr:`shared` — the shared workspace directory."""
+        return self.shared
 
     def write(self, rel_path: str, body: str) -> FileWrite:
         target = _safe_join(self.shared, rel_path)
@@ -152,3 +162,122 @@ class SharedWorkspace:
         # Sort by timestamp descending so the most recently written file is first.
         items = sorted(self._touched.items(), key=lambda kv: kv[1], reverse=True)
         return [p for p, _ in items[:limit]]
+
+
+# --------------------------------------------------------------------------- #
+# Checkpoint management
+# --------------------------------------------------------------------------- #
+
+_CHECKPOINT_RE = re.compile(r"^(?P<turn>\d+)_(?P<member>[^_]+)_(?P<ts>\d{8}T\d{6})$")
+
+
+@dataclass
+class CheckpointInfo:
+    id: str           # directory name used as the stable identifier
+    turn: int         # orchestrator turn index at the time of the snapshot
+    member: str       # name of the member about to write files
+    timestamp: str    # ISO-like string: YYYYMMDDTHHMMSS
+    file_count: int   # number of files in the snapshot
+    path: Path        # absolute path to the checkpoint directory
+
+
+class CheckpointManager:
+    """Point-in-time snapshots of the shared workspace.
+
+    Checkpoints are stored under ``<workspace_root>/checkpoints/`` with names
+    in the form ``<turn:04d>_<member>_<YYYYMMDDTHHMMSS>``.  A new checkpoint
+    is created automatically before every live member turn so that any file
+    changes made during that turn can be undone by restoring the preceding
+    checkpoint.
+
+    Only non-empty workspaces are snapshotted — if ``shared/`` contains no
+    files at the time of the call (e.g. the very first turn) the snapshot is
+    skipped and :meth:`create` returns ``None``.
+    """
+
+    def __init__(self, workspace_root: Path):
+        self.root = Path(workspace_root).resolve()
+        self.shared = self.root / "shared"
+        self.checkpoints_dir = self.root / "checkpoints"
+
+    # ------------------------------------------------------------------ #
+    # Creating snapshots
+    # ------------------------------------------------------------------ #
+
+    def create(self, turn_index: int, member_name: str) -> Path | None:
+        """Snapshot the current shared workspace before a member's turn.
+
+        Returns the path of the newly created checkpoint directory, or
+        ``None`` when the shared workspace contains no files (nothing to
+        back up).
+        """
+        if not self.shared.is_dir() or not any(
+            p for p in self.shared.rglob("*") if p.is_file()
+        ):
+            return None
+
+        self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        name = f"{turn_index:04d}_{member_name}_{ts}"
+        dest = self.checkpoints_dir / name
+        shutil.copytree(self.shared, dest)
+        log.info("checkpoint: created %s (%d files)", name, sum(1 for p in dest.rglob("*") if p.is_file()))
+        return dest
+
+    # ------------------------------------------------------------------ #
+    # Listing
+    # ------------------------------------------------------------------ #
+
+    def list_checkpoints(self) -> list[CheckpointInfo]:
+        """Return all checkpoints sorted chronologically (oldest first)."""
+        if not self.checkpoints_dir.is_dir():
+            return []
+        results: list[CheckpointInfo] = []
+        for d in sorted(self.checkpoints_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            m = _CHECKPOINT_RE.match(d.name)
+            if not m:
+                continue
+            file_count = sum(1 for p in d.rglob("*") if p.is_file())
+            results.append(CheckpointInfo(
+                id=d.name,
+                turn=int(m.group("turn")),
+                member=m.group("member"),
+                timestamp=m.group("ts"),
+                file_count=file_count,
+                path=d,
+            ))
+        return results
+
+    # ------------------------------------------------------------------ #
+    # Restoring
+    # ------------------------------------------------------------------ #
+
+    def restore(self, checkpoint_id: str) -> CheckpointInfo:
+        """Replace the shared workspace with the contents of a checkpoint.
+
+        *checkpoint_id* must match the directory name exactly (as shown by
+        :meth:`list_checkpoints`).  Raises :class:`ValueError` if the
+        checkpoint does not exist.
+        """
+        src = self.checkpoints_dir / checkpoint_id
+        if not src.is_dir():
+            raise ValueError(
+                f"checkpoint {checkpoint_id!r} not found under {self.checkpoints_dir}"
+            )
+        if self.shared.exists():
+            shutil.rmtree(self.shared)
+        shutil.copytree(src, self.shared)
+        log.info("checkpoint: restored %s", checkpoint_id)
+        # Return metadata so callers (e.g. the CLI) can confirm what was restored.
+        m = _CHECKPOINT_RE.match(checkpoint_id)
+        file_count = sum(1 for p in self.shared.rglob("*") if p.is_file())
+        return CheckpointInfo(
+            id=checkpoint_id,
+            turn=int(m.group("turn")) if m else -1,
+            member=m.group("member") if m else "?",
+            timestamp=m.group("ts") if m else "?",
+            file_count=file_count,
+            path=src,
+        )

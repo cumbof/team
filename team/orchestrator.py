@@ -13,7 +13,7 @@ from team.config import TeamConfig
 from team.container import ContainerManager
 from team.member import DONE_TOKEN, Member, TurnResult
 from team.workflows import get_workflow
-from team.workspace import SharedWorkspace
+from team.workspace import CheckpointManager, SharedWorkspace
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class Orchestrator:
         self.team = team
         self.containers = container_manager or ContainerManager(team)
         self.workspace = SharedWorkspace(team.workspace)
+        self.checkpoints = CheckpointManager(team.workspace)
         self.transcript = Transcript(
             persist_path=team.workspace / "transcript.jsonl",
             resume=resume,
@@ -136,6 +137,11 @@ class Orchestrator:
         # so human directives always land in the correct position in the
         # transcript relative to the new live turns.
         self._check_inject()
+
+        # Snapshot the shared workspace before this member writes anything so
+        # users can restore the project to this state if the turn produces
+        # undesirable changes.
+        self.checkpoints.create(len(self.transcript.turns), member_name)
 
         member = self.members[member_name]
         log.info("turn: @%s", member_name)

@@ -134,3 +134,90 @@ def test_apply_reply_no_private_root_treats_as_shared(tmp_path: Path) -> None:
     assert len(writes) == 1
     assert (ws.shared / "private" / "foo.txt").exists()
 
+
+def test_shared_workspace_shared_dir_alias(tmp_path: Path) -> None:
+    """shared_dir is an alias for shared."""
+    ws = SharedWorkspace(tmp_path)
+    assert ws.shared_dir == ws.shared
+
+
+# --------------------------------------------------------------------------- #
+# CheckpointManager
+# --------------------------------------------------------------------------- #
+
+from team.workspace import CheckpointManager
+
+
+def test_checkpoint_create_skips_empty_workspace(tmp_path: Path) -> None:
+    """create() returns None when shared/ has no files yet."""
+    mgr = CheckpointManager(tmp_path)
+    assert mgr.create(0, "alice") is None
+    assert not mgr.checkpoints_dir.exists()
+
+
+def test_checkpoint_create_snapshots_files(tmp_path: Path) -> None:
+    """create() copies shared/ into checkpoints/ and returns the path."""
+    mgr = CheckpointManager(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "result.md").write_text("v1")
+
+    dest = mgr.create(1, "alice")
+
+    assert dest is not None
+    assert dest.is_dir()
+    assert (dest / "result.md").read_text() == "v1"
+
+
+def test_checkpoint_list_checkpoints(tmp_path: Path) -> None:
+    """list_checkpoints() returns CheckpointInfo objects in creation order."""
+    mgr = CheckpointManager(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "a.txt").write_text("x")
+
+    mgr.create(0, "alice")
+    (shared / "b.txt").write_text("y")
+    mgr.create(1, "bob")
+
+    items = mgr.list_checkpoints()
+    assert len(items) == 2
+    assert items[0].member == "alice"
+    assert items[0].turn == 0
+    assert items[1].member == "bob"
+    assert items[1].turn == 1
+    assert items[1].file_count == 2  # a.txt + b.txt
+
+
+def test_checkpoint_restore_replaces_shared(tmp_path: Path) -> None:
+    """restore() replaces shared/ with the checkpoint's file tree."""
+    mgr = CheckpointManager(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "original.txt").write_text("v1")
+
+    mgr.create(0, "alice")
+
+    # Simulate a member overwriting the file.
+    (shared / "original.txt").write_text("v2")
+    (shared / "new_file.txt").write_text("extra")
+
+    cp = mgr.list_checkpoints()[0]
+    mgr.restore(cp.id)
+
+    assert (shared / "original.txt").read_text() == "v1"
+    assert not (shared / "new_file.txt").exists()
+
+
+def test_checkpoint_restore_unknown_id_raises(tmp_path: Path) -> None:
+    """restore() raises ValueError for an unknown checkpoint ID."""
+    mgr = CheckpointManager(tmp_path)
+    with pytest.raises(ValueError, match="not found"):
+        mgr.restore("9999_nobody_20000101T000000")
+
+
+def test_checkpoint_list_empty_when_no_dir(tmp_path: Path) -> None:
+    """list_checkpoints() returns [] when no checkpoints directory exists."""
+    mgr = CheckpointManager(tmp_path)
+    assert mgr.list_checkpoints() == []
+

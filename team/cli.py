@@ -514,5 +514,84 @@ def export(team_file: str, fmt: str, output_path: str | None) -> None:
     console.print(f"[green]exported[/green] → {out}")
 
 
+# --------------------------------------------------------------------------- #
+# checkpoints
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+def checkpoints(team_file: str) -> None:
+    """List all workspace checkpoints for a team run.
+
+    A checkpoint is created automatically before each live member turn, so
+    you can restore the shared workspace to any of these points in time.
+    Use ``team restore`` to roll back to a specific checkpoint.
+    """
+    from team.workspace import CheckpointManager
+
+    cfg = _load(team_file)
+    mgr = CheckpointManager(cfg.workspace)
+    items = mgr.list_checkpoints()
+
+    if not items:
+        console.print("[yellow]no checkpoints found[/yellow] — run the team first.")
+        return
+
+    table = Table(title=f"Checkpoints — team '{cfg.name}'")
+    table.add_column("ID", style="bold")
+    table.add_column("Turn", justify="right")
+    table.add_column("Before member's turn")
+    table.add_column("Timestamp")
+    table.add_column("Files", justify="right")
+
+    for cp in items:
+        ts_fmt = (
+            f"{cp.timestamp[:4]}-{cp.timestamp[4:6]}-{cp.timestamp[6:8]} "
+            f"{cp.timestamp[9:11]}:{cp.timestamp[11:13]}:{cp.timestamp[13:15]}"
+            if len(cp.timestamp) == 15
+            else cp.timestamp
+        )
+        table.add_row(cp.id, str(cp.turn), f"@{cp.member}", ts_fmt, str(cp.file_count))
+
+    console.print(table)
+    console.print(
+        f"[dim]Use [bold]team restore {team_file} <ID>[/bold] to roll back the shared workspace.[/dim]"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# restore
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.argument("checkpoint_id")
+def restore(team_file: str, checkpoint_id: str) -> None:
+    """Restore the shared workspace to a previous checkpoint.
+
+    CHECKPOINT_ID is the full checkpoint name shown by ``team checkpoints``.
+    The current contents of the shared workspace are replaced with the
+    snapshot; this cannot be undone (unless a later checkpoint captures the
+    current state).
+    """
+    from team.workspace import CheckpointManager
+
+    cfg = _load(team_file)
+    mgr = CheckpointManager(cfg.workspace)
+
+    try:
+        cp = mgr.restore(checkpoint_id)
+    except ValueError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        sys.exit(1)
+
+    console.print(
+        f"[green]restored[/green] checkpoint [bold]{cp.id}[/bold] "
+        f"— {cp.file_count} file(s) now in the shared workspace."
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     cli()
