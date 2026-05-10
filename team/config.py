@@ -156,10 +156,10 @@ def _parse_workflow(data: dict) -> WorkflowConfig:
     if not data:
         return WorkflowConfig()
     wf_type = data.get("type", "round_robin")
-    if wf_type not in {"round_robin", "manager", "review_loop"}:
+    if wf_type not in {"round_robin", "manager", "review_loop", "sequential_chain"}:
         raise TeamConfigError(
             f"workflow.type={wf_type!r} is not one of "
-            "round_robin | manager | review_loop"
+            "round_robin | manager | review_loop | sequential_chain"
         )
     opts = {k: v for k, v in data.items() if k not in {"type", "max_rounds"}}
     return WorkflowConfig(

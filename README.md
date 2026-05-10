@@ -254,6 +254,9 @@ workflow:
   reviewer: reviewer
   approve_token: APPROVED   # only review_loop; default "APPROVED"
   manager: tech_lead        # only when type=manager
+  prompt_template: |        # only sequential_chain; {prev_speaker} and {prev_content} available
+    @{prev_speaker} produced the following. Refine it:
+    {prev_content}
 ```
 
 | `type` | extra options |
@@ -261,6 +264,7 @@ workflow:
 | `round_robin` | none |
 | `manager` | `manager: <member name>` |
 | `review_loop` | `producer: <member>`, `reviewer: <member>`, optional `approve_token` |
+| `sequential_chain` | optional `prompt_template` (supports `{prev_speaker}`, `{prev_content}`) |
 
 ### `members`
 
@@ -327,6 +331,33 @@ producer revises; repeat until the reviewer emits `APPROVED` (or
 given one final turn to finalise and is expected to end with
 `[[TEAM_DONE]]`.  Ideal for any "make a deliverable, then iterate until
 acceptable" workflow (papers, design docs, code).
+
+### `sequential_chain`
+
+Members form a **pipeline**: the first member runs with the default
+prompt, then each subsequent member receives the previous member's full
+reply as its explicit prompt.  At the end of a round the chain wraps
+around, so the first member of round N+1 receives the last member of
+round N's output.
+
+Use this when the work is a transformation series — for example:
+
+* drafter → editor → translator → formatter
+* researcher → summariser → chart-generator
+
+Optional `prompt_template` controls how the handoff is framed; it can
+use the `{prev_speaker}` and `{prev_content}` placeholders:
+
+```yaml
+workflow:
+  type: sequential_chain
+  max_rounds: 2
+  prompt_template: |
+    @{prev_speaker} produced the following output.
+    Your task is to refine and improve it:
+
+    {prev_content}
+```
 
 ---
 

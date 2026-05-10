@@ -171,6 +171,63 @@ def review_loop(orch: "Orchestrator") -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Sequential chain
+# --------------------------------------------------------------------------- #
+
+_DEFAULT_CHAIN_TEMPLATE = (
+    "@{prev_speaker} just produced the following output.  "
+    "Process it according to your role and the team goal:\n\n{prev_content}"
+)
+
+
+def sequential_chain(orch: "Orchestrator") -> None:
+    """Pipeline workflow: each member's reply becomes the explicit prompt for
+    the next member in declaration order.
+
+    The chain wraps around ``max_rounds`` times.  A configurable
+    ``prompt_template`` controls how the previous member's output is
+    presented; it receives two named placeholders: ``{prev_speaker}`` and
+    ``{prev_content}``.
+
+    Example YAML::
+
+        workflow:
+          type: sequential_chain
+          max_rounds: 2
+          prompt_template: |
+            @{prev_speaker} produced the draft below.  Improve it:
+
+            {prev_content}
+    """
+    opts = orch.team.workflow.options
+    members = list(orch.members.values())
+    max_rounds = orch.team.workflow.max_rounds
+    prompt_template: str = opts.get("prompt_template", _DEFAULT_CHAIN_TEMPLATE)
+
+    prev_content: str | None = None
+    prev_speaker: str | None = None
+
+    for round_idx in range(max_rounds):
+        log.info("sequential chain round %d/%d", round_idx + 1, max_rounds)
+        for m in members:
+            if prev_content is not None and prev_speaker is not None:
+                prompt = prompt_template.format(
+                    prev_speaker=prev_speaker,
+                    prev_content=prev_content,
+                )
+            else:
+                prompt = None  # first member of the first round gets the default
+            res = orch.run_turn(m.name, prompt=prompt)
+            if res.declared_done:
+                log.info("member %s declared TEAM_DONE", m.name)
+                return
+            prev_content = res.content
+            prev_speaker = m.name
+
+    log.info("sequential chain completed %d round(s)", max_rounds)
+
+
+# --------------------------------------------------------------------------- #
 # Dispatch
 # --------------------------------------------------------------------------- #
 
@@ -179,6 +236,7 @@ WORKFLOWS = {
     "round_robin": round_robin,
     "manager": manager_driven,
     "review_loop": review_loop,
+    "sequential_chain": sequential_chain,
 }
 
 

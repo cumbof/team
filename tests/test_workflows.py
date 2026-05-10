@@ -14,7 +14,7 @@ from team.config import (
     TeamConfig,
     WorkflowConfig,
 )
-from team.workflows import manager_driven, review_loop, round_robin
+from team.workflows import manager_driven, review_loop, round_robin, sequential_chain
 
 
 @dataclass
@@ -146,3 +146,87 @@ def test_review_loop_max_rounds_exhausted() -> None:
     review_loop(orch)
     # initial p, then 2 (r, p) revision pairs
     assert [c[0] for c in orch.calls] == ["p", "r", "p", "r", "p"]
+
+
+# --------------------------------------------------------------------------- #
+# sequential_chain
+# --------------------------------------------------------------------------- #
+
+
+def test_sequential_chain_order_and_prompts() -> None:
+    """Members are called in order; each receives the previous reply as prompt."""
+    team = _team(WorkflowConfig(type="sequential_chain", max_rounds=1), ["a", "b", "c"])
+    received_prompts: dict[str, list] = {"a": [], "b": [], "c": []}
+    scripts = {n: (lambda i, name=n: FakeResult(f"output-{name}")) for n in ["a", "b", "c"]}
+
+    class PromptCapture(FakeOrch):
+        def run_turn(self, member_name, prompt=None):
+            received_prompts[member_name].append(prompt)
+            return super().run_turn(member_name, prompt=prompt)
+
+    orch = PromptCapture(team, scripts)
+    sequential_chain(orch)
+
+    # All three members spoke once, in order.
+    assert [c[0] for c in orch.calls] == ["a", "b", "c"]
+    # First member gets no explicit prompt (None).
+    assert received_prompts["a"] == [None]
+    # Second member's prompt contains @a's output.
+    assert "output-a" in received_prompts["b"][0]
+    # Third member's prompt contains @b's output.
+    assert "output-b" in received_prompts["c"][0]
+
+
+def test_sequential_chain_wraps_across_rounds() -> None:
+    """The chain from the last member of round N feeds the first of round N+1."""
+    team = _team(WorkflowConfig(type="sequential_chain", max_rounds=2), ["x", "y"])
+    received_prompts: dict[str, list] = {"x": [], "y": []}
+    scripts = {n: (lambda i, name=n: FakeResult(f"out-{name}")) for n in ["x", "y"]}
+
+    class PromptCapture(FakeOrch):
+        def run_turn(self, member_name, prompt=None):
+            received_prompts[member_name].append(prompt)
+            return super().run_turn(member_name, prompt=prompt)
+
+    orch = PromptCapture(team, scripts)
+    sequential_chain(orch)
+
+    # round1: x(None), y(uses x), round2: x(uses y), y(uses x)
+    assert [c[0] for c in orch.calls] == ["x", "y", "x", "y"]
+    assert received_prompts["x"][0] is None           # first turn, no prev
+    assert "out-y" in received_prompts["x"][1]        # second round receives y's output
+
+
+def test_sequential_chain_early_done() -> None:
+    team = _team(WorkflowConfig(type="sequential_chain", max_rounds=5), ["a", "b"])
+    scripts = {
+        "a": lambda i: FakeResult("start"),
+        "b": lambda i: FakeResult("done", declared_done=True),
+    }
+    orch = FakeOrch(team, scripts)
+    sequential_chain(orch)
+    assert [c[0] for c in orch.calls] == ["a", "b"]
+
+
+def test_sequential_chain_custom_template() -> None:
+    """Custom prompt_template is applied to the handoff."""
+    wf = WorkflowConfig(
+        type="sequential_chain",
+        max_rounds=1,
+        options={"prompt_template": "INPUT: {prev_content}"},
+    )
+    team = _team(wf, ["writer", "editor"])
+    received_prompts: dict[str, list] = {"writer": [], "editor": []}
+    scripts = {
+        "writer": lambda i: FakeResult("my draft"),
+        "editor": lambda i: FakeResult("refined"),
+    }
+
+    class PromptCapture(FakeOrch):
+        def run_turn(self, member_name, prompt=None):
+            received_prompts[member_name].append(prompt)
+            return super().run_turn(member_name, prompt=prompt)
+
+    orch = PromptCapture(team, scripts)
+    sequential_chain(orch)
+    assert received_prompts["editor"][0] == "INPUT: my draft"
