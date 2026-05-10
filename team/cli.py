@@ -117,6 +117,45 @@ def validate(team_file: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# check
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+def check(team_file: str) -> None:
+    """Run preflight checks for a team spec without starting containers."""
+    from team.checks import Status, run_all_checks
+
+    cfg = _load(team_file)
+    results = run_all_checks(cfg)
+
+    table = Table(title=f"Preflight checks — team '{cfg.name}'")
+    table.add_column("Check", style="bold")
+    table.add_column("Status", justify="center")
+    table.add_column("Details")
+
+    icons = {
+        Status.OK:   "[green]✓  ok[/green]",
+        Status.WARN: "[yellow]⚠  warn[/yellow]",
+        Status.FAIL: "[red]✗  fail[/red]",
+    }
+    for r in results:
+        table.add_row(r.name, icons[r.status], r.detail)
+    console.print(table)
+
+    failures = [r for r in results if r.status == Status.FAIL]
+    warnings = [r for r in results if r.status == Status.WARN]
+    if failures:
+        console.print(f"[red]{len(failures)} critical check(s) failed — fix before running.[/red]")
+        sys.exit(1)
+    if warnings:
+        console.print(f"[yellow]{len(warnings)} warning(s) — run may still work but review above.[/yellow]")
+    else:
+        console.print("[green]all checks passed[/green]")
+
+
+# --------------------------------------------------------------------------- #
 # up / down / status
 # --------------------------------------------------------------------------- #
 

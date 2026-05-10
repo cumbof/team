@@ -442,6 +442,7 @@ Docker via device requests; non-NVIDIA setups can leave `gpus: none`.
 ```text
 team init       [PATH]                Write a starter team YAML.
 team validate   <team.yaml>           Parse and validate the YAML.
+team check      <team.yaml>           Run preflight checks (no Docker started).
 team up         <team.yaml>           Start containers, pull models.
 team status     <team.yaml>           Show container status per member.
 team logs       <team.yaml> [--member NAME] [--tail N]
@@ -477,6 +478,29 @@ team run my-team.yaml --no-stream
 
 With `--no-stream` the full reply is printed at once after each turn
 completes.
+
+---
+
+## Pre-flight checks
+
+Before starting containers, verify that the environment is ready with
+`team check`:
+
+```bash
+team check my-team.yaml
+```
+
+The command checks:
+
+| Check | What it tests |
+|---|---|
+| Workspace writable | Can create the workspace directory and write files to it |
+| Disk space | Reports available GB; warns if below **5 GB** |
+| Docker daemon | Docker daemon reachable, version ≥ 20.10, Ollama image present |
+| GPU availability | Runs `nvidia-smi` when any member requests GPUs; warns if not found |
+
+Exit code is `0` when all checks pass (warnings allowed), `1` when any
+check fails.  Failures are shown with a red ✗ and warnings with a yellow ⚠.
 
 ---
 
