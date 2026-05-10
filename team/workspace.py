@@ -66,6 +66,10 @@ class SharedWorkspace:
         self._touched[rel_path] = time.time()
         return FileWrite(path=rel_path, bytes_written=len(data), created=not existed)
 
+    def touch(self, rel_path: str) -> None:
+        """Mark a path as recently changed (used when resuming a run)."""
+        self._touched[rel_path] = time.time()
+
     def apply_reply(self, text: str) -> list[FileWrite]:
         writes: list[FileWrite] = []
         for path, body in parse_file_blocks(text):

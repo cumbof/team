@@ -184,10 +184,19 @@ def _print_status(orch: Orchestrator) -> None:
     show_default=True,
     help="Seconds to wait for each member's Ollama daemon to be ready and its model to be pulled.",
 )
-def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int) -> None:
+@click.option(
+    "--resume",
+    is_flag=True,
+    help="Resume from an existing transcript, skipping already-completed turns.",
+)
+def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume: bool) -> None:
     """Bring the team up and execute its workflow until completion."""
     cfg = _load(team_file)
-    orch = Orchestrator(cfg)
+    orch = Orchestrator(cfg, resume=resume)
+    if resume and orch._replay_queue:
+        console.print(
+            f"[cyan]resuming[/cyan] — replaying {len(orch._replay_queue)} completed turn(s)"
+        )
     if not no_up:
         orch.up(prepare_deadline_seconds=prepare_timeout)
     else:

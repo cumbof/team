@@ -10,7 +10,7 @@ from pathlib import Path
 from team.bus import Transcript
 from team.config import TeamConfig
 from team.container import ContainerManager
-from team.member import Member
+from team.member import DONE_TOKEN, Member, TurnResult
 from team.workflows import get_workflow
 from team.workspace import SharedWorkspace
 
@@ -18,12 +18,19 @@ log = logging.getLogger(__name__)
 
 
 class Orchestrator:
-    def __init__(self, team: TeamConfig, container_manager: ContainerManager | None = None):
+    def __init__(self, team: TeamConfig, container_manager: ContainerManager | None = None, resume: bool = False):
         self.team = team
         self.containers = container_manager or ContainerManager(team)
         self.workspace = SharedWorkspace(team.workspace)
-        self.transcript = Transcript(persist_path=team.workspace / "transcript.jsonl")
+        self.transcript = Transcript(
+            persist_path=team.workspace / "transcript.jsonl",
+            resume=resume,
+        )
         self.members: dict[str, Member] = {}
+        # Member turns already persisted — used to fast-forward past them on resume.
+        self._replay_queue: list = [
+            t for t in self.transcript.turns if t.speaker != "orchestrator"
+        ]
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -64,7 +71,23 @@ class Orchestrator:
     # Turn execution (used by workflows)
     # ------------------------------------------------------------------ #
 
-    def run_turn(self, member_name: str, prompt: str | None = None):
+    def run_turn(self, member_name: str, prompt: str | None = None) -> TurnResult:
+        # If a cached turn for this member is next in the replay queue, replay it
+        # without calling the LLM (the result is already persisted on disk).
+        if self._replay_queue and self._replay_queue[0].speaker == member_name:
+            cached = self._replay_queue.pop(0)
+            log.info(
+                "resume: replaying turn %d for @%s (skipping LLM call)",
+                cached.index, member_name,
+            )
+            for path in cached.files_written:
+                self.workspace.touch(path)
+            return TurnResult(
+                content=cached.content,
+                declared_done=DONE_TOKEN in cached.content,
+                files_written=cached.files_written,
+            )
+
         member = self.members[member_name]
         log.info("turn: @%s", member_name)
         result = member.take_turn(self.transcript, self.workspace, prompt=prompt)

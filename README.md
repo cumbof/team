@@ -175,6 +175,7 @@ pytest -q
    team status my-team.yaml      # show container state
    team logs my-team.yaml        # tail Ollama logs per member
    team run my-team.yaml --no-up --keep-up   # run more rounds
+   team run my-team.yaml --resume            # resume after a crash
    team down my-team.yaml --purge            # tear down + delete model caches
    ```
 
@@ -405,7 +406,7 @@ team up         <team.yaml>           Start containers, pull models.
 team status     <team.yaml>           Show container status per member.
 team logs       <team.yaml> [--member NAME] [--tail N]
                                        Tail per-member Ollama logs.
-team run        <team.yaml> [--no-up] [--keep-up]
+team run        <team.yaml> [--no-up] [--keep-up] [--resume]
                                        Up + run workflow + (down).
 team transcript <team.yaml>           Render the persisted transcript.
 team down       <team.yaml> [--purge] Stop & remove containers (and volumes).
@@ -417,6 +418,30 @@ Common flags:
 * `--prepare-timeout SECONDS` (on `up`/`run`) — how long to wait for each
   member's Ollama daemon to become ready and its model to finish pulling
   (default 600).
+
+---
+
+## Resuming an interrupted run
+
+If a run is interrupted (crash, timeout, Ctrl-C) you can pick up exactly
+where it left off without re-running the turns that already completed:
+
+```bash
+team run my-team.yaml --resume
+```
+
+`--resume` loads the existing `transcript.jsonl`, replays every already-
+completed turn instantly (no LLM call), and then continues the workflow
+live from the first missing turn.
+
+* Containers are restarted (or re-used) as normal; models are not re-pulled
+  if their cache volumes still exist.
+* Combine with `--no-up` if your containers are already running from a
+  previous `team up`.
+* If the transcript doesn't exist or is empty, `--resume` is a no-op and
+  the run starts fresh.
+* If the previous run completed, resuming is a harmless no-op: the workflow
+  will detect `[[TEAM_DONE]]` in the first replayed turn and exit immediately.
 
 ---
 

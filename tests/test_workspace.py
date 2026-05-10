@@ -47,3 +47,10 @@ def test_workspace_overwrite(tmp_path: Path) -> None:
     res = ws.apply_reply("```file:a.txt\nv2\n```")
     assert res[0].created is False
     assert (ws.shared / "a.txt").read_text() == "v2\n"
+
+
+def test_workspace_touch_updates_recent(tmp_path: Path) -> None:
+    ws = SharedWorkspace(tmp_path)
+    # touch a path that was not written in this session
+    ws.touch("existing/file.md")
+    assert "existing/file.md" in ws.recent_changes()

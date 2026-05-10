@@ -26,13 +26,26 @@ class Turn:
 
 
 class Transcript:
-    def __init__(self, persist_path: Path | None = None):
+    def __init__(self, persist_path: Path | None = None, resume: bool = False):
         self.turns: list[Turn] = []
         self.persist_path = persist_path
         if persist_path:
             persist_path.parent.mkdir(parents=True, exist_ok=True)
-            # truncate previous run on first init
-            persist_path.write_text("", encoding="utf-8")
+            if resume and persist_path.is_file() and persist_path.stat().st_size > 0:
+                self._load_from_disk()
+            else:
+                persist_path.write_text("", encoding="utf-8")
+
+    def _load_from_disk(self) -> None:
+        """Load existing turns from the persisted JSONL file (used when resuming)."""
+        for line in self.persist_path.read_text(encoding="utf-8").splitlines():  # type: ignore[union-attr]
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+                self.turns.append(Turn(**data))
+            except (json.JSONDecodeError, TypeError):
+                continue
 
     def append(
         self,
