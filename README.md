@@ -409,6 +409,8 @@ team logs       <team.yaml> [--member NAME] [--tail N]
 team run        <team.yaml> [--no-up] [--keep-up] [--resume] [--no-stream]
                                        Up + run workflow + (down).
 team transcript <team.yaml>           Render the persisted transcript.
+team export     <team.yaml> [--format markdown|html] [--output PATH]
+                                       Export transcript + artifacts to a report.
 team down       <team.yaml> [--purge] Stop & remove containers (and volumes).
 ```
 
@@ -435,6 +437,28 @@ team run my-team.yaml --no-stream
 
 With `--no-stream` the full reply is printed at once after each turn
 completes.
+
+---
+
+## Exporting a run report
+
+After a run you can bundle the full transcript and every produced artifact
+into a single shareable document:
+
+```bash
+team export my-team.yaml                          # Markdown (default)
+team export my-team.yaml --format html            # self-contained HTML
+team export my-team.yaml --output ~/Desktop/run.md
+```
+
+The report includes:
+* Team name, goal, members, and workflow settings.
+* Every member turn with speaker, role, content, and files written.
+* Full contents of all files produced in the shared workspace.
+
+The default output path is `<workspace>/report.md` (or `.html`).  The
+HTML variant is a fully self-contained file with embedded CSS — no
+external dependencies required.
 
 ---
 

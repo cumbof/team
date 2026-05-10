@@ -303,5 +303,49 @@ def transcript(team_file: str) -> None:
             console.print(f"[dim]wrote: {', '.join(t['files_written'])}[/dim]")
 
 
+# --------------------------------------------------------------------------- #
+# export
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--format", "fmt",
+    type=click.Choice(["markdown", "html"], case_sensitive=False),
+    default="markdown",
+    show_default=True,
+    help="Output format.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    help="Output file. Defaults to <workspace>/report.md (or .html).",
+)
+def export(team_file: str, fmt: str, output_path: str | None) -> None:
+    """Export the run transcript and shared artifacts to a Markdown or HTML report."""
+    from team.export import export_run
+
+    cfg = _load(team_file)
+    transcript_p = cfg.workspace / "transcript.jsonl"
+    if not transcript_p.is_file():
+        console.print(f"[yellow]no transcript found[/yellow] at {transcript_p}")
+        sys.exit(1)
+
+    text = export_run(cfg, fmt=fmt)  # type: ignore[arg-type]
+
+    if output_path is None:
+        ext = "html" if fmt == "html" else "md"
+        out = cfg.workspace / f"report.{ext}"
+    else:
+        out = Path(output_path)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    console.print(f"[green]exported[/green] → {out}")
+
+
 if __name__ == "__main__":  # pragma: no cover
     cli()

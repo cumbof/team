@@ -1,0 +1,179 @@
+"""Tests for team.export — report generation from a transcript and workspace.
+
+No Docker required; we just create temporary files and call the export
+functions directly.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from team.bus import Transcript
+from team.config import Defaults, MemberConfig, TeamConfig, WorkflowConfig
+from team.export import export_run, _load_transcript, _load_shared_files, _render_markdown
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+
+def _team(tmp_path: Path) -> TeamConfig:
+    members = [
+        MemberConfig(name="lead", role="Project Lead", model="llama3.1:8b", persona="p1"),
+        MemberConfig(name="eng", role="Engineer", model="qwen2.5-coder:7b", persona="p2"),
+    ]
+    return TeamConfig(
+        name="test-team",
+        goal="Build a widget.\n",
+        workspace=tmp_path,
+        workflow=WorkflowConfig(type="round_robin", max_rounds=3),
+        defaults=Defaults(),
+        members=members,
+    )
+
+
+def _seed_workspace(tmp_path: Path) -> None:
+    """Write a small transcript and a shared file."""
+    tr = Transcript(persist_path=tmp_path / "transcript.jsonl")
+    tr.append("orchestrator", "system", "kickoff")
+    tr.append("lead", "Project Lead", "Let's get started.", files_written=[])
+    tr.append("eng", "Engineer", "Here is the code.\n```file:src/widget.py\nprint('hi')\n```", files_written=["src/widget.py"])
+
+    shared = tmp_path / "shared"
+    shared.mkdir(parents=True, exist_ok=True)
+    (shared / "src").mkdir()
+    (shared / "src" / "widget.py").write_text("print('hi')\n")
+
+
+# --------------------------------------------------------------------------- #
+# _load_transcript
+# --------------------------------------------------------------------------- #
+
+
+def test_load_transcript_returns_all_turns(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    turns = _load_transcript(tmp_path / "transcript.jsonl")
+    assert len(turns) == 3
+    assert turns[0]["speaker"] == "orchestrator"
+    assert turns[1]["speaker"] == "lead"
+
+
+def test_load_transcript_missing_file(tmp_path: Path) -> None:
+    turns = _load_transcript(tmp_path / "nonexistent.jsonl")
+    assert turns == []
+
+
+# --------------------------------------------------------------------------- #
+# _load_shared_files
+# --------------------------------------------------------------------------- #
+
+
+def test_load_shared_files_returns_contents(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    files = _load_shared_files(tmp_path / "shared")
+    assert "src/widget.py" in files
+    assert "print('hi')" in files["src/widget.py"]
+
+
+def test_load_shared_files_empty_dir(tmp_path: Path) -> None:
+    (tmp_path / "shared").mkdir()
+    files = _load_shared_files(tmp_path / "shared")
+    assert files == {}
+
+
+def test_load_shared_files_missing_dir(tmp_path: Path) -> None:
+    files = _load_shared_files(tmp_path / "no_such_dir")
+    assert files == {}
+
+
+# --------------------------------------------------------------------------- #
+# Markdown export
+# --------------------------------------------------------------------------- #
+
+
+def test_export_markdown_contains_team_name(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    cfg = _team(tmp_path)
+    text = export_run(cfg, fmt="markdown")
+    assert "test-team" in text
+
+
+def test_export_markdown_contains_goal(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    cfg = _team(tmp_path)
+    text = export_run(cfg, fmt="markdown")
+    assert "Build a widget." in text
+
+
+def test_export_markdown_contains_member_names(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    cfg = _team(tmp_path)
+    text = export_run(cfg, fmt="markdown")
+    assert "@lead" in text
+    assert "@eng" in text
+
+
+def test_export_markdown_contains_turn_content(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    cfg = _team(tmp_path)
+    text = export_run(cfg, fmt="markdown")
+    assert "Let's get started." in text
+    assert "Here is the code." in text
+
+
+def test_export_markdown_embeds_artifact(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    cfg = _team(tmp_path)
+    text = export_run(cfg, fmt="markdown")
+    assert "src/widget.py" in text
+    assert "print('hi')" in text
+
+
+def test_export_markdown_no_transcript(tmp_path: Path) -> None:
+    """Exporting without a transcript still returns a valid document."""
+    cfg = _team(tmp_path)
+    (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
+    # Touch the transcript so export_run doesn't return an empty turn list error
+    (tmp_path / "transcript.jsonl").write_text("")
+    text = export_run(cfg, fmt="markdown")
+    assert "test-team" in text
+
+
+# --------------------------------------------------------------------------- #
+# HTML export
+# --------------------------------------------------------------------------- #
+
+
+def test_export_html_is_valid_html(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    cfg = _team(tmp_path)
+    html = export_run(cfg, fmt="html")
+    assert html.strip().startswith("<!DOCTYPE html>")
+    assert "<body>" in html
+    assert "</html>" in html
+
+
+def test_export_html_contains_team_name(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    cfg = _team(tmp_path)
+    html = export_run(cfg, fmt="html")
+    assert "test-team" in html
+
+
+def test_export_html_contains_turn_content(tmp_path: Path) -> None:
+    _seed_workspace(tmp_path)
+    cfg = _team(tmp_path)
+    html = export_run(cfg, fmt="html")
+    assert "Let&#39;s get started." in html or "Let's get started." in html
+
+
+def test_export_unknown_format_raises(tmp_path: Path) -> None:
+    cfg = _team(tmp_path)
+    (tmp_path / "transcript.jsonl").write_text("")
+    (tmp_path / "shared").mkdir(exist_ok=True)
+    with pytest.raises(ValueError, match="unknown format"):
+        export_run(cfg, fmt="pdf")  # type: ignore[arg-type]
