@@ -297,6 +297,27 @@ def _setup_streaming(orch: Orchestrator, console: Console) -> None:
     orch._on_token = on_token
     orch._on_turn_end = on_turn_end
 
+    def on_tool_call(member_name: str, tool_name: str, body: str) -> None:
+        # Ensure we're on a fresh line (streaming may not have ended with \n).
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        preview = body[:80].replace("\n", " ").strip()
+        if len(body) > 80:
+            preview += "…"
+        console.print(
+            f"  [bold magenta]🔧 tool:[/bold magenta] [magenta]{tool_name}[/magenta]"
+            f" [dim]{preview}[/dim]"
+        )
+
+    def on_tool_result(member_name: str, tool_name: str, result: str) -> None:
+        preview = result[:120].replace("\n", " ").strip()
+        if len(result) > 120:
+            preview += "…"
+        console.print(f"  [dim]   ↳ {preview}[/dim]")
+
+    orch._on_tool_call = on_tool_call
+    orch._on_tool_result = on_tool_result
+
 
 def _setup_interactive(orch: Orchestrator, console: Console) -> None:
     """Attach a round-end callback that pauses for human input.

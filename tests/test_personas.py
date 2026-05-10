@@ -39,3 +39,23 @@ def test_extra_system_appended() -> None:
 def test_protocol_mentions_private_workspace() -> None:
     assert "/private" in PROTOCOL
     assert "private workspace" in PROTOCOL.lower()
+
+
+def test_tool_section_included_when_tools_provided() -> None:
+    team = _team()
+    out = render_system_prompt(team, team.members[0], enabled_tools=["web_search", "run_python"])
+    assert "Tool use" in out
+    assert "web_search" in out
+    assert "run_python" in out
+
+
+def test_tool_section_absent_when_no_tools() -> None:
+    team = _team()
+    out = render_system_prompt(team, team.members[0], enabled_tools=[])
+    assert "Tool use" not in out
+
+
+def test_tool_section_absent_when_tools_none() -> None:
+    team = _team()
+    out = render_system_prompt(team, team.members[0], enabled_tools=None)
+    assert "Tool use" not in out

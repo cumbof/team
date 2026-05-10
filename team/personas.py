@@ -6,6 +6,7 @@ Each member receives a system prompt that:
 * Describes the team goal and the other members it can address.
 * Documents the small "protocol" the orchestrator understands so the
   member can address peers, write files, and signal completion.
+* When the member has tools enabled, appends a tool-use protocol section.
 
 Keeping the protocol tiny and explicit makes models far more reliable at
 following it (especially smaller models).  See :func:`render_system_prompt`.
@@ -61,8 +62,65 @@ PROTOCOL = dedent(
     """
 )
 
+_TOOL_PROTOCOL_HEADER = dedent(
+    """\
+    ## Tool use
 
-def render_system_prompt(team: TeamConfig, member: MemberConfig) -> str:
+    You have access to external tools.  Invoke a tool by emitting a fenced
+    block with a ``tool:<name>`` info-string **as your entire reply or as
+    part of your reply**:
+
+        ```tool:web_search
+        query: your search query here
+        ```
+
+        ```tool:run_python
+        import math
+        print(math.sqrt(2))
+        ```
+
+    Rules:
+    * After each tool block the orchestrator executes the tool and sends
+      you the result as a follow-up message — you then continue reasoning.
+    * You may call multiple tools across several rounds; each round counts
+      against your turn budget.
+    * Once you are done gathering information, write your **final reply in
+      plain text** (no tool blocks) so it is recorded in the transcript.
+    * Never invent tool results — always wait for the actual output.
+
+    Available tools:
+    """
+)
+
+
+def _render_tool_section(tool_names: list[str]) -> str:
+    from team.tools import TOOL_DESCRIPTIONS  # local import to avoid circular
+
+    lines = [_TOOL_PROTOCOL_HEADER]
+    for name in tool_names:
+        desc = TOOL_DESCRIPTIONS.get(name, "(no description)")
+        lines.append(f"    * ``{name}`` — {desc}")
+    return "\n".join(lines)
+
+
+def render_system_prompt(
+    team: TeamConfig,
+    member: MemberConfig,
+    enabled_tools: list[str] | None = None,
+) -> str:
+    """Render the complete system prompt for *member*.
+
+    Parameters
+    ----------
+    team:
+        The full team configuration.
+    member:
+        The member whose system prompt is being rendered.
+    enabled_tools:
+        Names of built-in tools this member may use.  When non-empty a tool-use
+        protocol section is appended to the system prompt.  Pass ``None`` or
+        ``[]`` to omit the section.
+    """
     # Build the teammate list excluding the member itself.
     teammates = [
         f"- @{m.name} — {m.role}"
@@ -89,4 +147,6 @@ def render_system_prompt(team: TeamConfig, member: MemberConfig) -> str:
     # boilerplate sections above without modifying the shared PROTOCOL constant.
     if member.extra_system:
         parts.extend(["", "## Additional instructions", member.extra_system.strip()])
+    if enabled_tools:
+        parts.extend(["", _render_tool_section(enabled_tools)])
     return "\n".join(parts)

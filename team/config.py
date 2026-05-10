@@ -89,6 +89,10 @@ class Defaults:
     # F2: context management
     context_strategy: str = "none"  # "none" | "sliding_window" | "truncate" | "summarize"
     context_budget: int = 0         # >0: max turns (sliding_window) or approx token budget
+    # F4: agent tool use
+    tools: list[str] = field(default_factory=list)  # built-in tool names enabled by default
+    max_tool_rounds: int = 10  # max agentic tool-call rounds per member turn
+    tool_timeout: int = 30     # seconds budget per individual tool execution
 
 
 @dataclass
@@ -121,6 +125,10 @@ class MemberConfig:
     # F2: per-member context management overrides
     context_strategy: str | None = None
     context_budget: int | None = None
+    # F4: per-member agent tool-use
+    tools: list[str] | None = None     # None = inherit from defaults; [] = disable tools
+    max_tool_rounds: int | None = None  # None = inherit from defaults
+    tool_timeout: int | None = None     # None = inherit from defaults
 
 
 @dataclass
@@ -215,6 +223,9 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         api_key=data.get("api_key"),
         context_strategy=data.get("context_strategy"),
         context_budget=data.get("context_budget"),
+        tools=data.get("tools"),
+        max_tool_rounds=data.get("max_tool_rounds"),
+        tool_timeout=data.get("tool_timeout"),
     )
 
 

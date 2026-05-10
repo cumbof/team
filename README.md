@@ -35,7 +35,20 @@ Reviewer — and pick a workflow that matches how the work should flow:
 - [Containers, isolation, and root](#containers-isolation-and-root)
 - [GPU support](#gpu-support)
 - [CLI reference](#cli-reference)
+- [OpenAI-compatible backends](#openai-compatible-backends)
+- [Remote / no-Docker Ollama](#remote--no-docker-ollama)
+- [Context window management](#context-window-management)
+- [Agent mode and tool use](#agent-mode-and-tool-use)
+- [Token usage tracking](#token-usage-tracking)
+- [Interactive wizard](#interactive-wizard)
+- [Workflow visualization](#workflow-visualization)
 - [Custom Ollama image](#custom-ollama-image)
+- [Streaming output](#streaming-output)
+- [Retry and back-off](#retry-and-back-off)
+- [Pre-flight checks](#pre-flight-checks)
+- [Exporting a run report](#exporting-a-run-report)
+- [Resuming an interrupted run](#resuming-an-interrupted-run)
+- [Human-in-the-loop intervention](#human-in-the-loop-intervention)
 - [Examples](#examples)
 - [Architecture overview](#architecture-overview)
 - [Development](#development)
@@ -243,6 +256,13 @@ members:
 | `gpus` | str / list | `none` | `"all"`, `"none"`, or list of GPU indices. |
 | `pull_timeout` | int | `1800` | Seconds allowed for a model pull. |
 | `request_timeout` | int | `600` | HTTP timeout per chat call. |
+| `backend` | string | `ollama` | LLM backend: `"ollama"` or `"openai_compat"`. |
+| `api_key` | string | unset | API key for `openai_compat` backend; supports `"env:VAR"`. |
+| `context_strategy` | string | `none` | Context management: `"none"`, `"sliding_window"`, `"truncate"`, `"summarize"`. |
+| `context_budget` | int | `0` | Budget for context management: max turns (`sliding_window`) or approx token count (`truncate`/`summarize`). |
+| `tools` | list | `[]` | Built-in tools enabled for all members by default. |
+| `max_tool_rounds` | int | `10` | Maximum agentic tool-call rounds per member turn. |
+| `tool_timeout` | int | `30` | Seconds budget per individual tool execution. |
 
 ### `workflow`
 
@@ -265,6 +285,7 @@ workflow:
 | `manager` | `manager: <member name>` |
 | `review_loop` | `producer: <member>`, `reviewer: <member>`, optional `approve_token` |
 | `sequential_chain` | optional `prompt_template` (supports `{prev_speaker}`, `{prev_content}`) |
+| `debate` | `pro: <member>`, `con: <member>`, `judge: <member>`, optional `rounds` |
 
 ### `members`
 
@@ -278,6 +299,15 @@ workflow:
 | `memory_limit`, `cpu_limit`, `gpus` | no | Per-member resource overrides. |
 | `can_write_files` | no | Default `true`; set to `false` to forbid this member from creating files. |
 | `extra_system` | no | Free-form text appended to the rendered system prompt. |
+| `ollama_url` | no | Connect to an existing Ollama instance directly; skips Docker. |
+| `backend` | no | `"ollama"` (default) or `"openai_compat"` — overrides `defaults.backend`. |
+| `api_base` | no | Base URL for the OpenAI-compat API (required when `backend: openai_compat`). |
+| `api_key` | no | API key; supports `"env:VAR"` to read from an environment variable. |
+| `context_strategy` | no | Per-member override of context management strategy. |
+| `context_budget` | no | Per-member override of context budget. |
+| `tools` | no | List of tool names this member may use (e.g. `[web_search, run_python]`). |
+| `max_tool_rounds` | no | Per-member override of the tool-round limit. |
+| `tool_timeout` | no | Per-member override of the per-tool execution timeout (seconds). |
 
 ---
 
@@ -364,6 +394,26 @@ workflow:
     {prev_content}
 ```
 
+### `debate`
+
+Two opposing members argue a proposition for N rounds, then a judge
+member delivers a verdict.
+
+```yaml
+workflow:
+  type: debate
+  rounds: 3          # pro/con exchange rounds before the judge speaks (default: 3)
+  pro: alice         # member arguing in favour
+  con: bob           # member arguing against
+  judge: carol       # member delivering the final verdict
+```
+
+1. The **pro** member makes an opening statement.
+2. The **con** member rebuts.
+3. Steps 1–2 repeat for `rounds` rounds.
+4. The **judge** receives the full exchange and delivers a verdict.
+5. Any member can end early by emitting `[[TEAM_DONE]]`.
+
 ---
 
 ## Workspaces and artifacts
@@ -440,20 +490,23 @@ Docker via device requests; non-NVIDIA setups can leave `gpus: none`.
 ## CLI reference
 
 ```text
-team init       [PATH]                Write a starter team YAML.
-team validate   <team.yaml>           Parse and validate the YAML.
-team check      <team.yaml>           Run preflight checks (no Docker started).
-team up         <team.yaml>           Start containers, pull models.
-team status     <team.yaml>           Show container status per member.
-team logs       <team.yaml> [--member NAME] [--tail N]
-                                       Tail per-member Ollama logs.
-team run        <team.yaml> [--no-up] [--keep-up] [--resume] [--no-stream]
-                                       [--interactive]
-                                       Up + run workflow + (down).
-team transcript <team.yaml>           Render the persisted transcript.
-team export     <team.yaml> [--format markdown|html] [--output PATH]
-                                       Export transcript + artifacts to a report.
-team down       <team.yaml> [--purge] Stop & remove containers (and volumes).
+team init        [PATH]               Write a starter team YAML.
+team new         [PATH]               Interactive wizard to create a new team YAML.
+team validate    <team.yaml>          Parse and validate the YAML.
+team check       <team.yaml>          Run preflight checks (no Docker started).
+team visualize   <team.yaml>          Print an ASCII or Mermaid diagram of the workflow.
+                 [--format ascii|mermaid]
+team up          <team.yaml>          Start containers, pull models.
+team status      <team.yaml>          Show container status per member.
+team logs        <team.yaml>          Tail per-member Ollama logs.
+                 [--member NAME] [--tail N]
+team run         <team.yaml>          Up + run workflow + (down).
+                 [--no-up] [--keep-up] [--resume] [--no-stream] [--interactive]
+team transcript  <team.yaml>          Render the persisted transcript.
+team export      <team.yaml>          Export transcript + artifacts to a report.
+                 [--format markdown|html] [--output PATH]
+team down        <team.yaml>          Stop & remove containers (and volumes).
+                 [--purge]
 ```
 
 Common flags:
@@ -628,6 +681,269 @@ any other speaker's turn.
 
 ---
 
+## OpenAI-compatible backends
+
+By default every member runs Ollama in a Docker container.  You can instead
+point any member at any **OpenAI-compatible API** — LM Studio, vLLM, llama.cpp
+server, the real OpenAI API, Anthropic (via a LiteLLM proxy), etc. — without
+Docker.
+
+```yaml
+defaults:
+  backend: openai_compat
+  api_base: http://localhost:1234/v1   # LM Studio
+  api_key: env:OPENAI_API_KEY          # or a literal key
+
+members:
+  - name: lead
+    role: Tech Lead
+    model: gpt-4o                      # model name sent to the API
+    persona: ...
+  - name: worker
+    role: Engineer
+    model: llama-3.1-8b-instruct
+    backend: ollama                    # this member still uses Docker
+    persona: ...
+```
+
+The `backend` and `api_base` fields can be set globally in `defaults` or
+overridden per-member.
+
+| field | meaning |
+| --- | --- |
+| `backend` | `"ollama"` (default) or `"openai_compat"` |
+| `api_base` | Base URL of the OpenAI-compat API (e.g. `https://api.openai.com/v1`) |
+| `api_key` | API key; use `"env:VAR"` to read from environment at runtime |
+
+When `backend: openai_compat` is set, no Docker container is started for
+that member — the orchestrator calls the remote API directly.  The `model`
+field is passed as-is to the API.
+
+---
+
+## Remote / no-Docker Ollama
+
+If you already have an Ollama server running (locally or on a remote
+machine), you can skip Docker for individual members by setting `ollama_url`:
+
+```yaml
+members:
+  - name: researcher
+    role: Researcher
+    model: llama3.1:70b
+    ollama_url: http://192.168.1.10:11434  # existing Ollama instance
+    persona: ...
+```
+
+No container is started for that member; the orchestrator connects directly
+to the given URL.  The model must already be pulled on that server (or
+Ollama's automatic pull will fetch it on first use).
+
+---
+
+## Context window management
+
+By default the orchestrator passes the full transcript to every member
+every turn.  For long-running teams this can exceed a model's context
+window, causing silent truncation or errors.  Configure a strategy to
+keep the context manageable:
+
+```yaml
+defaults:
+  context_strategy: sliding_window   # none | sliding_window | truncate | summarize
+  context_budget: 20                 # max turns (sliding_window) or ~token budget (truncate/summarize)
+```
+
+| strategy | behaviour |
+| --- | --- |
+| `none` (default) | Full transcript always sent. |
+| `sliding_window` | Only the last `context_budget` turns are sent. |
+| `truncate` | Oldest turns are dropped until the estimated token count fits within `context_budget`. A note is prepended explaining that earlier turns were omitted. |
+| `summarize` | Same as `truncate` (future: will use a lightweight model to summarise omitted turns). |
+
+Override per member:
+
+```yaml
+members:
+  - name: reviewer
+    context_strategy: sliding_window
+    context_budget: 10    # this member sees only the last 10 turns
+```
+
+---
+
+## Agent mode and tool use
+
+Members can act as **agents**: they may call external tools by emitting a
+special fenced code block in their reply, then receive the tool's output and
+continue reasoning — all within the same logical turn.
+
+### Enabling tools
+
+```yaml
+defaults:
+  tools: [web_search, run_python]  # enable globally
+  max_tool_rounds: 10              # max tool-call rounds per turn (default: 10)
+  tool_timeout: 30                 # seconds per tool execution (default: 30)
+
+members:
+  - name: researcher
+    tools: [web_search, read_url]  # per-member override
+  - name: data_scientist
+    tools: [run_python, run_bash, read_file]
+```
+
+### Tool invocation syntax
+
+A member invokes a tool by emitting a fenced block with a `tool:<name>`
+info-string:
+
+````
+```tool:web_search
+query: IPCC AR6 key findings 2024
+```
+````
+
+````
+```tool:run_python
+import pandas as pd
+df = pd.read_csv('/workspace/shared/data.csv')
+print(df.describe())
+```
+````
+
+````
+```tool:read_file
+path: analysis/results.json
+```
+````
+
+After each tool block the orchestrator executes the tool, injects the result
+back into the conversation, and asks the member to continue.  Once the member
+produces a reply with no tool blocks, that reply is recorded in the
+transcript as usual.
+
+### Available built-in tools
+
+| tool | description |
+| --- | --- |
+| `run_python` | Execute Python code; cwd is the shared workspace directory. |
+| `run_bash` | Execute a bash command; cwd is the shared workspace directory. |
+| `web_search` | Search the web via the DuckDuckGo instant-answer API (no key required). |
+| `read_url` | Fetch and return the plain-text content of a URL. |
+| `read_file` | Read a file from the shared workspace by relative path. |
+
+### Security note
+
+`run_python` and `run_bash` execute code on the **host machine** with the
+privileges of the `team` process.  Only enable these tools for members whose
+prompts you trust.
+
+### How it works
+
+```
+member turn:
+  1. LLM called with system prompt + conversation context
+  2. If reply contains tool blocks → execute each tool
+  3. Tool results injected as a follow-up user message
+  4. LLM called again (no streaming; repeats up to max_tool_rounds)
+  5. If no tool blocks in reply → reply recorded in transcript
+```
+
+Token usage from all tool-call rounds is accumulated and reported in the
+[token usage summary](#token-usage-tracking).
+
+### Streaming display
+
+When streaming is enabled (`team run` without `--no-stream`), tool calls
+are displayed inline:
+
+```text
+@researcher (Research Lead)
+I'll search for recent data on this topic.
+
+  🔧 tool: web_search  query: climate change 2024 report
+     ↳ **Climate Change** A programming language. - Flooding in coastal…
+Based on the search, the key findings are…
+```
+
+---
+
+## Token usage tracking
+
+After every `team run` a token usage summary is printed:
+
+```text
+┌────────────────────────────────────────────────────┐
+│              Token usage (live turns)               │
+├──────────┬─────────┬───────────┬───────────────────┤
+│ member   │  prompt │ completion│  total            │
+├──────────┼─────────┼───────────┼───────────────────┤
+│ @lead    │  12 450 │     3 210 │  15 660           │
+│ @worker  │   8 120 │     5 890 │  14 010           │
+├──────────┼─────────┼───────────┼───────────────────┤
+│ total    │  20 570 │     9 100 │  29 670           │
+└──────────┴─────────┴───────────┴───────────────────┘
+```
+
+Token counts come from the Ollama `/api/chat` `eval_count` /
+`prompt_eval_count` fields (for the `ollama` backend) or the OpenAI
+`usage` object (for `openai_compat`).  The summary is omitted when all
+counts are zero (e.g. pure replay runs or backends that don't report
+token usage).
+
+---
+
+## Interactive wizard
+
+`team new` launches a guided wizard that asks you a series of questions
+and writes a validated YAML:
+
+```bash
+team new my-team.yaml
+```
+
+The wizard prompts for:
+
+* Team name and goal
+* Number of members, and for each: name, role, model, persona
+* Workflow type and max rounds
+* Workspace path
+
+The output is a fully-formed, validated YAML ready to use with `team run`.
+
+---
+
+## Workflow visualization
+
+`team visualize` renders an ASCII or Mermaid flowchart of a team's
+workflow.  Useful for documentation, code review, and reasoning about
+large team configs:
+
+```bash
+team visualize my-team.yaml               # ASCII (default)
+team visualize my-team.yaml --format mermaid
+```
+
+ASCII example for a `review_loop` team:
+
+```
+  ┌────────────────────────────────────────────────────┐
+  │         review_loop (max 4 rounds)                  │
+  │                                                    │
+  │  @postdoc  ──draft──►  @reviewer                  │
+  │     ▲                       │                     │
+  │     └───── revise ──────────┘                     │
+  │                             │                     │
+  │                         APPROVED ──► [[DONE]]      │
+  └────────────────────────────────────────────────────┘
+```
+
+Mermaid output can be pasted directly into GitHub Markdown or rendered
+with any Mermaid-compatible tool.
+
+---
+
 ## Custom Ollama image
 
 `docker/Dockerfile.ollama` is an optional, slightly-augmented image that
@@ -690,14 +1006,17 @@ team run examples/software_team.yaml
 team/
 ├── _version.py
 ├── config.py        # YAML → TeamConfig (dataclasses, validation)
-├── ollama_client.py # tiny HTTP client for Ollama (ping/pull/chat)
+├── ollama_client.py # HTTP clients for Ollama and OpenAI-compat APIs; token usage
 ├── container.py     # Docker lifecycle: per-team network/volumes/containers
 ├── workspace.py     # parse `file:` blocks, atomic writes, traversal guard
 ├── bus.py           # transcript with on-disk JSONL persistence
-├── personas.py      # render the system prompt + collaboration protocol
-├── member.py        # Member: persona + container runtime + chat client
-├── workflows.py     # round_robin / manager / review_loop schedulers
+├── personas.py      # render the system prompt + collaboration protocol + tool section
+├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file
+├── member.py        # Member: persona + container runtime + chat client + agentic loop
+├── workflows.py     # round_robin / manager / review_loop / sequential_chain / debate
 ├── orchestrator.py  # ties everything together, drives the workflow
+├── visualize.py     # ASCII and Mermaid diagram renderer
+├── wizard.py        # interactive `team new` wizard
 └── cli.py           # `team` command (Click + Rich)
 ```
 

@@ -35,6 +35,9 @@ class Orchestrator:
         self._on_token: Callable[[str], None] | None = None
         self._on_turn_end: Callable[[str], None] | None = None
         self._on_round_end: Callable[[int], None] | None = None
+        # F4: agent tool-use hooks for console display.
+        self._on_tool_call: Callable[[str, str, str], None] | None = None
+        self._on_tool_result: Callable[[str, str, str], None] | None = None
         self.inject_path: Path = team.workspace / "inject.txt"
         # F6: token usage accumulated across live turns (not replayed ones).
         self._token_totals: dict[str, dict[str, int]] = {}
@@ -142,6 +145,8 @@ class Orchestrator:
             self.transcript, self.workspace,
             prompt=prompt,
             token_callback=self._on_token,
+            on_tool_call=self._on_tool_call,
+            on_tool_result=self._on_tool_result,
         )
         if self._on_turn_end:
             self._on_turn_end(member_name)

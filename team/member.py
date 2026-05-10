@@ -14,6 +14,7 @@ from team.config import MemberConfig, TeamConfig, resolve_member_setting
 from team.container import MemberRuntime
 from team.ollama_client import ChatMessage, OllamaClient, OllamaError, OpenAICompatClient
 from team.personas import render_system_prompt
+from team.tools import TOOLS, execute_tool, parse_tool_blocks
 from team.workspace import SharedWorkspace, list_dir_files
 
 log = logging.getLogger(__name__)
@@ -46,7 +47,6 @@ class Member:
         # Pick the right LLM client based on the effective backend setting.
         backend = resolve_member_setting(config, team.defaults, "backend") or "ollama"
         if backend == "openai_compat":
-            from team.ollama_client import _resolve_api_key
             api_key = resolve_member_setting(config, team.defaults, "api_key")
             self.client: OllamaClient | OpenAICompatClient = OpenAICompatClient(
                 base_url=runtime.base_url,
@@ -63,7 +63,14 @@ class Member:
                 retry_backoff=team.defaults.retry_backoff,
             )
 
-        self._system_prompt = render_system_prompt(team, config)
+        # Resolve the effective tool list (member override → defaults).
+        raw_tools = config.tools if config.tools is not None else team.defaults.tools
+        self._enabled_tools: list[str] = [t for t in (raw_tools or []) if t in TOOLS]
+        unknown = [t for t in (raw_tools or []) if t not in TOOLS]
+        if unknown:
+            log.warning("member %s: unknown tools ignored: %s", config.name, unknown)
+
+        self._system_prompt = render_system_prompt(team, config, enabled_tools=self._enabled_tools)
         self._ready = False
 
     @property
@@ -168,23 +175,18 @@ class Member:
             ChatMessage(role="user", content=user_content),
         ]
 
-    def take_turn(
+    def _call_llm(
         self,
-        transcript: Transcript,
-        workspace: SharedWorkspace,
-        prompt: str | None = None,
-        token_callback: Callable[[str], None] | None = None,
-    ) -> TurnResult:
-        if not self._ready:
-            raise RuntimeError(f"member {self.name!r} not prepared")
-        defaults = self.team.defaults
-        messages = self._build_messages(transcript, workspace, prompt)
+        messages: list[ChatMessage],
+        token_callback: Callable[[str], None] | None,
+    ) -> str:
+        """Issue a single LLM call and return the response text."""
         kwargs = dict(
             model=self.config.model,
             messages=messages,
-            temperature=resolve_member_setting(self.config, defaults, "temperature"),
-            top_p=resolve_member_setting(self.config, defaults, "top_p"),
-            num_ctx=resolve_member_setting(self.config, defaults, "context_window"),
+            temperature=resolve_member_setting(self.config, self.team.defaults, "temperature"),
+            top_p=resolve_member_setting(self.config, self.team.defaults, "top_p"),
+            num_ctx=resolve_member_setting(self.config, self.team.defaults, "context_window"),
         )
         if token_callback is not None:
             chunks: list[str] = []
@@ -196,6 +198,111 @@ class Member:
                 raise OllamaError(f"stream returned no content for @{self.name}")
         else:
             content = self.client.chat(**kwargs)
+        return content
+
+    def _run_agentic_turn(
+        self,
+        messages: list[ChatMessage],
+        workspace: SharedWorkspace,
+        token_callback: Callable[[str], None] | None,
+        on_tool_call: Callable[[str, str, str], None] | None,
+        on_tool_result: Callable[[str, str, str], None] | None,
+    ) -> tuple[str, int, int]:
+        """Run the agentic loop: LLM → tools → LLM → ... until no tool blocks.
+
+        Returns ``(final_content, total_prompt_tokens, total_completion_tokens)``.
+        The loop runs at most ``max_tool_rounds`` iterations.
+        """
+        max_rounds = (
+            self.config.max_tool_rounds
+            if self.config.max_tool_rounds is not None
+            else self.team.defaults.max_tool_rounds
+        )
+        tool_timeout = (
+            self.config.tool_timeout
+            if self.config.tool_timeout is not None
+            else self.team.defaults.tool_timeout
+        )
+        workspace_path = workspace.shared_dir
+
+        total_prompt = 0
+        total_completion = 0
+        running_messages = list(messages)
+
+        for round_num in range(max_rounds):
+            content = self._call_llm(running_messages, token_callback if round_num == 0 else None)
+            usage = self.client.last_usage
+            total_prompt += usage.prompt_tokens if usage else 0
+            total_completion += usage.completion_tokens if usage else 0
+
+            # Check for tool invocations in the reply.
+            tool_blocks = parse_tool_blocks(content)
+            enabled = set(self._enabled_tools)
+            active_blocks = [(n, b) for n, b in tool_blocks if n in enabled]
+
+            if not active_blocks:
+                # No tool calls — this is the final reply.
+                return content, total_prompt, total_completion
+
+            # Execute each tool and collect results.
+            result_parts: list[str] = []
+            for tool_name, tool_body in active_blocks:
+                log.info("@%s round %d: invoking tool %s", self.name, round_num, tool_name)
+                if on_tool_call:
+                    on_tool_call(self.name, tool_name, tool_body)
+                result = execute_tool(
+                    tool_name,
+                    tool_body,
+                    workspace_path=workspace_path,
+                    timeout=tool_timeout,
+                )
+                if on_tool_result:
+                    on_tool_result(self.name, tool_name, result)
+                result_parts.append(
+                    f"Tool `{tool_name}` result:\n```\n{result}\n```"
+                )
+
+            # Inject the assistant's reply and the tool results back as messages.
+            running_messages.append(ChatMessage(role="assistant", content=content))
+            running_messages.append(
+                ChatMessage(role="user", content="\n\n".join(result_parts))
+            )
+
+        # Exhausted tool rounds — do one final LLM call with no streaming.
+        log.warning("@%s exhausted %d tool rounds; requesting final reply", self.name, max_rounds)
+        content = self._call_llm(running_messages, None)
+        usage = self.client.last_usage
+        total_prompt += usage.prompt_tokens if usage else 0
+        total_completion += usage.completion_tokens if usage else 0
+        return content, total_prompt, total_completion
+
+    def take_turn(
+        self,
+        transcript: Transcript,
+        workspace: SharedWorkspace,
+        prompt: str | None = None,
+        token_callback: Callable[[str], None] | None = None,
+        on_tool_call: Callable[[str, str, str], None] | None = None,
+        on_tool_result: Callable[[str, str, str], None] | None = None,
+    ) -> TurnResult:
+        if not self._ready:
+            raise RuntimeError(f"member {self.name!r} not prepared")
+
+        messages = self._build_messages(transcript, workspace, prompt)
+
+        if self._enabled_tools:
+            content, prompt_tokens, completion_tokens = self._run_agentic_turn(
+                messages,
+                workspace,
+                token_callback,
+                on_tool_call,
+                on_tool_result,
+            )
+        else:
+            content = self._call_llm(messages, token_callback)
+            usage = self.client.last_usage
+            prompt_tokens = usage.prompt_tokens if usage else 0
+            completion_tokens = usage.completion_tokens if usage else 0
 
         declared_done = DONE_TOKEN in content
 
@@ -205,13 +312,11 @@ class Member:
             private_root = self.team.workspace / "members" / self.config.name
             writes = [w.path for w in workspace.apply_reply(content, private_root=private_root)]
 
-        # F6: capture token usage from the client.
-        usage = self.client.last_usage
         return TurnResult(
             content=content.strip(),
             declared_done=declared_done,
             files_written=writes,
-            prompt_tokens=usage.prompt_tokens if usage else 0,
-            completion_tokens=usage.completion_tokens if usage else 0,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
