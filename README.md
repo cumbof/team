@@ -45,7 +45,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Flexible workflows** | `round_robin`, `manager`, `review_loop`, `sequential_chain`, `debate` — pick or combine. |
 | **Shared workspace** | Members read and write real files (code, reports, data) to a host directory. |
 | **Agent tool use** | 17 built-in tools (Python, Bash, web search, file I/O, memory, beliefs, delegation); extend with custom skills. |
-| **Predefined persona library** | 16 ready-made personas (`@pi`, `@engineer`, `@reviewer` …) — one YAML line to initialise a member. |
+| **Predefined persona library** | 16 ready-made personas (`@pi`, `@engineer`, `@reviewer` …) stored as individual YAML files in `personas/`; extend with your own via `TEAM_PERSONA_DIR`. |
 | **Per-agent persistent memory** | SQLite-backed memory that survives between runs; agents `remember` and `recall` across sessions. |
 | **Shared team belief board** | Structured collective knowledge with confidence scores, voting, and consensus tracking. |
 | **Cross-team federation (bridge)** | Two independent `team` clusters can delegate tasks to each other over HTTP — academic-lab-style collaboration. |
@@ -102,8 +102,10 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [Belief config reference](#belief-config-reference)
 - [Workspace time-travel (`team rollback`)](#workspace-time-travel-team-rollback)
 - [Predefined persona library](#predefined-persona-library)
+  - [How personas are stored](#how-personas-are-stored)
   - [Available personas](#available-personas)
   - [Using a persona in YAML](#using-a-persona-in-yaml)
+  - [Adding your own personas](#adding-your-own-personas)
 - [Interactive wizard](#interactive-wizard)
 - [Workflow visualization](#workflow-visualization)
 - [Custom Ollama image](#custom-ollama-image)
@@ -1606,8 +1608,45 @@ workspace files).
 
 Writing a good persona from scratch takes time.  `team` ships with
 **16 ready-made personas** spanning academic research, software engineering,
-and general-purpose roles.  Reference any of them with a single ``@key``
-value — no prose needed.
+and general-purpose roles.  Each persona lives in its own YAML file under
+`personas/` at the root of this repository — making them easy to read,
+edit, and contribute back to the project.
+
+### How personas are stored
+
+```
+personas/
+├── pi.yaml            # Principal Investigator
+├── postdoc.yaml       # Postdoctoral Researcher
+├── phd.yaml           # PhD Student
+├── reviewer.yaml      # Critical Reviewer
+├── statistician.yaml  # Statistician
+├── bioinformatician.yaml
+├── ml_researcher.yaml
+├── architect.yaml
+├── engineer.yaml
+├── qa.yaml
+├── devops.yaml
+├── tech_writer.yaml
+├── analyst.yaml
+├── writer.yaml
+├── manager.yaml
+└── ethicist.yaml
+```
+
+Each file follows the same simple format:
+
+```yaml
+role: Principal Investigator
+description: Lab director — sets research direction, evaluates results, writes grants.
+persona: |
+  You are a tenured Principal Investigator at a research university.
+  Your role is to set and guard the scientific direction of the project.
+  ...
+```
+
+The filename stem (e.g. `pi` from `pi.yaml`) becomes the `@`-key used in team
+YAML files.
 
 ### Available personas
 
@@ -1678,6 +1717,38 @@ members:
       You are a specialist in protein crystallography with 20 years of
       experimental experience. You validate all structural claims against
       PDB data.
+```
+
+### Adding your own personas
+
+**Option 1 — contribute to the built-in library** (share with everyone):
+
+Drop a `.yaml` file into the `personas/` directory at the repo root and submit
+a pull request.  The file name becomes the `@`-key.
+
+**Option 2 — project-local personas** (private to your setup):
+
+Point `TEAM_PERSONA_DIR` at any directory; files there are loaded *in addition
+to* the built-in library and take precedence over built-in keys with the same
+name:
+
+```bash
+export TEAM_PERSONA_DIR=~/.team/personas
+```
+
+Then add files like `~/.team/personas/clinician.yaml`:
+
+```yaml
+role: Clinical Research Collaborator
+description: Translates findings into clinical context and regulatory language.
+persona: |
+  You are a physician-scientist with expertise in clinical trial design.
+  You translate pre-clinical findings into clinical hypotheses, identify
+  regulatory hurdles (FDA, EMA) early, and ensure the team's outputs are
+  framed for a clinical audience.
+```
+
+Any team YAML can now use `persona: "@clinician"` once the env var is set.
 ```
 
 ---
@@ -1803,7 +1874,7 @@ team/
 ├── skills.py        # skill plugin loader: local files and remote URLs → tool registry
 ├── memory.py        # AgentMemory: per-agent SQLite-backed persistent cross-session memory
 ├── beliefs.py       # BeliefBoard: shared JSON-backed team belief board with voting/consensus
-├── persona_library.py # 16 predefined personas (@pi, @engineer, @reviewer, …)
+├── persona_library.py # lazy loader for personas/ YAML files + TEAM_PERSONA_DIR support
 ├── member.py        # Member: persona + container runtime + chat client + agentic loop
 ├── workflows.py     # round_robin / manager / review_loop / sequential_chain / debate
 ├── orchestrator.py  # ties everything together, drives the workflow
