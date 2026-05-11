@@ -205,6 +205,14 @@ for control tokens (`[[TEAM_DONE]]`, `NEXT: @<member>`, `APPROVED`, …).
 
 ## Installation
 
+Install from PyPI:
+
+```bash
+pip install team-core
+```
+
+Or clone the repository for the latest development version:
+
 ```bash
 git clone https://github.com/cumbof/team.git
 cd team
