@@ -193,6 +193,23 @@ def check(team_file: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Helpers for GPU / host-ollama overrides
+# --------------------------------------------------------------------------- #
+
+
+def _apply_no_gpu(cfg) -> None:
+    """Force gpus='none' on all members and defaults, disabling NVIDIA device requests."""
+    cfg.defaults.gpus = "none"
+    for m in cfg.members:
+        m.gpus = "none"
+
+
+def _apply_host_ollama(cfg, url: str) -> None:
+    """Route all members to an external Ollama instance, bypassing Docker."""
+    cfg.defaults.ollama_url = url
+
+
+# --------------------------------------------------------------------------- #
 # up / down / status
 # --------------------------------------------------------------------------- #
 
@@ -205,9 +222,28 @@ def check(team_file: str) -> None:
     show_default=True,
     help="Seconds to wait for each member's Ollama daemon to be ready and its model to be pulled.",
 )
-def up(team_file: str, prepare_timeout: int) -> None:
+@click.option(
+    "--no-gpu",
+    is_flag=True,
+    help="Disable GPU device requests for all containers (CPU-only). "
+         "Useful on macOS / systems without NVIDIA hardware.",
+)
+@click.option(
+    "--host-ollama",
+    "host_ollama",
+    default=None,
+    metavar="URL",
+    help="Skip Docker entirely and connect all members to an already-running Ollama "
+         "instance at URL (e.g. http://localhost:11434). Recommended on Apple Silicon "
+         "where the native Ollama app uses Metal GPU acceleration.",
+)
+def up(team_file: str, prepare_timeout: int, no_gpu: bool, host_ollama: str | None) -> None:
     """Start one Ollama container per member and pull required models."""
     cfg = _load(team_file)
+    if host_ollama:
+        _apply_host_ollama(cfg, host_ollama)
+    elif no_gpu:
+        _apply_no_gpu(cfg)
     orch = Orchestrator(cfg)
     orch.up(prepare_deadline_seconds=prepare_timeout)
     console.print("[green]team is up[/green]")
@@ -380,9 +416,28 @@ def _setup_interactive(orch: Orchestrator, console: Console) -> None:
     is_flag=True,
     help="Pause at the end of each round and prompt for an optional human directive.",
 )
-def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume: bool, no_stream: bool, interactive: bool) -> None:
+@click.option(
+    "--no-gpu",
+    is_flag=True,
+    help="Disable GPU device requests for all containers (CPU-only). "
+         "Useful on macOS / systems without NVIDIA hardware.",
+)
+@click.option(
+    "--host-ollama",
+    "host_ollama",
+    default=None,
+    metavar="URL",
+    help="Skip Docker entirely and connect all members to an already-running Ollama "
+         "instance at URL (e.g. http://localhost:11434). Recommended on Apple Silicon "
+         "where the native Ollama app uses Metal GPU acceleration.",
+)
+def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume: bool, no_stream: bool, interactive: bool, no_gpu: bool, host_ollama: str | None) -> None:
     """Bring the team up and execute its workflow until completion."""
     cfg = _load(team_file)
+    if host_ollama:
+        _apply_host_ollama(cfg, host_ollama)
+    elif no_gpu:
+        _apply_no_gpu(cfg)
     orch = Orchestrator(cfg, resume=resume)
     if resume and orch._replay_queue:
         console.print(

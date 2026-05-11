@@ -136,6 +136,24 @@ def test_member_ollama_url_is_parsed(tmp_path: Path) -> None:
     assert cfg.members[0].ollama_url == "http://192.168.1.10:11434"
 
 
+def test_defaults_ollama_url_is_parsed(tmp_path: Path) -> None:
+    """defaults.ollama_url routes all members to a host Ollama instance."""
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        defaults:
+          ollama_url: http://localhost:11434
+        members:
+          - {name: a, role: r, model: m, persona: p}
+          - {name: b, role: r, model: m, persona: p}
+        """,
+    )
+    cfg = load_team(p)
+    assert cfg.defaults.ollama_url == "http://localhost:11434"
+
+
 # --------------------------------------------------------------------------- #
 # F1: OpenAI-compat backend
 # --------------------------------------------------------------------------- #

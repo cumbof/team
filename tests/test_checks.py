@@ -123,7 +123,7 @@ def test_gpu_check_skipped_when_gpus_none(tmp_path: Path) -> None:
 
 def test_gpu_check_ok_when_nvidia_smi_found(tmp_path: Path) -> None:
     cfg = _team(tmp_path, gpus="all")
-    with patch("shutil.which", return_value="/usr/bin/nvidia-smi"):
+    with patch("sys.platform", "linux"), patch("shutil.which", return_value="/usr/bin/nvidia-smi"):
         result = check_gpu(cfg)
     assert result is not None
     assert result.status == Status.OK
@@ -131,7 +131,7 @@ def test_gpu_check_ok_when_nvidia_smi_found(tmp_path: Path) -> None:
 
 def test_gpu_check_warn_when_nvidia_smi_missing(tmp_path: Path) -> None:
     cfg = _team(tmp_path, gpus="all")
-    with patch("shutil.which", return_value=None):
+    with patch("sys.platform", "linux"), patch("shutil.which", return_value=None):
         result = check_gpu(cfg)
     assert result is not None
     assert result.status == Status.WARN
@@ -141,7 +141,26 @@ def test_gpu_check_triggered_by_member_override(tmp_path: Path) -> None:
     """GPU check fires if any member requests GPUs, even if defaults say none."""
     cfg = _team(tmp_path, gpus="none")
     cfg.members[0].gpus = "all"
-    with patch("shutil.which", return_value=None):
+    with patch("sys.platform", "linux"), patch("shutil.which", return_value=None):
         result = check_gpu(cfg)
     assert result is not None
     assert result.status == Status.WARN
+
+
+def test_gpu_check_fails_on_macos(tmp_path: Path) -> None:
+    """On macOS, requesting GPU without host ollama is a hard failure."""
+    cfg = _team(tmp_path, gpus="all")
+    with patch("sys.platform", "darwin"):
+        result = check_gpu(cfg)
+    assert result is not None
+    assert result.status == Status.FAIL
+    assert "macOS" in result.detail
+
+
+def test_gpu_check_skipped_on_macos_when_host_ollama_set(tmp_path: Path) -> None:
+    """No GPU check needed on macOS if all traffic goes to a host Ollama URL."""
+    cfg = _team(tmp_path, gpus="all")
+    cfg.defaults.ollama_url = "http://localhost:11434"
+    with patch("sys.platform", "darwin"):
+        result = check_gpu(cfg)
+    assert result is None

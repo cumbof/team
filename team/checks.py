@@ -134,13 +134,36 @@ def check_docker_daemon(cfg: TeamConfig) -> list[CheckResult]:
 
 
 def check_gpu(cfg: TeamConfig) -> CheckResult | None:
-    """If any member requests GPU access, verify nvidia-smi is available."""
+    """If any member requests GPU access, verify nvidia-smi is available.
+
+    On macOS, NVIDIA GPU passthrough to Docker is not supported — Docker Desktop
+    runs a Linux VM that has no access to Apple's Metal framework.  We report a
+    FAIL in that case so users are guided toward ``--host-ollama`` or
+    ``gpus: none`` / ``--no-gpu``.
+    """
+    import sys
+
     default_gpus = cfg.defaults.gpus
     member_gpus = [m.gpus for m in cfg.members if m.gpus is not None]
     all_gpus = [default_gpus] + member_gpus
     needs_gpu = any(g not in (None, "none") for g in all_gpus)
     if not needs_gpu:
         return None
+
+    if sys.platform == "darwin":
+        # Check whether the user has opted out of Docker entirely via ollama_url.
+        has_host_ollama = bool(cfg.defaults.ollama_url) or all(
+            bool(m.ollama_url) for m in cfg.members
+        )
+        if has_host_ollama:
+            return None
+        return CheckResult(
+            "NVIDIA GPU (macOS)",
+            Status.FAIL,
+            "Docker Desktop on macOS does not support NVIDIA GPU passthrough. "
+            "Use 'gpus: none' (CPU-only containers) or set 'defaults.ollama_url' / "
+            "pass --host-ollama to use a native Ollama instance with Metal acceleration.",
+        )
 
     if shutil.which("nvidia-smi"):
         return CheckResult(

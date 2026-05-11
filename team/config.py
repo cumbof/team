@@ -95,6 +95,10 @@ class Defaults:
     tool_timeout: int = 300    # seconds budget per individual tool execution (generous for pip/apt)
     # F4 skills: external tool plugins (local paths or remote URLs)
     skills: list[Any] = field(default_factory=list)
+    # Host Ollama: if set, all members use this URL instead of Docker containers.
+    # Per-member ollama_url overrides this value.  Useful for Apple Silicon / CPU-only
+    # hosts where GPU passthrough to Docker is not available.
+    ollama_url: str | None = None
 
 
 @dataclass

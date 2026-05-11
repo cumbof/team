@@ -95,6 +95,15 @@ def _gpu_device_requests(gpus: Any) -> list[dict] | None:
     return None
 
 
+def _remove_container(client: docker.DockerClient, name: str) -> None:
+    """Remove a container by name, ignoring errors if it does not exist."""
+    try:
+        c = client.containers.get(name)
+        c.remove(force=True)
+    except NotFound:
+        pass
+
+
 # --------------------------------------------------------------------------- #
 # Manager
 # --------------------------------------------------------------------------- #
@@ -106,6 +115,10 @@ class ContainerManager:
     def __init__(self, team: TeamConfig, client: docker.DockerClient | None = None):
         self.team = team
         self.client = client or docker.from_env()
+
+    def _effective_ollama_url(self, member: MemberConfig) -> str | None:
+        """Return the Ollama base URL for a member, checking per-member then defaults."""
+        return member.ollama_url or self.team.defaults.ollama_url
 
     # --- network -------------------------------------------------------- #
 
@@ -147,18 +160,19 @@ class ContainerManager:
             return None
 
     def start_member(self, member: MemberConfig) -> MemberRuntime:
-        # Remote Ollama (F10): bypass all Docker management entirely.
-        if member.ollama_url:
+        # Remote Ollama (F10 / defaults.ollama_url): bypass all Docker management entirely.
+        effective_ollama_url = self._effective_ollama_url(member)
+        if effective_ollama_url:
             log.info(
-                "member %s uses remote Ollama at %s (skipping Docker)",
+                "member %s uses Ollama at %s (skipping Docker)",
                 member.name,
-                member.ollama_url,
+                effective_ollama_url,
             )
             return MemberRuntime(
                 member=member,
                 container=None,
                 host_port=None,
-                base_url=member.ollama_url,
+                base_url=effective_ollama_url,
             )
 
         # OpenAI-compat backend (F1): also needs no container.
@@ -198,20 +212,34 @@ class ContainerManager:
 
         # Reuse a container that already exists (e.g. after `team up` without
         # `team down`).  Just restart it if stopped; no need to recreate it.
+        # If restart fails (e.g. the old container was created with GPU
+        # requirements that are no longer available), remove it and fall
+        # through to create a fresh one with the current settings.
         existing = self._existing(member)
         if existing is not None:
             if existing.status != "running":
-                existing.start()
-            existing.reload()
-            host_port = int(
-                existing.attrs["NetworkSettings"]["Ports"]["11434/tcp"][0]["HostPort"]
-            )
-            return MemberRuntime(
-                member=member,
-                container=existing,
-                host_port=host_port,
-                base_url=f"http://127.0.0.1:{host_port}",
-            )
+                try:
+                    existing.start()
+                except APIError as exc:
+                    log.warning(
+                        "could not restart existing container %s (%s) — "
+                        "removing it and creating a new one",
+                        _container_name(self.team.name, member.name),
+                        exc,
+                    )
+                    existing.remove(force=True)
+                    existing = None
+            if existing is not None:
+                existing.reload()
+                host_port = int(
+                    existing.attrs["NetworkSettings"]["Ports"]["11434/tcp"][0]["HostPort"]
+                )
+                return MemberRuntime(
+                    member=member,
+                    container=existing,
+                    host_port=host_port,
+                    base_url=f"http://127.0.0.1:{host_port}",
+                )
 
         host_port = _free_port()
         gpus = resolve_member_setting(member, defaults, "gpus")
@@ -227,6 +255,10 @@ class ContainerManager:
         if cpu_limit:
             # Docker SDK expresses CPU quota in "nano CPUs" (1 CPU = 1_000_000_000).
             host_config["nano_cpus"] = int(float(cpu_limit) * 1_000_000_000)
+        # Only pass device_requests when non-None: some Docker/host combinations
+        # (e.g. Docker Desktop on macOS) reject the field even when null.
+        if device_requests:
+            host_config["device_requests"] = device_requests
 
         log.info(
             "starting container for member %s (model=%s, port=%d)",
@@ -261,7 +293,6 @@ class ContainerManager:
                 CONTAINER_LABEL: self.team.name,
                 MEMBER_LABEL: member.name,
             },
-            device_requests=device_requests,
             # "unless-stopped" survives Docker daemon restarts without restarting
             # on manual `docker stop`, which is how `team down` stops containers.
             restart_policy={"Name": "unless-stopped"},
@@ -286,7 +317,10 @@ class ContainerManager:
     def stop_member(self, member_name: str, *, remove_volume: bool = False) -> None:
         # Skip teardown for members with no Docker container.
         member = next((m for m in self.team.members if m.name == member_name), None)
-        if member and (member.ollama_url or (member.backend or self.team.defaults.backend) == "openai_compat"):
+        if member and (
+            self._effective_ollama_url(member)
+            or (member.backend or self.team.defaults.backend) == "openai_compat"
+        ):
             log.debug("member %s has no container, skipping teardown", member_name)
             return
         name = _container_name(self.team.name, member_name)
@@ -317,13 +351,14 @@ class ContainerManager:
     def status(self) -> list[dict]:
         out: list[dict] = []
         for m in self.team.members:
-            if m.ollama_url:
+            effective_ollama_url = self._effective_ollama_url(m)
+            if effective_ollama_url:
                 out.append({
                     "member": m.name,
                     "role": m.role,
                     "model": m.model,
-                    "container": "(remote)",
-                    "status": "remote",
+                    "container": f"(ollama: {effective_ollama_url})",
+                    "status": "external",
                 })
                 continue
             effective_backend = m.backend or self.team.defaults.backend
