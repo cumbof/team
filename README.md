@@ -333,6 +333,7 @@ members:
 | `max_tool_rounds` | int | `10` | Maximum agentic tool-call rounds per member turn. |
 | `tool_timeout` | int | `300` | Seconds budget per individual tool execution (generous default to allow package installs). |
 | `skills` | list | `[]` | Skill plugin sources (local paths or remote URLs) available to all members. |
+| `ollama_url` | string | unset | Route **all** members to an existing Ollama instance at this URL instead of starting Docker containers. Per-member `ollama_url` overrides this. See [Apple Silicon / no-Docker](#apple-silicon--no-docker-ollama). |
 
 ### `workflow`
 
@@ -597,6 +598,58 @@ members:
 Requires the NVIDIA Container Toolkit on the host.  Passed through to
 Docker via device requests; non-NVIDIA setups can leave `gpus: none`.
 
+### Apple Silicon / no-Docker Ollama
+
+Docker Desktop on **macOS** runs a Linux VM that cannot access the host's
+GPU (neither NVIDIA nor Apple Metal).  Using `gpus: all` there produces:
+
+```
+could not select device driver "nvidia" with capabilities [[gpu]]
+```
+
+There are two escape hatches:
+
+#### Option A — CPU-only containers (`--no-gpu`)
+
+Pass `--no-gpu` to `team up` or `team run`.  All containers are started
+without GPU device requests and fall back to CPU inference inside Docker.
+No YAML change required, but inference will be slow on large models.
+
+```bash
+team run myteam.yaml --no-gpu
+team up  myteam.yaml --no-gpu
+```
+
+#### Option B — Native host Ollama with Metal (recommended for Apple Silicon)
+
+Install [Ollama for macOS](https://ollama.com) natively.  The native app
+uses **Apple Metal** for GPU acceleration and is dramatically faster than
+CPU-only Docker containers.  Then tell `team` to bypass Docker entirely and
+connect all members to it:
+
+**Via CLI flag** (no YAML change):
+
+```bash
+# Default URL is http://localhost:11434
+team run myteam.yaml --host-ollama http://localhost:11434
+team up  myteam.yaml --host-ollama http://localhost:11434
+```
+
+**Via YAML** (permanent):
+
+```yaml
+defaults:
+  ollama_url: http://localhost:11434   # all members skip Docker
+```
+
+When `defaults.ollama_url` is set (or `--host-ollama` is passed), no Ollama
+containers are started; the orchestrator connects directly to the given URL.
+Per-member `ollama_url` overrides the default for individual members.
+
+> **`team check` will report a `FAIL`** on macOS when GPU is requested
+> without an `ollama_url` configured, and will guide you to one of the two
+> options above.
+
 ---
 
 ## CLI reference
@@ -609,11 +662,13 @@ team check       <team.yaml>          Run preflight checks (no Docker started).
 team visualize   <team.yaml>          Print an ASCII or Mermaid diagram of the workflow.
                  [--format ascii|mermaid]
 team up          <team.yaml>          Start containers, pull models.
+                 [--no-gpu] [--host-ollama URL]
 team status      <team.yaml>          Show container status per member.
 team logs        <team.yaml>          Tail per-member Ollama logs.
                  [--member NAME] [--tail N]
 team run         <team.yaml>          Up + run workflow + (down).
                  [--no-up] [--keep-up] [--resume] [--no-stream] [--interactive]
+                 [--no-gpu] [--host-ollama URL]
 team transcript  <team.yaml>          Render the persisted transcript.
 team export      <team.yaml>          Export transcript + artifacts to a report.
                  [--format markdown|html] [--output PATH]
@@ -909,9 +964,19 @@ members:
     persona: ...
 ```
 
-No container is started for that member; the orchestrator connects directly
-to the given URL.  The model must already be pulled on that server (or
-Ollama's automatic pull will fetch it on first use).
+To route **all** members to the same Ollama instance, set it in `defaults`
+or pass `--host-ollama` on the command line (see
+[Apple Silicon / no-Docker](#apple-silicon--no-docker-ollama)):
+
+```yaml
+defaults:
+  ollama_url: http://localhost:11434
+```
+
+No container is started for any member that has an effective `ollama_url`
+(per-member or from `defaults`); the orchestrator connects directly to the
+given URL.  The model must already be pulled on that server (or Ollama's
+automatic pull will fetch it on first use).
 
 ---
 
