@@ -87,6 +87,16 @@ _TOOL_PROTOCOL_HEADER = dedent(
     * Once you are done gathering information, write your **final reply in
       plain text** (no tool blocks) so it is recorded in the transcript.
     * Never invent tool results — always wait for the actual output.
+    * **You have full system access.** If a library or CLI tool you need is
+      not installed, install it first:
+
+          ```tool:run_bash
+          pip install scikit-learn seaborn --quiet
+          ```
+
+      Then proceed with the code that uses it.  You may also use
+      ``apt-get install``, ``conda install``, ``npm install``, or any other
+      package manager available on the system.
 
     Available tools:
     """

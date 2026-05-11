@@ -92,7 +92,7 @@ class Defaults:
     # F4: agent tool use
     tools: list[str] = field(default_factory=list)  # built-in tool names enabled by default
     max_tool_rounds: int = 10  # max agentic tool-call rounds per member turn
-    tool_timeout: int = 30     # seconds budget per individual tool execution
+    tool_timeout: int = 300    # seconds budget per individual tool execution (generous for pip/apt)
     # F4 skills: external tool plugins (local paths or remote URLs)
     skills: list[Any] = field(default_factory=list)
 

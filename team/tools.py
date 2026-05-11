@@ -833,8 +833,8 @@ TOOLS: dict[str, Any] = {
 
 #: Human-readable one-line description of each tool (used in system prompts).
 TOOL_DESCRIPTIONS: dict[str, str] = {
-    "run_python":     "Execute Python code; cwd is the shared workspace.",
-    "run_bash":       "Execute a bash command; cwd is the shared workspace.",
+    "run_python":     "Execute Python code with full system access; cwd is the shared workspace. You may import any installed library or install missing ones first with run_bash.",
+    "run_bash":       "Execute any bash command with full system access; cwd is the shared workspace. Use this to install packages (pip install, apt-get install), run CLIs, inspect the system, etc.",
     "web_search":     "Search the web via DuckDuckGo instant answers.",
     "read_url":       "Fetch and return the text content of a URL.",
     "read_file":      "Read a file from the shared workspace by relative path.",

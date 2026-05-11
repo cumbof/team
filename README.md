@@ -329,7 +329,7 @@ members:
 | `context_budget` | int | `0` | Budget for context management: max turns (`sliding_window`) or approx token count (`truncate`/`summarize`). |
 | `tools` | list | `[]` | Built-in tools enabled for all members by default. |
 | `max_tool_rounds` | int | `10` | Maximum agentic tool-call rounds per member turn. |
-| `tool_timeout` | int | `30` | Seconds budget per individual tool execution. |
+| `tool_timeout` | int | `300` | Seconds budget per individual tool execution (generous default to allow package installs). |
 | `skills` | list | `[]` | Skill plugin sources (local paths or remote URLs) available to all members. |
 
 ### `workflow`
@@ -375,7 +375,7 @@ workflow:
 | `context_budget` | no | Per-member override of context budget. |
 | `tools` | no | List of tool names this member may use (e.g. `[web_search, run_python]`). |
 | `max_tool_rounds` | no | Per-member override of the tool-round limit. |
-| `tool_timeout` | no | Per-member override of the per-tool execution timeout (seconds). |
+| `tool_timeout` | no | Per-member override of the per-tool execution timeout (seconds, default 300). |
 | `skills` | no | Member-specific skill sources merged with `defaults.skills`. |
 
 ---
@@ -919,7 +919,7 @@ continue reasoning — all within the same logical turn.
 defaults:
   tools: [web_search, run_python]  # enable globally
   max_tool_rounds: 10              # max tool-call rounds per turn (default: 10)
-  tool_timeout: 30                 # seconds per tool execution (default: 30)
+  tool_timeout: 300                # seconds per tool execution (default: 300)
 
 members:
   - name: researcher
@@ -1033,6 +1033,47 @@ pattern: **/*.py
 `run_python` and `run_bash` execute code on the **host machine** with the
 privileges of the `team` process.  Only enable these tools for members whose
 prompts you trust.
+
+### Full system access and package installation
+
+Agents have **full, unrestricted access to the host system** — the same
+privileges as the user who runs the `team` process.  This is intentional:
+agents should be able to do anything a human researcher or engineer can do.
+
+In particular, agents can install software at will:
+
+```
+```tool:run_bash
+pip install scikit-learn seaborn --quiet
+```
+```
+
+```
+```tool:run_bash
+apt-get install -y ffmpeg
+```
+```
+
+```
+```tool:run_python
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "install", "biopython"], check=True)
+import Bio
+print(Bio.__version__)
+```
+```
+
+When a tool invocation takes longer than expected (e.g. downloading a large
+package), increase the `tool_timeout` in your YAML:
+
+```yaml
+defaults:
+  tool_timeout: 600   # 10 minutes — safe for most installs
+```
+
+The default `tool_timeout` is **300 seconds** (5 minutes), which covers the
+vast majority of `pip install` and `apt-get` operations on a normal network
+connection.
 
 ### How it works
 
