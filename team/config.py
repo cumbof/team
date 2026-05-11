@@ -268,15 +268,44 @@ def _parse_workflow(data: dict) -> WorkflowConfig:
     )
 
 
+def _resolve_persona(raw_persona: str, raw_role: str | None, ctx: str) -> tuple[str, str]:
+    """Expand a library shorthand (``@key``) into ``(role, persona_text)``.
+
+    When *raw_persona* starts with ``@`` the remainder is looked up in the
+    :mod:`team.persona_library`.  The caller may still override the role by
+    supplying *raw_role*; if omitted the library's default role is used.
+
+    Returns ``(role, persona_text)``.  Raises :class:`TeamConfigError` if the
+    key is not found.
+    """
+    if not raw_persona.startswith("@"):
+        if raw_role is None:
+            raise TeamConfigError(f"{ctx}: missing required field 'role'")
+        return raw_role, raw_persona
+
+    key = raw_persona[1:].strip()
+    from team.persona_library import PERSONAS  # local import to avoid circulars
+    if key not in PERSONAS:
+        available = ", ".join(sorted(PERSONAS))
+        raise TeamConfigError(
+            f"{ctx}: unknown persona library key {key!r}. "
+            f"Available: {available}"
+        )
+    lib_role, lib_persona = PERSONAS[key]["role"], PERSONAS[key]["persona"]
+    return raw_role if raw_role is not None else lib_role, lib_persona
+
+
 def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
     ctx = f"members[{data.get('name', '?')!r}]"
     name = _require(data, "name", ctx)
     _check_name(name, ctx)
+    raw_persona = _require(data, "persona", ctx)
+    role, persona = _resolve_persona(raw_persona, data.get("role"), ctx)
     return MemberConfig(
         name=name,
-        role=_require(data, "role", ctx),
+        role=role,
         model=_require(data, "model", ctx),
-        persona=_require(data, "persona", ctx),
+        persona=persona,
         temperature=data.get("temperature"),
         top_p=data.get("top_p"),
         context_window=data.get("context_window"),

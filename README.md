@@ -37,6 +37,28 @@ Reviewer — and pick a workflow that matches how the work should flow:
 
 ---
 
+## Feature overview
+
+| Feature | Description |
+| --- | --- |
+| **Containerised members** | Every LLM runs in its own Docker + Ollama container with configurable CPU, RAM, and GPU limits. |
+| **Flexible workflows** | `round_robin`, `manager`, `review_loop`, `sequential_chain`, `debate` — pick or combine. |
+| **Shared workspace** | Members read and write real files (code, reports, data) to a host directory. |
+| **Agent tool use** | 17 built-in tools (Python, Bash, web search, file I/O, memory, beliefs, delegation); extend with custom skills. |
+| **Predefined persona library** | 16 ready-made personas (`@pi`, `@engineer`, `@reviewer` …) — one YAML line to initialise a member. |
+| **Per-agent persistent memory** | SQLite-backed memory that survives between runs; agents `remember` and `recall` across sessions. |
+| **Shared team belief board** | Structured collective knowledge with confidence scores, voting, and consensus tracking. |
+| **Cross-team federation (bridge)** | Two independent `team` clusters can delegate tasks to each other over HTTP — academic-lab-style collaboration. |
+| **Workspace time-travel** | `team rollback` restores the workspace to any past checkpoint and lets you resume from there. |
+| **Human-in-the-loop** | Interrupt a live run, read the transcript, inject a message, and let the team continue. |
+| **OpenAI-compatible backends** | Swap Ollama for any OpenAI-compatible API (GPT-4o, Mistral, Together AI, …) per member. |
+| **Context window management** | `sliding_window`, `truncate`, or `summarize` strategies keep long runs within token budgets. |
+| **Workspace checkpoints** | Automatic snapshots before every member turn; `team restore` rolls back to any point. |
+| **Run statistics & reports** | Per-member token usage, turn counts, elapsed time — exportable as a Markdown report. |
+| **Interactive wizard** | `team new` walks you through YAML creation; `team visualize` renders the workflow graph. |
+
+---
+
 ## Table of contents
 
 - [Why?](#why)
@@ -79,6 +101,9 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [Inspecting beliefs with team beliefs](#inspecting-beliefs-with-team-beliefs)
   - [Belief config reference](#belief-config-reference)
 - [Workspace time-travel (`team rollback`)](#workspace-time-travel-team-rollback)
+- [Predefined persona library](#predefined-persona-library)
+  - [Available personas](#available-personas)
+  - [Using a persona in YAML](#using-a-persona-in-yaml)
 - [Interactive wizard](#interactive-wizard)
 - [Workflow visualization](#workflow-visualization)
 - [Custom Ollama image](#custom-ollama-image)
@@ -1577,6 +1602,86 @@ workspace files).
 
 ---
 
+## Predefined persona library
+
+Writing a good persona from scratch takes time.  `team` ships with
+**16 ready-made personas** spanning academic research, software engineering,
+and general-purpose roles.  Reference any of them with a single ``@key``
+value — no prose needed.
+
+### Available personas
+
+| Key | Role | Description |
+| --- | --- | --- |
+| `@pi` | Principal Investigator | Lab director — sets research direction, evaluates results, writes grants. |
+| `@postdoc` | Postdoctoral Researcher | Senior researcher — deep expertise, drives experiments and analysis. |
+| `@phd` | PhD Student | Junior researcher — literature review, baseline experiments, drafting. |
+| `@reviewer` | Critical Reviewer | Peer-review skeptic — challenges assumptions, finds weaknesses. |
+| `@statistician` | Statistician | Statistical methodologist — study design, power, inference correctness. |
+| `@bioinformatician` | Bioinformatician | Omics data specialist — pipelines, databases, variant/sequence analysis. |
+| `@ml_researcher` | Machine Learning Researcher | ML specialist — model design, training, evaluation, ablations. |
+| `@architect` | Software Architect | System designer — API contracts, scalability, tech decisions. |
+| `@engineer` | Software Engineer | Implementer — writes production-quality code, debugs, reviews PRs. |
+| `@qa` | QA Engineer | Quality assurance — test strategy, edge cases, regression detection. |
+| `@devops` | DevOps / SRE | Infrastructure and reliability — CI/CD, monitoring, deployment. |
+| `@tech_writer` | Technical Writer | Documentation specialist — clarity, structure, audience-appropriate prose. |
+| `@analyst` | Data Analyst | Data explorer — EDA, visualisation, dashboards, business insights. |
+| `@writer` | Science Writer | Communicator — translates technical findings into compelling narratives. |
+| `@manager` | Project Manager | Coordinator — milestones, blockers, stakeholder communication. |
+| `@ethicist` | AI / Research Ethicist | Ethics and compliance — bias, fairness, privacy, responsible use. |
+
+Browse the library from the terminal:
+
+```bash
+team personas              # list all personas with key, role, description
+team personas pi           # print the full persona text for @pi
+team personas engineer     # print the full persona text for @engineer
+```
+
+### Using a persona in YAML
+
+Set `persona` to `@<key>` instead of writing a persona block:
+
+```yaml
+members:
+  - name: alice
+    model: llama3.1:70b
+    persona: "@pi"              # role is set to "Principal Investigator" automatically
+  - name: bob
+    model: llama3.1:8b
+    persona: "@phd"             # role is "PhD Student"
+  - name: carol
+    model: qwen2.5:7b
+    persona: "@reviewer"        # role is "Critical Reviewer"
+```
+
+You can override the default role while keeping the library persona text:
+
+```yaml
+  - name: alice
+    model: llama3.1:70b
+    persona: "@pi"
+    role: "Lab Director"        # custom title; persona text stays the same
+```
+
+You can also mix library personas with fully custom ones in the same team:
+
+```yaml
+members:
+  - name: alice
+    model: llama3.1:70b
+    persona: "@pi"
+  - name: custom
+    role: Domain Expert
+    model: llama3.1:8b
+    persona: |
+      You are a specialist in protein crystallography with 20 years of
+      experimental experience. You validate all structural claims against
+      PDB data.
+```
+
+---
+
 ## Interactive wizard
 
 `team new` launches a guided wizard that asks you a series of questions
@@ -1698,6 +1803,7 @@ team/
 ├── skills.py        # skill plugin loader: local files and remote URLs → tool registry
 ├── memory.py        # AgentMemory: per-agent SQLite-backed persistent cross-session memory
 ├── beliefs.py       # BeliefBoard: shared JSON-backed team belief board with voting/consensus
+├── persona_library.py # 16 predefined personas (@pi, @engineer, @reviewer, …)
 ├── member.py        # Member: persona + container runtime + chat client + agentic loop
 ├── workflows.py     # round_robin / manager / review_loop / sequential_chain / debate
 ├── orchestrator.py  # ties everything together, drives the workflow

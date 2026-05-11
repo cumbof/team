@@ -941,5 +941,55 @@ def beliefs(team_file: str, status: str | None) -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# personas
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("key", required=False)
+def personas(key: str | None) -> None:
+    """List predefined personas (or show a full persona by KEY).
+
+    Without arguments, prints a table of all available predefined personas.
+    Pass a KEY to display the full persona text.
+
+    Examples:
+
+    \\b
+        team personas            # list all predefined personas
+        team personas pi         # show the full 'pi' (Principal Investigator) persona
+        team personas engineer   # show the full 'engineer' persona
+    """
+    from team.persona_library import PERSONAS, list_all
+
+    if key is not None:
+        if key not in PERSONAS:
+            available = ", ".join(sorted(PERSONAS))
+            console.print(f"[red]Unknown persona key:[/red] {key!r}\nAvailable: {available}")
+            sys.exit(2)
+        entry = PERSONAS[key]
+        console.print(f"[bold]@{key}[/bold] — [cyan]{entry['role']}[/cyan]")
+        console.print(f"[dim]{entry['description']}[/dim]\n")
+        console.print(entry["persona"])
+        console.print(
+            f"\n[dim]Use in YAML:[/dim] [bold]persona: \"@{key}\"[/bold]"
+        )
+        return
+
+    table = Table(title="Predefined persona library", show_lines=True)
+    table.add_column("Key", style="bold cyan", no_wrap=True)
+    table.add_column("Role", style="bold")
+    table.add_column("Description")
+    for entry in list_all():
+        table.add_row(f"@{entry['key']}", entry["role"], entry["description"])
+    console.print(table)
+    console.print(
+        "\n[dim]Use in YAML:[/dim]  [bold]persona: \"@<key>\"[/bold]  "
+        "(role is set automatically; override with [bold]role:[/bold])\n"
+        "[dim]Full persona:[/dim]  [bold]team personas <key>[/bold]"
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     cli()
