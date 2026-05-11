@@ -1,12 +1,28 @@
 # team
 
-> **Orchestrate a cluster of containerized local LLMs — each with its own
-> persona, role, and goal — that collaborate until the work is done.**
+**Orchestrate a cluster of containerized local LLMs — each with its own
+persona, role, and goal — that collaborate until the work is done.**
 
----
+`team` lets you describe a small "organisation" of LLMs in a single YAML
+file and then bring it to life: every member runs in **its own isolated
+Docker container** with its own [Ollama](https://ollama.com/) daemon and
+its own model, the orchestrator drives a turn-based conversation between
+them, and the members produce real artifacts (code, manuscripts, reports,
+…) in a shared workspace.
+
+You can mix and match model sizes per role — e.g. a 70B generalist as a
+Principal Investigator, a 7B coder as a Data Scientist, an 8B model as a
+Reviewer — and pick a workflow that matches how the work should flow:
+**round-robin**, **manager-driven**, or **review-loop until consensus**.
+
+> [!WARNING]  
+>
+> **Work in Progress:** This repository is currently under active development.
+> While the core functionality is present, some features may be incomplete or
+> not fully work as expected, and you may encounter unexpected bugs. Please
+> test thoroughly before using this in any critical pipelines.
 
 > [!NOTE]
-> **AI-assisted development notice**
 >
 > A significant portion of the code and documentation in this repository
 > was written **with the assistance of a Large Language Model (LLM)**.
@@ -20,20 +36,6 @@
 > test your changes before submitting, and disclose AI assistance in your
 > PR description (e.g. *"co-authored with GitHub Copilot"*) so reviewers
 > can calibrate their review accordingly.
-
----
-
-`team` lets you describe a small "organisation" of LLMs in a single YAML
-file and then bring it to life: every member runs in **its own isolated
-Docker container** with its own [Ollama](https://ollama.com/) daemon and
-its own model, the orchestrator drives a turn-based conversation between
-them, and the members produce real artifacts (code, manuscripts, reports,
-…) in a shared workspace.
-
-You can mix and match model sizes per role — e.g. a 70B generalist as a
-Principal Investigator, a 7B coder as a Data Scientist, an 8B model as a
-Reviewer — and pick a workflow that matches how the work should flow:
-**round-robin**, **manager-driven**, or **review-loop until consensus**.
 
 ---
 
