@@ -148,7 +148,7 @@ converge.  `team` makes it easy to assemble such a group locally:
 ## How it works
 
 ```
-                 ┌────────────────── orchestrator (host) ──────────────────┐
+                 ┌────────────────── orchestrator (host) ───────────────────┐
                  │                                                          │
                  │   transcript.jsonl     shared workspace (./runs/<team>)  │
                  │        ▲                       ▲                         │
@@ -156,15 +156,15 @@ converge.  `team` makes it easy to assemble such a group locally:
                  └────┬───┴────────────┬──────────┴─────────────┬───────────┘
                       │                │                        │
                       ▼                ▼                        ▼
-       ┌──────────────────┐  ┌──────────────────┐    ┌──────────────────┐
-       │ container: pi    │  │ container: postdoc│    │ container: ...  │
-       │ ollama serve     │  │ ollama serve     │    │                  │
-       │ model: 70B       │  │ model: 8B        │    │                  │
-       │ /workspace (ro+) │  │ /workspace (ro+) │    │ /workspace (ro+) │
-       │ /private         │  │ /private         │    │ /private         │
-       └──────────────────┘  └──────────────────┘    └──────────────────┘
-                       \\           |            //
-                        \\          |           //
+       ┌──────────────────┐  ┌───────────────────┐     ┌──────────────────┐
+       │ container: pi    │  │ container: postdoc│     │ container: ...   │
+       │ ollama serve     │  │ ollama serve      │     │                  │
+       │ model: 70B       │  │ model: 8B         │     │                  │
+       │ /workspace (ro+) │  │ /workspace (ro+)  │     │ /workspace (ro+) │
+       │ /private         │  │ /private          │     │ /private         │
+       └──────────────────┘  └───────────────────┘     └──────────────────┘
+                       \\              |                //
+                        \\             |               //
                        team-<name>-net (private bridge network)
 ```
 
@@ -486,8 +486,6 @@ workflow:
 4. The **judge** receives the full exchange and delivers a verdict.
 5. Any member can end early by emitting `[[TEAM_DONE]]`.
 
----
-
 ### `parallel_review`
 
 Like `review_loop` but all reviewers read the deliverable **at the same time**
@@ -769,12 +767,12 @@ team checkpoints my-team.yaml
 ```
 
 ```
-┌──────────────────────────────┬──────┬─────────────────────┬─────────────────────┬───────┐
+┌──────────────────────────────┬──────┬──────────────────────┬─────────────────────┬───────┐
 │ ID                           │ Turn │ Before member's turn │ Timestamp           │ Files │
-├──────────────────────────────┼──────┼─────────────────────┼─────────────────────┼───────┤
+├──────────────────────────────┼──────┼──────────────────────┼─────────────────────┼───────┤
 │ 0001_alice_20240501T120000   │    1 │ @alice               │ 2024-05-01 12:00:00 │     3 │
 │ 0003_bob_20240501T120145     │    3 │ @bob                 │ 2024-05-01 12:01:45 │     5 │
-└──────────────────────────────┴──────┴─────────────────────┴─────────────────────┴───────┘
+└──────────────────────────────┴──────┴──────────────────────┴─────────────────────┴───────┘
 ```
 
 ### Restoring a checkpoint
@@ -1083,26 +1081,26 @@ agents should be able to do anything a human researcher or engineer can do.
 
 In particular, agents can install software at will:
 
-```
+````
 ```tool:run_bash
 pip install scikit-learn seaborn --quiet
 ```
-```
+````
 
-```
+````
 ```tool:run_bash
 apt-get install -y ffmpeg
 ```
-```
+````
 
-```
+````
 ```tool:run_python
 import subprocess, sys
 subprocess.run([sys.executable, "-m", "pip", "install", "biopython"], check=True)
 import Bio
 print(Bio.__version__)
 ```
-```
+````
 
 When a tool invocation takes longer than expected (e.g. downloading a large
 package), increase the `tool_timeout` in your YAML:
@@ -1261,7 +1259,7 @@ After every `team run` a token usage summary is printed:
 
 ```text
 ┌────────────────────────────────────────────────────┐
-│              Token usage (live turns)               │
+│              Token usage (live turns)              │
 ├──────────┬─────────┬───────────┬───────────────────┤
 │ member   │  prompt │ completion│  total            │
 ├──────────┼─────────┼───────────┼───────────────────┤
@@ -1375,13 +1373,13 @@ defaults:
 
 **Logging a decision:**
 
-```
+````
 ```tool:log_decision
 title: Chose pandas over polars for data wrangling
 rationale: Polars ecosystem is too immature; pandas is already a project dependency.
 alternatives: polars, dask, vaex
 ```
-```
+````
 
 The entry is appended to `decisions.md` in the shared workspace:
 
@@ -1399,10 +1397,10 @@ The entry is appended to `decisions.md` in the shared workspace:
 
 **Reading the decision log:**
 
-```
+````
 ```tool:read_decisions
 ```
-```
+````
 
 Returns the full `decisions.md` content so members can consult previous
 decisions when facing related choices.
@@ -1423,16 +1421,16 @@ real inter-laboratory collaboration.
 ```
 Lab A cluster (local)                       Lab B cluster (remote)
 ┌─────────────────────────────────────┐     ┌──────────────────────────────────┐
-│  Orchestrator A                      │     │  team serve lab-b.yaml           │
+│  Orchestrator A                     │     │  team serve lab-b.yaml           │
 │  members: pi, analyst               │     │  BridgeServer (port 7001)        │
 │                                     │     │                                  │
-│  @pi uses delegate_task tool ───────┼─────┼──► POST /tasks                  │
+│  @pi uses delegate_task tool ───────┼─────┼──► POST /tasks                   │
 │                                     │     │    ┌──────────────────────────┐  │
-│                                     │     │    │ Orchestrator B            │  │
-│                                     │     │    │ members: coder, reviewer  │  │
-│                                     │     │    │ runs full workflow        │  │
+│                                     │     │    │ Orchestrator B           │  │
+│                                     │     │    │ members: coder, reviewer │  │
+│                                     │     │    │ runs full workflow       │  │
 │                                     │     │    └──────────────────────────┘  │
-│  result written to workspace ◄──────┼─────┼─── GET /tasks/{id}  (complete)  │
+│  result written to workspace ◄──────┼─────┼─── GET /tasks/{id}  (complete)   │
 │  injected into transcript           │     │    files + summary returned      │
 └─────────────────────────────────────┘     └──────────────────────────────────┘
 ```
@@ -1573,7 +1571,7 @@ All memory tools use a `key:` / header + `---` / value body format:
 
 **`remember`** — store a cross-session memory:
 
-```
+````
 ```tool:remember
 key: protein_folding_baseline_2025
 tags: results, methods
@@ -1582,35 +1580,35 @@ importance: 0.9
 AlphaFold3 outperforms RoseTTAFold on monomers (RMSD 1.2 vs 2.1 Å, n=1 000).
 Dataset: PDB validation set, tested January 2025.
 ```
-```
+````
 
 **`recall`** — full-text search across all memories:
 
-```
+````
 ```tool:recall
 query: protein folding
 limit: 5
 ```
-```
+````
 
 Returns a ranked list of matching memories (by importance then recency).
 
 **`forget`** — delete a memory by key:
 
-```
+````
 ```tool:forget
 key: protein_folding_baseline_2025
 ```
-```
+````
 
 **`list_memories`** — browse all memories (optionally by tag):
 
-```
+````
 ```tool:list_memories
 tag: results
 limit: 20
 ```
-```
+````
 
 At the start of every turn, the *n* most recent memories are automatically
 injected into the member's context under `## Your persistent memories`.
@@ -1661,42 +1659,42 @@ members:
 
 **`assert_belief`** — propose a claim with optional evidence:
 
-```
+````
 ```tool:assert_belief
 confidence: 0.85
 evidence: RMSD analysis, PDB validation set, n=1 000, January 2025
 ---
 AlphaFold3 is the best available method for monomer structure prediction.
 ```
-```
+````
 
 The member who asserts a belief automatically casts an *accept* vote.  The
 returned belief ID (e.g. `a3f2b1c9`) is used in subsequent votes.
 
 **`accept_belief`** — vote to accept:
 
-```
+````
 ```tool:accept_belief
 id: a3f2b1c9
 ```
-```
+````
 
 **`contest_belief`** — move a belief to `contested` status:
 
-```
+````
 ```tool:contest_belief
 id: a3f2b1c9
 reason: Dataset is limited to well-studied proteins; may not generalise.
 ```
-```
+````
 
 **`list_beliefs`** — browse the board:
 
-```
+````
 ```tool:list_beliefs
 status: contested
 ```
-```
+````
 
 Valid status values: `pending`, `accepted`, `contested`, `rejected`.  Omit to
 list all beliefs.
@@ -1717,12 +1715,12 @@ Output example:
 
 ```
                   Belief board — team 'my-team'
-┏━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━━━━┓
-┃ ID     ┃ Status     ┃ Claim                                                    ┃ Confidence ┃ By    ┃ For ┃ Against ┃
-┡━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━━━━┩
-│ a3f2b1 │ ✓ accepted │ AlphaFold3 is best for monomer structure prediction.     │       85%  │ @alice│   2 │       0 │
+┏━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━━━━┓
+┃ ID     ┃ Status      ┃ Claim                                                   ┃ Confidence ┃ By    ┃ For ┃ Against ┃
+┡━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━━━━┩
+│ a3f2b1 │ ✓ accepted  │ AlphaFold3 is best for monomer structure prediction.    │       85%  │ @alice│   2 │       0 │
 │ 9c1d33 │ ⚡ contested│ The dataset generalises to all protein families.        │       60%  │ @bob  │   1 │       1 │
-└────────┴────────────┴──────────────────────────────────────────────────────────┴────────────┴───────┴─────┴─────────┘
+└────────┴─────────────┴─────────────────────────────────────────────────────────┴────────────┴───────┴─────┴─────────┘
 ⚡ Some beliefs are contested — review and resolve via accept_belief / contest_belief tools.
 ```
 
@@ -1917,7 +1915,6 @@ persona: |
 ```
 
 Any team YAML can now use `persona: "@clinician"` once the env var is set.
-```
 
 ---
 
@@ -1955,15 +1952,15 @@ team visualize my-team.yaml --format mermaid
 ASCII example for a `review_loop` team:
 
 ```
-  ┌────────────────────────────────────────────────────┐
-  │         review_loop (max 4 rounds)                  │
-  │                                                    │
+  ┌───────────────────────────────────────────────────┐
+  │         review_loop (max 4 rounds)                │
+  │                                                   │
   │  @postdoc  ──draft──►  @reviewer                  │
   │     ▲                       │                     │
   │     └───── revise ──────────┘                     │
   │                             │                     │
-  │                         APPROVED ──► [[DONE]]      │
-  └────────────────────────────────────────────────────┘
+  │                         APPROVED ──► [[DONE]]     │
+  └───────────────────────────────────────────────────┘
 ```
 
 Mermaid output can be pasted directly into GitHub Markdown or rendered
