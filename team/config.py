@@ -135,6 +135,13 @@ class MemberConfig:
 
 
 @dataclass
+class BridgeConfig:
+    """Optional bridge server settings (used by ``team serve``)."""
+    listen_port: int = 7000
+    max_concurrent_tasks: int = 1
+
+
+@dataclass
 class TeamConfig:
     name: str
     goal: str
@@ -143,6 +150,7 @@ class TeamConfig:
     defaults: Defaults
     members: list[MemberConfig]
     source_path: Path | None = None
+    bridge: BridgeConfig = field(default_factory=BridgeConfig)
 
     # Convenience -------------------------------------------------------- #
 
@@ -172,6 +180,19 @@ def _check_name(name: str, ctx: str) -> None:
         raise TeamConfigError(
             f"{ctx}: invalid name {name!r}; must match {_NAME_RE.pattern}"
         )
+
+
+def _parse_bridge(data: dict) -> BridgeConfig:
+    if not data:
+        return BridgeConfig()
+    b = BridgeConfig()
+    listen_port = data.get("listen_port")
+    if listen_port is not None:
+        b.listen_port = int(listen_port)
+    max_conc = data.get("max_concurrent_tasks")
+    if max_conc is not None:
+        b.max_concurrent_tasks = int(max_conc)
+    return b
 
 
 def _parse_defaults(data: dict) -> Defaults:
@@ -249,6 +270,7 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
     workspace = Path(raw.get("workspace") or f"./runs/{name}").expanduser().resolve()
     defaults = _parse_defaults(raw.get("defaults", {}))
     workflow = _parse_workflow(raw.get("workflow", {}))
+    bridge = _parse_bridge(raw.get("bridge", {}))
 
     members_raw = _require(raw, "members", "team")
     if not isinstance(members_raw, list) or not members_raw:
@@ -297,6 +319,7 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
         defaults=defaults,
         members=members,
         source_path=p,
+        bridge=bridge,
     )
 
 

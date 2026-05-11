@@ -404,6 +404,109 @@ def _list_files(
     return _truncate("\n".join(matched))
 
 
+def _delegate_task(
+    body: str,
+    *,
+    workspace_path: Path | None = None,
+    timeout: int = 600,
+    **_: Any,
+) -> str:
+    """Delegate a sub-task to a remote team cluster and return its results.
+
+    This is the core *inter-team collaboration* tool.  It submits a task to
+    a remote ``team serve`` endpoint, waits for the remote team to complete
+    its full workflow, then writes any files the remote team produced into the
+    local shared workspace and returns a summary.
+
+    Body format::
+
+        url: http://lab-b.example.com:7001
+        goal: Run the survival analysis on the preprocessed BRCA dataset.
+        context: Data is in data/preprocessed.csv (1 142 samples, 38 features).
+        files: data/preprocessed.csv, data/metadata.json
+        timeout: 600
+
+    All fields except ``url`` and ``goal`` are optional.
+
+    * ``context`` — free-text background passed to the remote team.
+    * ``files``   — comma-separated relative paths of workspace files to
+      send with the task.  The remote team receives them in its own shared
+      workspace before its workflow starts.
+    * ``timeout`` — seconds to wait for the remote team to finish
+      (overrides the tool-level timeout; default: 600).
+
+    Returns a text summary of what the remote team accomplished, followed by
+    a list of files it returned.  Any returned files are written into the
+    local workspace so subsequent tool calls (``read_file``, etc.) can access
+    them immediately.
+    """
+    from team.bridge import BridgeTask
+    from team.bridge_client import BridgeClient, BridgeClientError
+
+    url = _parse_kv(body, "url")
+    if not url:
+        return "ERROR: provide url: <remote bridge server URL>"
+    goal = _parse_kv(body, "goal")
+    if not goal:
+        return "ERROR: provide goal: <what the remote team should accomplish>"
+
+    context = _parse_kv(body, "context") or ""
+    files_str = _parse_kv(body, "files") or ""
+    task_timeout_str = _parse_kv(body, "timeout")
+    task_timeout = float(task_timeout_str) if task_timeout_str else float(timeout)
+
+    # Read requested local files to embed in the task.
+    input_files: dict[str, str] = {}
+    if files_str and workspace_path:
+        for rel in [f.strip() for f in files_str.split(",") if f.strip()]:
+            try:
+                target = (workspace_path / rel).resolve()
+                target.relative_to(workspace_path.resolve())
+                if target.is_file():
+                    input_files[rel] = target.read_text(encoding="utf-8", errors="replace")
+                else:
+                    log.warning("delegate_task: file %r not found, skipping", rel)
+            except (ValueError, OSError) as exc:
+                log.warning("delegate_task: skipping %r: %s", rel, exc)
+
+    task = BridgeTask(
+        goal=goal,
+        context=context,
+        files=input_files,
+        sender="local-team",
+    )
+
+    client = BridgeClient(url)
+    log.info("delegate_task: submitting task to %s (goal: %.60s…)", url, goal)
+    try:
+        task_id = client.submit_task(task)
+        result = client.wait_for_result(task_id, timeout=task_timeout)
+    except BridgeClientError as exc:
+        return f"ERROR: bridge communication failed: {exc}"
+
+    if result.status == "error":
+        return f"ERROR: remote team failed: {result.error}"
+
+    # Write remote files into the local workspace.
+    written: list[str] = []
+    if workspace_path and result.files:
+        for rel, content in result.files.items():
+            try:
+                target = (workspace_path / rel).resolve()
+                target.relative_to(workspace_path.resolve())
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                written.append(rel)
+            except (ValueError, OSError) as exc:
+                log.warning("delegate_task: could not write %r: %s", rel, exc)
+
+    parts = [f"Remote team completed the task.\n\nSummary:\n{result.summary}"]
+    if written:
+        parts.append(f"\nFiles received from remote team ({len(written)}):")
+        parts.extend(f"  - {p}" for p in written)
+    return _truncate("\n".join(parts))
+
+
 # --------------------------------------------------------------------------- #
 # Registry & dispatch
 # --------------------------------------------------------------------------- #
@@ -418,18 +521,24 @@ TOOLS: dict[str, Any] = {
     "write_file": _write_file,
     "append_file": _append_file,
     "list_files": _list_files,
+    "delegate_task": _delegate_task,
 }
 
 #: Human-readable one-line description of each tool (used in system prompts).
 TOOL_DESCRIPTIONS: dict[str, str] = {
-    "run_python":  "Execute Python code; cwd is the shared workspace.",
-    "run_bash":    "Execute a bash command; cwd is the shared workspace.",
-    "web_search":  "Search the web via DuckDuckGo instant answers.",
-    "read_url":    "Fetch and return the text content of a URL.",
-    "read_file":   "Read a file from the shared workspace by relative path.",
-    "write_file":  "Write (create or overwrite) a file in the shared workspace.",
-    "append_file": "Append text to a file in the shared workspace.",
-    "list_files":  "List files in the shared workspace with optional glob filter.",
+    "run_python":    "Execute Python code; cwd is the shared workspace.",
+    "run_bash":      "Execute a bash command; cwd is the shared workspace.",
+    "web_search":    "Search the web via DuckDuckGo instant answers.",
+    "read_url":      "Fetch and return the text content of a URL.",
+    "read_file":     "Read a file from the shared workspace by relative path.",
+    "write_file":    "Write (create or overwrite) a file in the shared workspace.",
+    "append_file":   "Append text to a file in the shared workspace.",
+    "list_files":    "List files in the shared workspace with optional glob filter.",
+    "delegate_task": (
+        "Delegate a sub-task to a remote team cluster (team serve) and wait "
+        "for its results; files produced by the remote team are written into "
+        "the local workspace automatically."
+    ),
 }
 
 

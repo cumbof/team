@@ -63,6 +63,12 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [Custom skill plugins](#custom-skill-plugins)
 - [Token usage tracking](#token-usage-tracking)
 - [Run statistics](#run-statistics)
+- [Cross-team collaboration (bridge)](#cross-team-collaboration-bridge)
+  - [How it works](#how-it-works-1)
+  - [Exposing a team as a bridge server](#exposing-a-team-as-a-bridge-server)
+  - [Delegating work from another team](#delegating-work-from-another-team)
+  - [Bridge config reference](#bridge-config-reference)
+  - [Security considerations](#security-considerations)
 - [Interactive wizard](#interactive-wizard)
 - [Workflow visualization](#workflow-visualization)
 - [Custom Ollama image](#custom-ollama-image)
@@ -1189,6 +1195,130 @@ print(s["total_turns"], s["duration_seconds"])
 
 ---
 
+## Cross-team collaboration (bridge)
+
+`team` clusters running on **different machines**, operated by **different
+people or organisations**, can collaborate on common goals through the bridge
+protocol.  One cluster delegates a sub-task to a remote cluster; the remote
+cluster runs its full team workflow and returns the results — including all
+files it produced.  The exchange can repeat over multiple turns, just like a
+real inter-laboratory collaboration.
+
+### How it works
+
+```
+Lab A cluster (local)                       Lab B cluster (remote)
+┌─────────────────────────────────────┐     ┌──────────────────────────────────┐
+│  Orchestrator A                      │     │  team serve lab-b.yaml           │
+│  members: pi, analyst               │     │  BridgeServer (port 7001)        │
+│                                     │     │                                  │
+│  @pi uses delegate_task tool ───────┼─────┼──► POST /tasks                  │
+│                                     │     │    ┌──────────────────────────┐  │
+│                                     │     │    │ Orchestrator B            │  │
+│                                     │     │    │ members: coder, reviewer  │  │
+│                                     │     │    │ runs full workflow        │  │
+│                                     │     │    └──────────────────────────┘  │
+│  result written to workspace ◄──────┼─────┼─── GET /tasks/{id}  (complete)  │
+│  injected into transcript           │     │    files + summary returned      │
+└─────────────────────────────────────┘     └──────────────────────────────────┘
+```
+
+1. **Lab B** exposes its cluster by running `team serve`.
+2. **Lab A's** agents use the `delegate_task` built-in tool, specifying Lab
+   B's URL, a goal, optional context, and optional workspace files to send.
+3. The bridge server receives the task, writes the sent files into a fresh
+   sub-workspace, and runs Lab B's full team workflow with the delegated goal.
+4. When Lab B's workflow finishes, the server returns a summary and all
+   produced files.
+5. The `delegate_task` tool writes the received files into Lab A's shared
+   workspace and returns the summary to the agent — all within a single tool
+   call round.
+6. Lab A's agents incorporate the results and can delegate again if needed.
+
+### Exposing a team as a bridge server
+
+```bash
+# On Lab B's machine — makes the team reachable from the network
+team serve lab-b.yaml --port 7001
+```
+
+Output:
+
+```text
+bridge server started — team lab-b listening on port 7001
+max concurrent tasks: 1 · workspace: ./runs/lab-b/bridge_workspaces
+Press Ctrl-C to stop.
+```
+
+Each incoming task is run in an isolated sub-workspace under
+`<workspace>/bridge_workspaces/<task-id>/` so concurrent tasks never
+interfere.  Press **Ctrl-C** to gracefully shut down.
+
+### Delegating work from another team
+
+Lab A's agents use the **`delegate_task`** built-in tool.  Enable it in the
+YAML like any other tool:
+
+```yaml
+defaults:
+  tools: [delegate_task, read_file, write_file]
+```
+
+Tool invocation syntax inside a member's reply:
+
+````
+```tool:delegate_task
+url: http://lab-b.example.com:7001
+goal: Perform survival analysis on the BRCA cohort.
+context: |
+  We completed pre-processing.  The cleaned dataset is in
+  data/preprocessed.csv (1 142 samples, 38 features, event column: "os_event").
+files: data/preprocessed.csv, data/metadata.json
+timeout: 600
+```
+````
+
+| field | required | description |
+| --- | --- | --- |
+| `url` | ✓ | Base URL of the remote `team serve` endpoint. |
+| `goal` | ✓ | What the remote team should accomplish.  Becomes their workflow goal. |
+| `context` | — | Free-text background that the remote team receives alongside the goal. |
+| `files` | — | Comma-separated local workspace paths to send with the task. |
+| `timeout` | — | Seconds to wait for the remote team to finish (default: 600). |
+
+When the tool returns, any files the remote team produced are written into
+Lab A's local workspace, ready for subsequent tool calls (`read_file`,
+`run_python`, etc.).
+
+### Bridge config reference
+
+Add a `bridge:` section to your YAML to configure the server behaviour:
+
+```yaml
+bridge:
+  listen_port: 7001          # default port for `team serve` (default: 7000)
+  max_concurrent_tasks: 2   # allow up to 2 simultaneous remote tasks (default: 1)
+```
+
+The `--port` flag on `team serve` overrides `listen_port` at runtime.
+
+### Security considerations
+
+> **The bridge server runs your team's full LLM workflow — including any
+> enabled tools such as `run_python` and `run_bash` — for every task it
+> receives.**  Only expose a bridge server to networks you trust.
+
+Practical recommendations:
+
+* Run `team serve` behind a reverse proxy (nginx, Caddy) with TLS and
+  authentication if the server is reachable from the public internet.
+* Restrict the tools available to remote-triggered runs to the minimum
+  needed (e.g. disable `run_bash` if the remote goal is purely analytical).
+* Set `max_concurrent_tasks: 1` (the default) if your hardware cannot
+  safely support parallel model runs.
+
+---
+
 ## Interactive wizard
 
 `team new` launches a guided wizard that asks you a series of questions
@@ -1304,13 +1434,16 @@ team/
 ├── ollama_client.py # HTTP clients for Ollama and OpenAI-compat APIs; token usage
 ├── container.py     # Docker lifecycle: per-team network/volumes/containers
 ├── workspace.py     # parse `file:` blocks, atomic writes, traversal guard, CheckpointManager
-├── bus.py           # transcript with on-disk JSONL persistence
+├── bus.py           # transcript with on-disk JSONL persistence and stats()
 ├── personas.py      # render the system prompt + collaboration protocol + tool section
-├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file, write_file, append_file, list_files
+├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file, write_file, append_file, list_files, delegate_task
 ├── skills.py        # skill plugin loader: local files and remote URLs → tool registry
 ├── member.py        # Member: persona + container runtime + chat client + agentic loop
 ├── workflows.py     # round_robin / manager / review_loop / sequential_chain / debate
 ├── orchestrator.py  # ties everything together, drives the workflow
+├── bridge.py        # bridge protocol: BridgeTask, BridgeResult, TaskStore
+├── bridge_server.py # HTTP bridge server (team serve): accept tasks, run workflows
+├── bridge_client.py # HTTP bridge client: submit_task, poll_result, wait_for_result
 ├── visualize.py     # ASCII and Mermaid diagram renderer
 ├── wizard.py        # interactive `team new` wizard
 └── cli.py           # `team` command (Click + Rich)

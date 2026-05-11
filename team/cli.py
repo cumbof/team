@@ -492,6 +492,80 @@ def stats(team_file: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# serve (bridge server)
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--port",
+    default=None,
+    type=int,
+    show_default=True,
+    help=(
+        "TCP port to listen on.  Defaults to bridge.listen_port in the "
+        "team YAML (7000 if not set)."
+    ),
+)
+def serve(team_file: str, port: int | None) -> None:
+    """Start a bridge server so this team can accept delegated tasks.
+
+    Remote teams can submit work to this server using the ``delegate_task``
+    tool.  Each incoming task triggers a full run of this team's workflow
+    inside an isolated sub-workspace; the results (workspace files and a
+    summary) are returned to the requesting team when the run completes.
+
+    Example — Lab B exposes its cluster on port 7001:
+
+        team serve lab-b.yaml --port 7001
+
+    Lab A can then delegate sub-tasks using the built-in tool:
+
+        ```tool:delegate_task
+        url: http://lab-b.example.com:7001
+        goal: Perform the survival analysis on the BRCA dataset.
+        files: data/preprocessed.csv
+        timeout: 600
+        ```
+    """
+    import signal
+
+    from team.bridge_server import BridgeServer
+
+    cfg = _load(team_file)
+    listen_port = port if port is not None else cfg.bridge.listen_port
+    max_conc = cfg.bridge.max_concurrent_tasks
+    cfg_path = Path(team_file).expanduser().resolve()
+
+    server = BridgeServer(
+        cfg_path=cfg_path,
+        port=listen_port,
+        max_concurrent_tasks=max_conc,
+        workspace_root=cfg.workspace / "bridge_workspaces",
+    )
+    server.start()
+    console.print(
+        f"[green]bridge server started[/green] — "
+        f"team [bold]{cfg.name}[/bold] listening on port [bold]{listen_port}[/bold]"
+    )
+    console.print(
+        f"[dim]max concurrent tasks: {max_conc} · "
+        f"workspace: {cfg.workspace / 'bridge_workspaces'}[/dim]"
+    )
+    console.print("[dim]Press Ctrl-C to stop.[/dim]")
+
+    def _stop(sig: int, frame: object) -> None:  # noqa: ARG001
+        console.print("\n[yellow]shutting down bridge server…[/yellow]")
+        server.stop()
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+    server.join()
+    console.print("[green]bridge server stopped[/green]")
+
+
+# --------------------------------------------------------------------------- #
 # logs
 # --------------------------------------------------------------------------- #
 
