@@ -30,10 +30,12 @@ Available tools
 - ``recall``        — search the member's persistent memory by keyword.
 - ``forget``        — delete a memory by key.
 - ``list_memories`` — list all memories (optionally filtered by tag).
-- ``assert_belief`` — add a claim to the team's shared belief board.
-- ``contest_belief``— contest an existing belief (moves it to contested status).
-- ``accept_belief`` — cast an accept vote for an existing belief.
-- ``list_beliefs``  — list the team's belief board (optionally by status).
+- ``assert_belief``   — add a claim to the team's shared belief board.
+- ``contest_belief``  — contest an existing belief (moves it to contested status).
+- ``accept_belief``   — cast an accept vote for an existing belief.
+- ``list_beliefs``    — list the team's belief board (optionally by status).
+- ``log_decision``    — append a timestamped decision entry to decisions.md in the shared workspace.
+- ``read_decisions``  — read the full decisions log (decisions.md) from the shared workspace.
 
 Security note
 -------------
@@ -807,6 +809,92 @@ def _delegate_task(
 
 
 # --------------------------------------------------------------------------- #
+# Decision log tools (shared team decision record)
+# --------------------------------------------------------------------------- #
+
+_DECISIONS_FILE = "decisions.md"
+
+
+def _log_decision(
+    body: str,
+    *,
+    workspace_path: Path | None = None,
+    member_name: str = "unknown",
+    **_: Any,
+) -> str:
+    """Append a timestamped decision entry to ``decisions.md`` in the shared workspace.
+
+    Body format::
+
+        title: Chose pandas over polars for data wrangling
+        rationale: Polars ecosystem is too immature; pandas is already a dependency.
+        alternatives: polars, dask, vaex
+
+    ``rationale`` and ``alternatives`` are optional.  A formatted entry is
+    appended to ``decisions.md`` (created on first use) so the decision
+    history accumulates across the full run.
+    """
+    import datetime
+
+    if workspace_path is None:
+        return "ERROR: no workspace available"
+
+    title = _parse_kv(body, "title") or body.strip()
+    if not title:
+        return "ERROR: provide title: <short decision title>"
+
+    rationale = _parse_kv(body, "rationale") or ""
+    alternatives = _parse_kv(body, "alternatives") or ""
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    lines = [
+        f"## Decision: {title}",
+        f"**Date:** {now}  ",
+        f"**By:** @{member_name}  ",
+    ]
+    if rationale:
+        lines += ["", f"**Rationale:** {rationale}"]
+    if alternatives:
+        lines += ["", f"**Alternatives considered:** {alternatives}"]
+    lines += ["", "---", ""]
+
+    entry = "\n".join(lines)
+    target = (workspace_path / _DECISIONS_FILE).resolve()
+    try:
+        target.relative_to(workspace_path.resolve())
+    except ValueError:
+        return "ERROR: path traversal guard triggered for decisions.md"
+    try:
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write(entry)
+        return f"Decision logged: {title!r} (appended to {_DECISIONS_FILE})"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR writing decisions.md: {exc}"
+
+
+def _read_decisions(
+    body: str,
+    *,
+    workspace_path: Path | None = None,
+    **_: Any,
+) -> str:
+    """Read the full decision log (``decisions.md``) from the shared workspace.
+
+    No body parameters are required — the entire file is returned.
+    Returns a helpful message when no decisions have been logged yet.
+    """
+    if workspace_path is None:
+        return "ERROR: no workspace available"
+    target = workspace_path / _DECISIONS_FILE
+    if not target.is_file():
+        return "No decisions have been logged yet (decisions.md does not exist)."
+    try:
+        return _truncate(target.read_text(encoding="utf-8", errors="replace"))
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR reading decisions.md: {exc}"
+
+
+# --------------------------------------------------------------------------- #
 # Registry & dispatch
 # --------------------------------------------------------------------------- #
 
@@ -829,6 +917,8 @@ TOOLS: dict[str, Any] = {
     "accept_belief":  _accept_belief,
     "list_beliefs":   _list_beliefs,
     "delegate_task":  _delegate_task,
+    "log_decision":   _log_decision,
+    "read_decisions": _read_decisions,
 }
 
 #: Human-readable one-line description of each tool (used in system prompts).
@@ -854,6 +944,11 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "for its results; files produced by the remote team are written into "
         "the local workspace automatically."
     ),
+    "log_decision":   (
+        "Append a timestamped decision entry to decisions.md in the shared workspace. "
+        "Provide title, rationale, and alternatives considered."
+    ),
+    "read_decisions": "Read the full decision log (decisions.md) from the shared workspace.",
 }
 
 

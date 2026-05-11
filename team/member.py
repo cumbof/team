@@ -155,6 +155,26 @@ class Member:
 
     # ----- conversation ------------------------------------------------- #
 
+    def _load_context_file(self) -> str | None:
+        """Read ``context.md`` from the workspace root, if present.
+
+        The file is placed by the user (not members) and injects team-wide
+        institutional knowledge into every member's system context on every turn.
+        Returns the file content, or ``None`` when the file is absent.
+        """
+        ctx_path = self.team.workspace / "context.md"
+        if not ctx_path.is_file():
+            return None
+        try:
+            text = ctx_path.read_text(encoding="utf-8", errors="replace")
+            # Prevent a very large file from overwhelming the context window.
+            limit = 8192
+            if len(text) > limit:
+                text = text[:limit] + f"\n[… context.md truncated at {limit} chars]"
+            return text.strip()
+        except OSError:
+            return None
+
     def _build_messages(
         self,
         transcript: Transcript,
@@ -162,6 +182,13 @@ class Member:
         prompt: str | None,
     ) -> list[ChatMessage]:
         ctx_lines: list[str] = []
+
+        # Team institutional context (context.md at workspace root) ------------ #
+        ctx_file_content = self._load_context_file()
+        if ctx_file_content:
+            ctx_lines.append("## Team institutional context")
+            ctx_lines.append(ctx_file_content)
+            ctx_lines.append("")
 
         # Persistent memory (injected first so the agent has it in mind) ------- #
         if self.memory is not None:

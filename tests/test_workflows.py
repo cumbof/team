@@ -330,3 +330,173 @@ def test_debate_config_validates_members(tmp_path) -> None:
     with pytest.raises(TeamConfigError, match="ghost"):
         load_team(p)
 
+
+
+# --------------------------------------------------------------------------- #
+# parallel_review
+# --------------------------------------------------------------------------- #
+
+
+from team.workflows import parallel_review
+
+
+@dataclass
+class FakeTurnResult:
+    content: str
+    declared_done: bool = False
+    files_written: list = None  # type: ignore[assignment]
+
+
+class FakeMemberForParallel:
+    """Simulates a Member with a take_turn method (called by parallel_review)."""
+    def __init__(self, name: str, results: list):
+        self.name = name
+        self.config = type("C", (), {"role": name.title()})()
+        self._results = iter(results)
+
+    def take_turn(self, transcript, workspace, prompt=None, **kwargs):
+        return next(self._results)
+
+
+class FakeOrchForParallel:
+    """Extended fake orchestrator that supports both run_turn and direct members."""
+    def __init__(self, team, scripts, member_results):
+        self.team = team
+        self.calls: list[tuple[str, str | None]] = []
+        self._counts: dict[str, int] = {}
+        self._on_round_end = None
+        self.transcript = type("T", (), {"turns": []})()
+        self.workspace = None
+        self.scripts = scripts
+        # Build members with take_turn support
+        self.members = {}
+        for name, results in member_results.items():
+            self.members[name] = FakeMemberForParallel(name, results)
+
+    def run_turn(self, member_name: str, prompt: str | None = None) -> FakeTurnResult:
+        self.calls.append((member_name, prompt))
+        i = self._counts.get(member_name, 0)
+        self._counts[member_name] = i + 1
+        return self.scripts[member_name](i)
+
+
+def _parallel_team(reviewer_names: list[str], synthesizer: str, producer: str) -> TeamConfig:
+    names = [producer] + reviewer_names
+    if synthesizer not in names:
+        names.append(synthesizer)
+    members = [MemberConfig(name=n, role=n.title(), model="m", persona="x") for n in names]
+    return TeamConfig(
+        name="t",
+        goal="g",
+        workspace=__import__("pathlib").Path("/tmp/t"),
+        workflow=WorkflowConfig(
+            type="parallel_review",
+            max_rounds=3,
+            options={
+                "producer": producer,
+                "reviewers": reviewer_names,
+                "synthesizer": synthesizer,
+            },
+        ),
+        defaults=Defaults(),
+        members=members,
+    )
+
+
+def test_parallel_review_approves_after_one_round() -> None:
+    team = _parallel_team(["r1", "r2"], "synth", "prod")
+
+    reviewer_results = {
+        "r1": [FakeTurnResult("r1 review ok")],
+        "r2": [FakeTurnResult("r2 review ok")],
+    }
+    scripts = {
+        "prod": lambda i: FakeTurnResult("draft" if i == 0 else "final [[TEAM_DONE]]",
+                                         declared_done=(i == 1)),
+        "synth": lambda i: FakeTurnResult("All good APPROVED"),
+    }
+
+    orch = FakeOrchForParallel(team, scripts, reviewer_results)
+    # Override transcript.append so it works
+    orch.transcript = type("T", (), {
+        "turns": [],
+        "append": lambda self, **kwargs: None,
+    })()
+
+    parallel_review(orch)
+
+    speakers = [c[0] for c in orch.calls]
+    # prod (initial), synth, prod (finalize)
+    assert "prod" in speakers
+    assert "synth" in speakers
+
+
+def test_parallel_review_max_rounds_exhausted() -> None:
+    team = _parallel_team(["r1", "r2"], "synth", "prod")
+
+    reviewer_results = {
+        "r1": [FakeTurnResult(f"r1 review {i}") for i in range(10)],
+        "r2": [FakeTurnResult(f"r2 review {i}") for i in range(10)],
+    }
+    scripts = {
+        "prod": lambda i: FakeTurnResult(f"draft{i}"),
+        "synth": lambda i: FakeTurnResult("needs changes"),
+    }
+
+    orch = FakeOrchForParallel(team, scripts, reviewer_results)
+    orch.transcript = type("T", (), {
+        "turns": [],
+        "append": lambda self, **kwargs: None,
+    })()
+
+    parallel_review(orch)
+
+    # Should not infinite loop; prod should be called at least once
+    assert any(c[0] == "prod" for c in orch.calls)
+
+
+def test_parallel_review_config_validation_requires_two_reviewers(tmp_path) -> None:
+    import textwrap
+    from team.config import TeamConfigError, load_team
+
+    p = tmp_path / "t.yaml"
+    p.write_text(textwrap.dedent("""
+        name: t1
+        goal: g
+        workflow:
+          type: parallel_review
+          producer: alice
+          reviewers: [bob]
+          synthesizer: alice
+        members:
+          - {name: alice, role: r, model: m, persona: p}
+          - {name: bob, role: r, model: m, persona: p}
+    """), encoding="utf-8")
+    with pytest.raises(TeamConfigError, match="at least 2"):
+        load_team(p)
+
+
+def test_parallel_review_config_validation_unknown_member(tmp_path) -> None:
+    import textwrap
+    from team.config import TeamConfigError, load_team
+
+    p = tmp_path / "t.yaml"
+    p.write_text(textwrap.dedent("""
+        name: t1
+        goal: g
+        workflow:
+          type: parallel_review
+          producer: alice
+          reviewers: [bob, ghost]
+          synthesizer: alice
+        members:
+          - {name: alice, role: r, model: m, persona: p}
+          - {name: bob, role: r, model: m, persona: p}
+    """), encoding="utf-8")
+    with pytest.raises(TeamConfigError, match="ghost"):
+        load_team(p)
+
+
+def test_parallel_review_in_workflow_registry() -> None:
+    from team.workflows import WORKFLOWS
+    assert "parallel_review" in WORKFLOWS

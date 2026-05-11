@@ -517,3 +517,88 @@ def test_execute_tool_forwards_memory_and_beliefs(mem, bboard):
     mem.remember("k", "v")
     result = execute_tool("recall", "query: k", memory=mem, beliefs=bboard, member_name="alice")
     assert not result.startswith("ERROR")
+
+
+# --------------------------------------------------------------------------- #
+# log_decision / read_decisions
+# --------------------------------------------------------------------------- #
+
+
+def test_log_decision_creates_file(tmp_path):
+    result = execute_tool(
+        "log_decision",
+        "title: Use pandas\nrationale: Mature ecosystem\nalternatives: polars, dask",
+        workspace_path=tmp_path,
+        member_name="alice",
+    )
+    assert "logged" in result.lower() or "pandas" in result.lower()
+    decisions_file = tmp_path / "decisions.md"
+    assert decisions_file.is_file()
+    content = decisions_file.read_text()
+    assert "Use pandas" in content
+    assert "@alice" in content
+
+
+def test_log_decision_title_required(tmp_path):
+    result = execute_tool("log_decision", "", workspace_path=tmp_path)
+    assert result.startswith("ERROR")
+
+
+def test_log_decision_no_workspace():
+    result = execute_tool("log_decision", "title: foo", workspace_path=None)
+    assert result.startswith("ERROR")
+
+
+def test_log_decision_appends_multiple_entries(tmp_path):
+    execute_tool("log_decision", "title: First", workspace_path=tmp_path, member_name="a")
+    execute_tool("log_decision", "title: Second", workspace_path=tmp_path, member_name="b")
+    content = (tmp_path / "decisions.md").read_text()
+    assert "First" in content
+    assert "Second" in content
+
+
+def test_log_decision_records_rationale_and_alternatives(tmp_path):
+    execute_tool(
+        "log_decision",
+        "title: T\nrationale: Because reasons\nalternatives: option_a, option_b",
+        workspace_path=tmp_path,
+    )
+    content = (tmp_path / "decisions.md").read_text()
+    assert "Because reasons" in content
+    assert "option_a" in content
+
+
+def test_read_decisions_empty(tmp_path):
+    result = execute_tool("read_decisions", "", workspace_path=tmp_path)
+    assert "no decisions" in result.lower() or "does not exist" in result.lower()
+
+
+def test_read_decisions_returns_content(tmp_path):
+    execute_tool("log_decision", "title: MyDecision", workspace_path=tmp_path)
+    result = execute_tool("read_decisions", "", workspace_path=tmp_path)
+    assert "MyDecision" in result
+
+
+def test_read_decisions_no_workspace():
+    result = execute_tool("read_decisions", "", workspace_path=None)
+    assert result.startswith("ERROR")
+
+
+def test_log_and_read_decisions_round_trip(tmp_path):
+    execute_tool(
+        "log_decision",
+        "title: Alpha\nrationale: It works\nalternatives: beta",
+        workspace_path=tmp_path,
+        member_name="tester",
+    )
+    result = execute_tool("read_decisions", "", workspace_path=tmp_path)
+    assert "Alpha" in result
+    assert "It works" in result
+    assert "@tester" in result
+
+
+def test_log_decision_in_tool_registry():
+    assert "log_decision" in TOOLS
+    assert "read_decisions" in TOOLS
+    assert "log_decision" in TOOL_DESCRIPTIONS
+    assert "read_decisions" in TOOL_DESCRIPTIONS

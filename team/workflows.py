@@ -369,6 +369,173 @@ def debate(orch: "Orchestrator") -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Parallel review
+# --------------------------------------------------------------------------- #
+
+
+def parallel_review(orch: "Orchestrator") -> None:
+    """Fan-out review: N reviewers critique a deliverable simultaneously, then a
+    synthesizer consolidates their feedback, and the producer revises.
+
+    Unlike :func:`review_loop`, which uses a single serial reviewer, this
+    workflow dispatches **all** reviewers in parallel (using a thread pool) so
+    the total review time is bounded by the slowest reviewer rather than the
+    sum of all reviewers.  Their findings are concatenated in a consistent
+    order and handed to a *synthesizer* who produces a single actionable
+    verdict before the producer revises.
+
+    Required workflow options:
+
+    * ``producer``    — member who creates and revises the deliverable.
+    * ``reviewers``   — list of 2+ member names who review in parallel.
+    * ``synthesizer`` — member who consolidates the parallel reviews (may be
+      the same as ``producer``).
+
+    Optional:
+
+    * ``approve_token`` — token the synthesizer emits to signal approval
+      (default: ``APPROVED``).
+
+    Example YAML::
+
+        workflow:
+          type: parallel_review
+          max_rounds: 4
+          producer: writer
+          reviewers: [critic_a, critic_b, critic_c]
+          synthesizer: editor
+          approve_token: APPROVED
+
+    Thread-safety note
+    ------------------
+    Each reviewer calls :meth:`~team.member.Member.take_turn` concurrently.
+    ``take_turn`` reads the shared transcript (read-only during the parallel
+    window) and issues independent LLM calls, so there are no data races.
+    Reviewer members should not use file-writing tools during parallel turns
+    to avoid concurrent workspace writes.
+    """
+    import concurrent.futures
+
+    opts = orch.team.workflow.options
+    producer_name: str = opts["producer"]
+    reviewer_names: list[str] = opts["reviewers"]
+    synthesizer_name: str = opts.get("synthesizer", producer_name)
+    approve_token: str = opts.get("approve_token", "APPROVED")
+    max_rounds = orch.team.workflow.max_rounds
+
+    if not reviewer_names or len(reviewer_names) < 2:
+        raise ValueError("parallel_review requires at least 2 reviewers")
+
+    # ---------- Phase 1: Producer creates the first deliverable ------------ #
+    pres = orch.run_turn(
+        producer_name,
+        prompt=(
+            "Produce the FIRST complete draft of the deliverable required "
+            "by the team goal.  Use file blocks for any artifacts."
+        ),
+    )
+    if pres.declared_done:
+        return
+
+    for revision in range(1, max_rounds + 1):
+        log.info(
+            "parallel_review revision %d/%d — dispatching %d reviewers",
+            revision, max_rounds, len(reviewer_names),
+        )
+
+        # ---------- Phase 2: All reviewers run in parallel ---------------- #
+        review_results: dict[str, "TurnResult"] = {}  # type: ignore[type-arg]
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(reviewer_names), thread_name_prefix="reviewer"
+        ) as pool:
+            futures = {
+                pool.submit(
+                    orch.members[r_name].take_turn,
+                    orch.transcript,
+                    orch.workspace,
+                    (
+                        f"PARALLEL REVIEW — revision #{revision} from @{producer_name}.\n"
+                        "Provide specific, actionable feedback on the deliverable.  "
+                        "Note what is good, what is problematic, and what concrete "
+                        "changes would fix the problems.  Be concise and direct."
+                    ),
+                ): r_name
+                for r_name in reviewer_names
+            }
+            for future in concurrent.futures.as_completed(futures):
+                r_name = futures[future]
+                try:
+                    review_results[r_name] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    log.error("reviewer @%s raised an exception: %s", r_name, exc)
+                    from team.member import TurnResult
+                    review_results[r_name] = TurnResult(
+                        content=f"[ERROR: reviewer @{r_name} failed: {exc}]",
+                        declared_done=False,
+                        files_written=[],
+                    )
+
+        # Append all review turns to the transcript in a deterministic order.
+        for r_name in reviewer_names:
+            result = review_results[r_name]
+            member = orch.members[r_name]
+            orch.transcript.append(
+                speaker=r_name,
+                role=member.config.role,
+                content=result.content,
+                files_written=result.files_written,
+            )
+            log.info("parallel_review: @%s review appended", r_name)
+
+        # Check if any reviewer declared done (unusual but possible).
+        if any(review_results[r].declared_done for r in reviewer_names):
+            log.info("a reviewer declared TEAM_DONE — parallel_review ending")
+            return
+
+        # ---------- Phase 3: Synthesizer consolidates the reviews ---------- #
+        reviewer_list = ", ".join(f"@{r}" for r in reviewer_names)
+        sres = orch.run_turn(
+            synthesizer_name,
+            prompt=(
+                f"SYNTHESIS — {len(reviewer_names)} parallel reviews from "
+                f"{reviewer_list} have been appended to the transcript.\n\n"
+                "Read all of them and produce ONE consolidated, prioritised "
+                "list of required changes.  If — and only if — all reviewers "
+                "agree the deliverable is ready with no further changes, end "
+                f"your synthesis with the single token `{approve_token}`.  "
+                "Otherwise list the must-fix items in priority order."
+            ),
+        )
+        if sres.declared_done or approve_token in sres.content:
+            log.info("synthesizer approved after revision %d", revision)
+            orch.run_turn(
+                producer_name,
+                prompt=(
+                    "All reviewers approved the deliverable.  Finalise any "
+                    "remaining files and end with `[[TEAM_DONE]]`."
+                ),
+            )
+            return
+
+        # ---------- Phase 4: Producer revises ------------------------------ #
+        pres = orch.run_turn(
+            producer_name,
+            prompt=(
+                "Address ALL items raised in the synthesizer's verdict above.  "
+                "Update the affected files using file blocks.  Describe what you "
+                "changed and why."
+            ),
+        )
+        if pres.declared_done:
+            return
+
+        if orch._on_round_end:
+            orch._on_round_end(revision - 1)
+
+    log.info("parallel_review hit max_rounds=%d", max_rounds)
+
+
+# --------------------------------------------------------------------------- #
 # Dispatch
 # --------------------------------------------------------------------------- #
 
@@ -379,6 +546,7 @@ WORKFLOWS = {
     "review_loop": review_loop,
     "sequential_chain": sequential_chain,
     "debate": debate,
+    "parallel_review": parallel_review,
 }
 
 

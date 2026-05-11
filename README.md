@@ -42,13 +42,15 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | Feature | Description |
 | --- | --- |
 | **Containerised members** | Every LLM runs in its own Docker + Ollama container with configurable CPU, RAM, and GPU limits. |
-| **Flexible workflows** | `round_robin`, `manager`, `review_loop`, `sequential_chain`, `debate` — pick or combine. |
+| **Flexible workflows** | `round_robin`, `manager`, `review_loop`, `sequential_chain`, `debate`, `parallel_review` — pick or combine. |
 | **Shared workspace** | Members read and write real files (code, reports, data) to a host directory. |
-| **Agent tool use** | 17 built-in tools (Python, Bash, web search, file I/O, memory, beliefs, delegation); extend with custom skills. |
+| **Agent tool use** | 19 built-in tools (Python, Bash, web search, file I/O, memory, beliefs, decisions, delegation); extend with custom skills. |
 | **Predefined persona library** | 16 ready-made personas (`@pi`, `@engineer`, `@reviewer` …) stored as individual YAML files in `personas/`; extend with your own via `TEAM_PERSONA_DIR`. |
 | **Per-agent persistent memory** | SQLite-backed memory that survives between runs; agents `remember` and `recall` across sessions. |
 | **Shared team belief board** | Structured collective knowledge with confidence scores, voting, and consensus tracking. |
 | **Cross-team federation (bridge)** | Two independent `team` clusters can delegate tasks to each other over HTTP — academic-lab-style collaboration. |
+| **Shared institutional context** | Drop a `context.md` in the workspace root and every member sees it on every turn — no per-member config needed. |
+| **Decision log** | Members call `log_decision` to append timestamped, rationale-rich entries to `decisions.md`; any member can `read_decisions` at any time. |
 | **Workspace time-travel** | `team rollback` restores the workspace to any past checkpoint and lets you resume from there. |
 | **Human-in-the-loop** | Interrupt a live run, read the transcript, inject a message, and let the team continue. |
 | **OpenAI-compatible backends** | Swap Ollama for any OpenAI-compatible API (GPT-4o, Mistral, Together AI, …) per member. |
@@ -354,6 +356,7 @@ workflow:
 | `review_loop` | `producer: <member>`, `reviewer: <member>`, optional `approve_token` |
 | `sequential_chain` | optional `prompt_template` (supports `{prev_speaker}`, `{prev_content}`) |
 | `debate` | `pro: <member>`, `con: <member>`, `judge: <member>`, optional `rounds` |
+| `parallel_review` | `producer: <member>`, `reviewers: [m1, m2, …]` (≥2), `synthesizer: <member>`, optional `approve_token` |
 
 ### `members`
 
@@ -482,6 +485,44 @@ workflow:
 3. Steps 1–2 repeat for `rounds` rounds.
 4. The **judge** receives the full exchange and delivers a verdict.
 5. Any member can end early by emitting `[[TEAM_DONE]]`.
+
+---
+
+### `parallel_review`
+
+Like `review_loop` but all reviewers read the deliverable **at the same time**
+(using a thread pool), so the total review wall-time is bounded by the
+*slowest* reviewer, not the sum of all reviewers.  A designated **synthesizer**
+then consolidates the parallel reviews into one prioritised verdict, and the
+**producer** revises.
+
+```yaml
+workflow:
+  type: parallel_review
+  max_rounds: 4            # max revision cycles before stopping
+  producer: writer         # who creates and revises the deliverable
+  reviewers:               # 2 or more members who review in parallel
+    - methods_reviewer
+    - stats_reviewer
+    - clarity_reviewer
+  synthesizer: editor      # consolidates the parallel reviews (may equal producer)
+  approve_token: APPROVED  # optional; default is "APPROVED"
+```
+
+**Flow per revision cycle:**
+
+1. All reviewers are dispatched simultaneously; each receives the same
+   transcript snapshot and produces its review independently.
+2. Reviews are appended to the transcript in declaration order.
+3. The **synthesizer** reads all reviews and emits a consolidated verdict
+   (or `APPROVED` when no further changes are needed).
+4. If approved, the producer finalises and emits `[[TEAM_DONE]]`.
+5. Otherwise the producer addresses the feedback and the cycle repeats.
+
+> **Thread-safety note:** Reviewer turns are truly parallel LLM calls.
+> Each reviewer reads the transcript (read-only during the parallel window)
+> and calls its own model.  Reviewers should not use file-writing tools
+> during their review turns to avoid concurrent workspace writes.
 
 ---
 
@@ -1279,6 +1320,92 @@ t = Transcript(persist_path=cfg.workspace / "transcript.jsonl", resume=True)
 s = t.stats()
 print(s["total_turns"], s["duration_seconds"])
 ```
+
+---
+
+## Shared institutional context
+
+When a workspace contains a `context.md` file at its root, `team` injects its
+content into **every** member's turn context automatically — no per-member
+configuration required.
+
+This is the right place for knowledge that applies to all members equally:
+lab conventions, dataset descriptions, domain terminology, naming standards,
+relevant prior work, or any background a new team member would need to read
+on day one.
+
+**Creating the context file:**
+
+```bash
+cat > ./runs/my-team/context.md << 'EOF'
+# Lab context
+
+This project analyses the TCGA-BRCA cohort (1,142 samples, 38 features).
+
+## Naming conventions
+- All feature files use `snake_case` column names.
+- Model outputs go in `results/`.
+
+## Domain notes
+- Use log2 CPM normalisation for expression data.
+- Primary endpoint is 5-year overall survival (OS5).
+EOF
+```
+
+The file is read from disk **on every turn** so you can update it while a
+run is in progress (e.g. to correct a mistake or add a new constraint).
+If the file is absent, the section is silently omitted.
+The content is truncated at 8 192 characters if the file is very large.
+
+---
+
+## Decision log
+
+Members with the `log_decision` tool enabled can record structured, timestamped
+decisions in a shared `decisions.md` file inside the workspace.  Any member
+can later call `read_decisions` to review the accumulated rationale before
+making related choices.
+
+**Enabling the tools:**
+
+```yaml
+defaults:
+  tools: [log_decision, read_decisions]   # add to any existing tool list
+```
+
+**Logging a decision:**
+
+```
+```tool:log_decision
+title: Chose pandas over polars for data wrangling
+rationale: Polars ecosystem is too immature; pandas is already a project dependency.
+alternatives: polars, dask, vaex
+```
+```
+
+The entry is appended to `decisions.md` in the shared workspace:
+
+```markdown
+## Decision: Chose pandas over polars for data wrangling
+**Date:** 2024-07-15T10:32:44Z  
+**By:** @data_scientist  
+
+**Rationale:** Polars ecosystem is too immature; pandas is already a project dependency.
+
+**Alternatives considered:** polars, dask, vaex
+
+---
+```
+
+**Reading the decision log:**
+
+```
+```tool:read_decisions
+```
+```
+
+Returns the full `decisions.md` content so members can consult previous
+decisions when facing related choices.
 
 ---
 

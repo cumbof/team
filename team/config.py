@@ -254,7 +254,7 @@ def _parse_workflow(data: dict) -> WorkflowConfig:
     if not data:
         return WorkflowConfig()
     wf_type = data.get("type", "round_robin")
-    valid_types = {"round_robin", "manager", "review_loop", "sequential_chain", "debate"}
+    valid_types = {"round_robin", "manager", "review_loop", "sequential_chain", "debate", "parallel_review"}
     if wf_type not in valid_types:
         raise TeamConfigError(
             f"workflow.type={wf_type!r} is not one of "
@@ -384,6 +384,25 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
             if role_name not in seen:
                 raise TeamConfigError(
                     f"debate role {role_name!r} is not a member"
+                )
+
+    if workflow.type == "parallel_review":
+        producer = workflow.options.get("producer")
+        reviewers = workflow.options.get("reviewers") or []
+        synthesizer = workflow.options.get("synthesizer", producer)
+        if not producer:
+            raise TeamConfigError(
+                "workflow type=parallel_review requires a producer option"
+            )
+        if not isinstance(reviewers, list) or len(reviewers) < 2:
+            raise TeamConfigError(
+                "workflow type=parallel_review requires reviewers: [name1, name2, ...]"
+                " with at least 2 members"
+            )
+        for role_name in [producer, synthesizer] + list(reviewers):
+            if role_name not in seen:
+                raise TeamConfigError(
+                    f"parallel_review member {role_name!r} is not a declared member"
                 )
 
     return TeamConfig(
