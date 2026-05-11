@@ -742,5 +742,204 @@ def restore(team_file: str, checkpoint_id: str) -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# rollback
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--to",
+    "checkpoint_id",
+    default=None,
+    metavar="ID",
+    help="Checkpoint ID to restore (from the list shown without --to).",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt when restoring.",
+)
+def rollback(team_file: str, checkpoint_id: str | None, yes: bool) -> None:
+    """List checkpoints and optionally roll the workspace back to one.
+
+    Without ``--to``, shows all available checkpoints as a table (same as
+    ``team checkpoints``).  With ``--to ID``, atomically replaces the shared
+    workspace with the snapshot at that checkpoint, after asking for
+    confirmation (skip with ``--yes``).
+
+    Example workflow:
+
+    \\b
+        team rollback myteam.yaml               # list all checkpoints
+        team rollback myteam.yaml --to 0005_alice_20250510T183000
+        team rollback myteam.yaml --to 0005_alice_20250510T183000 --yes
+
+    After rolling back, use ``team run --resume`` to continue from the
+    restored state with a different prompt or model configuration.
+    """
+    from team.workspace import CheckpointManager
+
+    cfg = _load(team_file)
+    mgr = CheckpointManager(cfg.workspace)
+    items = mgr.list_checkpoints()
+
+    if not items:
+        console.print("[yellow]no checkpoints found[/yellow] — run the team first.")
+        return
+
+    if checkpoint_id is None:
+        # Just list.
+        table = Table(title=f"Checkpoints — team '{cfg.name}'  (use --to ID to restore)")
+        table.add_column("ID", style="bold")
+        table.add_column("Turn", justify="right")
+        table.add_column("Before member")
+        table.add_column("Timestamp")
+        table.add_column("Files", justify="right")
+        for cp in items:
+            ts_fmt = (
+                f"{cp.timestamp[:4]}-{cp.timestamp[4:6]}-{cp.timestamp[6:8]} "
+                f"{cp.timestamp[9:11]}:{cp.timestamp[11:13]}:{cp.timestamp[13:15]}"
+                if len(cp.timestamp) == 15
+                else cp.timestamp
+            )
+            table.add_row(cp.id, str(cp.turn), f"@{cp.member}", ts_fmt, str(cp.file_count))
+        console.print(table)
+        return
+
+    # Validate the checkpoint exists.
+    matching = [cp for cp in items if cp.id == checkpoint_id]
+    if not matching:
+        console.print(f"[red]checkpoint not found:[/red] {checkpoint_id!r}")
+        console.print(f"[dim]Run [bold]team rollback {team_file}[/bold] to see available checkpoints.[/dim]")
+        sys.exit(1)
+    cp_info = matching[0]
+
+    # Confirm unless --yes.
+    if not yes:
+        ts_fmt = (
+            f"{cp_info.timestamp[:4]}-{cp_info.timestamp[4:6]}-{cp_info.timestamp[6:8]} "
+            f"{cp_info.timestamp[9:11]}:{cp_info.timestamp[11:13]}:{cp_info.timestamp[13:15]}"
+            if len(cp_info.timestamp) == 15
+            else cp_info.timestamp
+        )
+        console.print(
+            f"[yellow]About to restore checkpoint [bold]{checkpoint_id}[/bold][/yellow]\n"
+            f"  Turn: {cp_info.turn}  ·  Before: @{cp_info.member}  ·  "
+            f"  Timestamp: {ts_fmt}  ·  Files: {cp_info.file_count}\n"
+            "[red]This will replace the current shared workspace.[/red]"
+        )
+        try:
+            confirmed = click.confirm("Continue?", default=False)
+        except click.Abort:
+            confirmed = False
+        if not confirmed:
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    try:
+        restored = mgr.restore(checkpoint_id)
+    except ValueError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        sys.exit(1)
+
+    console.print(
+        f"[green]Rolled back[/green] to checkpoint [bold]{restored.id}[/bold] "
+        f"— {restored.file_count} file(s) restored to shared workspace."
+    )
+    console.print(
+        "[dim]Tip: run [bold]team run --resume[/bold] to continue from this point.[/dim]"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# beliefs
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--status",
+    default=None,
+    type=click.Choice(["pending", "accepted", "contested", "rejected"]),
+    help="Filter beliefs by status.",
+)
+def beliefs(team_file: str, status: str | None) -> None:
+    """Display the team's shared belief board.
+
+    Shows all beliefs the team has asserted during their runs, together
+    with confidence scores, voting counts, and current consensus status.
+
+    Examples:
+
+    \\b
+        team beliefs myteam.yaml                    # all beliefs
+        team beliefs myteam.yaml --status accepted  # accepted only
+        team beliefs myteam.yaml --status contested # requires attention
+    """
+    from team.beliefs import BeliefBoard
+
+    cfg = _load(team_file)
+    beliefs_path = cfg.workspace / "beliefs.json"
+    if not beliefs_path.exists():
+        console.print(
+            "[yellow]No belief board found.[/yellow]\n"
+            "[dim]Enable beliefs in your team YAML:\n"
+            "  beliefs:\n"
+            "    enabled: true[/dim]"
+        )
+        return
+
+    board = BeliefBoard(
+        path=beliefs_path,
+        member_names=cfg.member_names(),
+        consensus_threshold=cfg.beliefs.consensus_threshold,
+    )
+    items = board.list_beliefs(status=status)
+
+    if not items:
+        msg = f"No beliefs with status [bold]{status}[/bold]." if status else "The belief board is empty."
+        console.print(f"[yellow]{msg}[/yellow]")
+        return
+
+    _ICONS = {"accepted": "✓", "contested": "⚡", "rejected": "✗", "pending": "?"}
+    _COLORS = {"accepted": "green", "contested": "yellow", "rejected": "red", "pending": "blue"}
+
+    title = f"Belief board — team '{cfg.name}'"
+    if status:
+        title += f"  [status={status}]"
+    table = Table(title=title)
+    table.add_column("ID", style="bold")
+    table.add_column("Status")
+    table.add_column("Claim")
+    table.add_column("Confidence", justify="right")
+    table.add_column("By")
+    table.add_column("For", justify="right")
+    table.add_column("Against", justify="right")
+
+    for b in items:
+        icon = _ICONS.get(b.status, "?")
+        color = _COLORS.get(b.status, "white")
+        claim_preview = b.claim[:80] + "…" if len(b.claim) > 80 else b.claim
+        table.add_row(
+            b.id,
+            f"[{color}]{icon} {b.status}[/{color}]",
+            claim_preview,
+            f"{b.confidence:.0%}",
+            f"@{b.author}",
+            str(len(b.votes_for)),
+            str(len(b.votes_against)),
+        )
+
+    console.print(table)
+    if any(b.status == "contested" for b in items):
+        console.print(
+            "[yellow]⚡ Some beliefs are contested — review and resolve via accept_belief / contest_belief tools.[/yellow]"
+        )
+
+
 if __name__ == "__main__":  # pragma: no cover
     cli()

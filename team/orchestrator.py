@@ -42,6 +42,8 @@ class Orchestrator:
         self.inject_path: Path = team.workspace / "inject.txt"
         # F6: token usage accumulated across live turns (not replayed ones).
         self._token_totals: dict[str, dict[str, int]] = {}
+        # Shared belief board (None when beliefs.enabled is False).
+        self.beliefs = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -49,9 +51,38 @@ class Orchestrator:
 
     def up(self, prepare_deadline_seconds: int = 300) -> None:
         """Start containers and ensure all models are pulled."""
+        # Optionally create the shared belief board.
+        if self.team.beliefs.enabled:
+            from team.beliefs import BeliefBoard
+            beliefs_path = self.team.workspace / "beliefs.json"
+            self.beliefs = BeliefBoard(
+                path=beliefs_path,
+                member_names=self.team.member_names(),
+                consensus_threshold=self.team.beliefs.consensus_threshold,
+            )
+            log.info("beliefs: board enabled at %s", beliefs_path)
+
         runtimes = self.containers.start_all()
         for rt in runtimes:
-            self.members[rt.member.name] = Member(self.team, rt.member, rt)
+            # Optionally create a per-member persistent memory store.
+            member_memory = None
+            if self.team.memory.enabled:
+                from team.memory import AgentMemory
+                mem_dir = (
+                    Path(self.team.memory.store).expanduser()
+                    if self.team.memory.store
+                    else self.team.workspace / "memory"
+                )
+                mem_path = mem_dir / f"{rt.member.name}.db"
+                member_memory = AgentMemory(mem_path)
+                log.info("memory: enabled for @%s at %s", rt.member.name, mem_path)
+
+            self.members[rt.member.name] = Member(
+                self.team, rt.member, rt,
+                memory=member_memory,
+                beliefs=self.beliefs,
+            )
+
         for m in self.members.values():
             m.prepare(deadline_seconds=prepare_deadline_seconds)
         self._kickoff()

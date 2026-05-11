@@ -69,6 +69,16 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [Delegating work from another team](#delegating-work-from-another-team)
   - [Bridge config reference](#bridge-config-reference)
   - [Security considerations](#security-considerations)
+- [Per-agent persistent memory](#per-agent-persistent-memory)
+  - [Enabling memory](#enabling-memory)
+  - [Memory tools](#memory-tools)
+  - [Memory config reference](#memory-config-reference)
+- [Shared team belief board](#shared-team-belief-board)
+  - [Enabling the belief board](#enabling-the-belief-board)
+  - [Belief tools](#belief-tools)
+  - [Inspecting beliefs with team beliefs](#inspecting-beliefs-with-team-beliefs)
+  - [Belief config reference](#belief-config-reference)
+- [Workspace time-travel (`team rollback`)](#workspace-time-travel-team-rollback)
 - [Interactive wizard](#interactive-wizard)
 - [Workflow visualization](#workflow-visualization)
 - [Custom Ollama image](#custom-ollama-image)
@@ -957,6 +967,15 @@ transcript as usual.
 | `write_file` | Write (create or overwrite) a file in the shared workspace. |
 | `append_file` | Append text to a file in the shared workspace. |
 | `list_files` | List files in the shared workspace with an optional glob filter. |
+| `remember` | Store a memory in the member's **persistent cross-session** memory store. |
+| `recall` | Search the member's persistent memory by keyword. |
+| `forget` | Delete a memory by key from the persistent store. |
+| `list_memories` | List stored memories (optionally filtered by tag). |
+| `assert_belief` | Add a claim to the team's **shared belief board** with confidence score. |
+| `contest_belief` | Contest an existing belief (moves it to contested status). |
+| `accept_belief` | Cast an accept vote for an existing belief. |
+| `list_beliefs` | List the shared belief board (optionally filtered by status). |
+| `delegate_task` | Delegate a sub-task to a remote bridge server and wait for results. |
 
 **`write_file` and `append_file` body format**
 
@@ -1319,6 +1338,245 @@ Practical recommendations:
 
 ---
 
+## Per-agent persistent memory
+
+In a real research lab, scientists remember what worked and what failed —
+across months of experiments.  `team` gives each agent a **private,
+persistent memory store** backed by SQLite that survives between completely
+separate `team run` invocations.
+
+```
+Session 1 (January): alice uses remember to store "AlphaFold3 RMSD 1.2 Å"
+Session 2 (February): alice uses recall to surface that result and build on it
+```
+
+This is what separates `team` from all other orchestration frameworks: your
+agents actually **accumulate knowledge over time**.
+
+### Enabling memory
+
+Add a `memory:` section to your team YAML:
+
+```yaml
+memory:
+  enabled: true
+  inject_recent: 5    # memories injected into each turn's context (default: 5)
+  store: ~/.team/memory   # optional; defaults to <workspace>/memory/
+```
+
+Enable memory tools for each member:
+
+```yaml
+members:
+  - name: alice
+    tools: [run_python, remember, recall, forget, list_memories]
+```
+
+### Memory tools
+
+All memory tools use a `key:` / header + `---` / value body format:
+
+**`remember`** — store a cross-session memory:
+
+```
+```tool:remember
+key: protein_folding_baseline_2025
+tags: results, methods
+importance: 0.9
+---
+AlphaFold3 outperforms RoseTTAFold on monomers (RMSD 1.2 vs 2.1 Å, n=1 000).
+Dataset: PDB validation set, tested January 2025.
+```
+```
+
+**`recall`** — full-text search across all memories:
+
+```
+```tool:recall
+query: protein folding
+limit: 5
+```
+```
+
+Returns a ranked list of matching memories (by importance then recency).
+
+**`forget`** — delete a memory by key:
+
+```
+```tool:forget
+key: protein_folding_baseline_2025
+```
+```
+
+**`list_memories`** — browse all memories (optionally by tag):
+
+```
+```tool:list_memories
+tag: results
+limit: 20
+```
+```
+
+At the start of every turn, the *n* most recent memories are automatically
+injected into the member's context under `## Your persistent memories`.
+
+### Memory config reference
+
+| key | type | default | description |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Enable persistent memory for all members. |
+| `inject_recent` | int | `5` | Number of recent memories to inject into each turn's context. |
+| `store` | path | `<workspace>/memory` | Directory that holds the per-member SQLite databases. |
+
+---
+
+## Shared team belief board
+
+In collaborative science, a team's most important output is not files — it is
+**what the team collectively knows**.  The `team` belief board formalises this
+as a living, structured record of claims with provenance, confidence scores,
+and consensus voting.
+
+```
+alice asserts: "RNA Pol II is rate-limiting in elongation" (confidence: 85%)
+bob accepts → 2/3 votes ≥ threshold → status: ACCEPTED
+carol contests with reason: "only tested in HEK293" → status: CONTESTED
+```
+
+After a run: `team beliefs myteam.yaml` shows everything the team concluded.
+
+### Enabling the belief board
+
+```yaml
+beliefs:
+  enabled: true
+  consensus_threshold: 0.5   # fraction of members required for acceptance
+  inject_limit: 10            # beliefs shown in each member's turn context
+```
+
+Enable belief tools for each member:
+
+```yaml
+members:
+  - name: alice
+    tools: [run_python, assert_belief, contest_belief, accept_belief, list_beliefs]
+```
+
+### Belief tools
+
+**`assert_belief`** — propose a claim with optional evidence:
+
+```
+```tool:assert_belief
+confidence: 0.85
+evidence: RMSD analysis, PDB validation set, n=1 000, January 2025
+---
+AlphaFold3 is the best available method for monomer structure prediction.
+```
+```
+
+The member who asserts a belief automatically casts an *accept* vote.  The
+returned belief ID (e.g. `a3f2b1c9`) is used in subsequent votes.
+
+**`accept_belief`** — vote to accept:
+
+```
+```tool:accept_belief
+id: a3f2b1c9
+```
+```
+
+**`contest_belief`** — move a belief to `contested` status:
+
+```
+```tool:contest_belief
+id: a3f2b1c9
+reason: Dataset is limited to well-studied proteins; may not generalise.
+```
+```
+
+**`list_beliefs`** — browse the board:
+
+```
+```tool:list_beliefs
+status: contested
+```
+```
+
+Valid status values: `pending`, `accepted`, `contested`, `rejected`.  Omit to
+list all beliefs.
+
+Beliefs are injected into every member's turn context under
+`## Shared team belief board` so the whole team sees the current state before
+each turn.
+
+### Inspecting beliefs with team beliefs
+
+```bash
+team beliefs myteam.yaml                    # all beliefs
+team beliefs myteam.yaml --status accepted  # accepted only
+team beliefs myteam.yaml --status contested # contested — needs attention
+```
+
+Output example:
+
+```
+                  Belief board — team 'my-team'
+┏━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━━━━┓
+┃ ID     ┃ Status     ┃ Claim                                                    ┃ Confidence ┃ By    ┃ For ┃ Against ┃
+┡━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━━━━┩
+│ a3f2b1 │ ✓ accepted │ AlphaFold3 is best for monomer structure prediction.     │       85%  │ @alice│   2 │       0 │
+│ 9c1d33 │ ⚡ contested│ The dataset generalises to all protein families.        │       60%  │ @bob  │   1 │       1 │
+└────────┴────────────┴──────────────────────────────────────────────────────────┴────────────┴───────┴─────┴─────────┘
+⚡ Some beliefs are contested — review and resolve via accept_belief / contest_belief tools.
+```
+
+### Belief config reference
+
+| key | type | default | description |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Enable the shared belief board. |
+| `consensus_threshold` | float | `0.5` | Fraction of members who must accept a belief for it to become `accepted`. |
+| `inject_limit` | int | `10` | Maximum number of beliefs injected into each member's turn context. |
+
+---
+
+## Workspace time-travel (`team rollback`)
+
+Every live member turn is preceded by an automatic workspace snapshot (see
+[Workspace checkpoints](#workspace-checkpoints)).  When things go wrong you
+can roll back the shared workspace to *any prior point in time* and resume
+from there — effectively forking the timeline:
+
+```bash
+# 1. List all available snapshots
+team rollback myteam.yaml
+
+# 2. Restore to a specific checkpoint (with confirmation prompt)
+team rollback myteam.yaml --to 0005_alice_20250510T183000
+
+# 3. Skip the confirmation prompt (useful in scripts)
+team rollback myteam.yaml --to 0005_alice_20250510T183000 --yes
+```
+
+After rolling back, resume the run from the restored state:
+
+```bash
+team run myteam.yaml --resume
+```
+
+Because the transcript also persists, `--resume` skips all turns already
+recorded in it.  To *re-run* from turn 5 with a different approach, truncate
+the transcript manually (or delete it and rely entirely on the restored
+workspace files).
+
+> `team rollback` is a thin wrapper around the existing
+> `CheckpointManager.restore()` logic.  The underlying `team restore`
+> command (which requires an exact checkpoint ID argument) remains available
+> for scripting.
+
+---
+
 ## Interactive wizard
 
 `team new` launches a guided wizard that asks you a series of questions
@@ -1436,8 +1694,10 @@ team/
 ├── workspace.py     # parse `file:` blocks, atomic writes, traversal guard, CheckpointManager
 ├── bus.py           # transcript with on-disk JSONL persistence and stats()
 ├── personas.py      # render the system prompt + collaboration protocol + tool section
-├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file, write_file, append_file, list_files, delegate_task
+├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file, write_file, append_file, list_files, delegate_task, remember, recall, forget, list_memories, assert_belief, contest_belief, accept_belief, list_beliefs
 ├── skills.py        # skill plugin loader: local files and remote URLs → tool registry
+├── memory.py        # AgentMemory: per-agent SQLite-backed persistent cross-session memory
+├── beliefs.py       # BeliefBoard: shared JSON-backed team belief board with voting/consensus
 ├── member.py        # Member: persona + container runtime + chat client + agentic loop
 ├── workflows.py     # round_robin / manager / review_loop / sequential_chain / debate
 ├── orchestrator.py  # ties everything together, drives the workflow

@@ -23,9 +23,17 @@ Available tools
 - ``web_search``  — query DuckDuckGo instant answers.
 - ``read_url``    — fetch and extract text from a URL.
 - ``read_file``   — read a file from the shared workspace by relative path.
-- ``write_file``  — write (create or overwrite) a file in the shared workspace.
-- ``append_file`` — append text to a file in the shared workspace.
-- ``list_files``  — list files in the shared workspace with optional glob filter.
+- ``write_file``    — write (create or overwrite) a file in the shared workspace.
+- ``append_file``   — append text to a file in the shared workspace.
+- ``list_files``    — list files in the shared workspace with optional glob filter.
+- ``remember``      — store a memory in the member's persistent cross-session memory store.
+- ``recall``        — search the member's persistent memory by keyword.
+- ``forget``        — delete a memory by key.
+- ``list_memories`` — list all memories (optionally filtered by tag).
+- ``assert_belief`` — add a claim to the team's shared belief board.
+- ``contest_belief``— contest an existing belief (moves it to contested status).
+- ``accept_belief`` — cast an accept vote for an existing belief.
+- ``list_beliefs``  — list the team's belief board (optionally by status).
 
 Security note
 -------------
@@ -404,6 +412,297 @@ def _list_files(
     return _truncate("\n".join(matched))
 
 
+# --------------------------------------------------------------------------- #
+# Memory tools (per-agent persistent cross-session memory)
+# --------------------------------------------------------------------------- #
+
+
+def _remember(
+    body: str,
+    *,
+    memory: Any = None,
+    **_: Any,
+) -> str:
+    """Store a memory in the member's persistent cross-session memory store.
+
+    Body format::
+
+        key: experiment_baseline_2024
+        tags: results, chemistry
+        importance: 0.9
+        ---
+        AlphaFold3 achieved RMSD 1.2 Å vs RoseTTAFold 2.1 Å on 1 000 monomers.
+
+    The ``---`` separator marks the boundary between the header fields and the
+    memory value.  The value may span multiple lines.  ``tags`` and
+    ``importance`` are optional (defaults: no tags, importance = 1.0).
+
+    If a memory with the same key already exists it is **updated** in place.
+    """
+    if memory is None:
+        return "ERROR: memory is not enabled for this member (set memory.enabled: true)"
+    key = _parse_kv(body, "key")
+    if not key:
+        return "ERROR: provide key: <memory key>"
+    tags_raw = _parse_kv(body, "tags") or ""
+    tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
+    importance_raw = _parse_kv(body, "importance")
+    try:
+        importance = float(importance_raw) if importance_raw else 1.0
+    except ValueError:
+        return f"ERROR: importance must be a float, got {importance_raw!r}"
+    idx = body.find("\n---\n")
+    if idx == -1:
+        return "ERROR: missing --- separator between header and memory value"
+    value = body[idx + 5:].strip()
+    if not value:
+        return "ERROR: memory value (after ---) must not be empty"
+    return memory.remember(key, value, tags=tags, importance=importance)
+
+
+def _recall(
+    body: str,
+    *,
+    memory: Any = None,
+    **_: Any,
+) -> str:
+    """Search the member's persistent memory by keyword.
+
+    Body format::
+
+        query: protein folding
+        limit: 5
+
+    Returns a Markdown list of matching memories (key, tags, value).
+    ``limit`` defaults to 5.
+    """
+    if memory is None:
+        return "ERROR: memory is not enabled for this member (set memory.enabled: true)"
+    query = _parse_kv(body, "query") or body.strip()
+    if not query:
+        return "ERROR: provide query: <search terms>"
+    limit_raw = _parse_kv(body, "limit")
+    try:
+        limit = int(limit_raw) if limit_raw else 5
+    except ValueError:
+        limit = 5
+    results = memory.recall(query, limit=limit)
+    if not results:
+        return f"No memories found matching {query!r}."
+    lines = [f"Found {len(results)} memory(ies) matching {query!r}:"]
+    for m in results:
+        tags_part = f" [{m['tags']}]" if m["tags"] else ""
+        lines.append(f"- **{m['key']}** (imp: {m['importance']:.1f}){tags_part}: {m['value']}")
+    return _truncate("\n".join(lines))
+
+
+def _forget(
+    body: str,
+    *,
+    memory: Any = None,
+    **_: Any,
+) -> str:
+    """Delete a memory by key.
+
+    Body format::
+
+        key: experiment_baseline_2024
+
+    Returns a confirmation or an error if the key was not found.
+    """
+    if memory is None:
+        return "ERROR: memory is not enabled for this member (set memory.enabled: true)"
+    key = _parse_kv(body, "key") or body.strip()
+    if not key:
+        return "ERROR: provide key: <memory key>"
+    deleted = memory.forget(key)
+    return f"Deleted memory: {key!r}" if deleted else f"No memory found with key: {key!r}"
+
+
+def _list_memories(
+    body: str,
+    *,
+    memory: Any = None,
+    **_: Any,
+) -> str:
+    """List all memories in the member's persistent store.
+
+    Body format (all optional)::
+
+        tag: results
+        limit: 20
+
+    Returns a Markdown list ordered by importance then recency.
+    ``limit`` defaults to 20.
+    """
+    if memory is None:
+        return "ERROR: memory is not enabled for this member (set memory.enabled: true)"
+    tag = _parse_kv(body, "tag") or None
+    limit_raw = _parse_kv(body, "limit")
+    try:
+        limit = int(limit_raw) if limit_raw else 20
+    except ValueError:
+        limit = 20
+    entries = memory.list_memories(tag=tag, limit=limit)
+    if not entries:
+        msg = f"No memories found with tag {tag!r}." if tag else "No memories stored yet."
+        return msg
+    lines = [f"{len(entries)} memory(ies)" + (f" tagged {tag!r}" if tag else "") + ":"]
+    for m in entries:
+        tags_part = f" [{m['tags']}]" if m["tags"] else ""
+        lines.append(f"- [{m['id']}] **{m['key']}** (imp: {m['importance']:.1f}){tags_part}: {m['value']}")
+    return _truncate("\n".join(lines))
+
+
+# --------------------------------------------------------------------------- #
+# Belief-board tools (shared team collective knowledge)
+# --------------------------------------------------------------------------- #
+
+
+def _assert_belief(
+    body: str,
+    *,
+    beliefs: Any = None,
+    member_name: str = "unknown",
+    **_: Any,
+) -> str:
+    """Add a claim to the team's shared belief board.
+
+    Body format::
+
+        confidence: 0.85
+        evidence: RMSD analysis on n=1000, peer-reviewed dataset
+        ---
+        AlphaFold3 is the best available method for monomer structure prediction.
+
+    The ``---`` separator marks the boundary between header fields and the
+    claim text.  ``confidence`` (0.0 – 1.0) and ``evidence`` are optional.
+    The member who asserts a belief automatically casts an *accept* vote.
+    """
+    if beliefs is None:
+        return "ERROR: beliefs are not enabled (set beliefs.enabled: true)"
+    confidence_raw = _parse_kv(body, "confidence")
+    try:
+        confidence = float(confidence_raw) if confidence_raw else 0.5
+        confidence = max(0.0, min(1.0, confidence))
+    except ValueError:
+        return f"ERROR: confidence must be a float 0–1, got {confidence_raw!r}"
+    evidence = _parse_kv(body, "evidence") or ""
+    idx = body.find("\n---\n")
+    if idx == -1:
+        return "ERROR: missing --- separator between header and claim text"
+    claim = body[idx + 5:].strip()
+    if not claim:
+        return "ERROR: claim text (after ---) must not be empty"
+    b = beliefs.assert_belief(claim, author=member_name, confidence=confidence, evidence=evidence)
+    return (
+        f"Belief [{b.id}] asserted (status: {b.status}):\n"
+        f"  Claim: {b.claim}\n"
+        f"  Confidence: {b.confidence:.0%}"
+    )
+
+
+def _contest_belief(
+    body: str,
+    *,
+    beliefs: Any = None,
+    member_name: str = "unknown",
+    **_: Any,
+) -> str:
+    """Contest an existing belief, moving it to 'contested' status.
+
+    Body format::
+
+        id: abc12345
+        reason: The dataset is too small (n<100) to support this claim.
+
+    ``reason`` is optional but strongly recommended so the team can understand
+    the objection.
+    """
+    if beliefs is None:
+        return "ERROR: beliefs are not enabled (set beliefs.enabled: true)"
+    belief_id = _parse_kv(body, "id") or body.strip()
+    if not belief_id:
+        return "ERROR: provide id: <belief id>"
+    reason = _parse_kv(body, "reason") or ""
+    try:
+        b = beliefs.contest_belief(belief_id, voter=member_name, reason=reason)
+    except KeyError:
+        return f"ERROR: no belief found with id {belief_id!r}"
+    return (
+        f"Belief [{b.id}] is now contested.\n"
+        f"  Claim: {b.claim}\n"
+        f"  Reason given: {reason or '(none)'}"
+    )
+
+
+def _accept_belief(
+    body: str,
+    *,
+    beliefs: Any = None,
+    member_name: str = "unknown",
+    **_: Any,
+) -> str:
+    """Cast an accept vote for an existing belief.
+
+    Body format::
+
+        id: abc12345
+
+    If enough members accept, the belief transitions to 'accepted'.
+    """
+    if beliefs is None:
+        return "ERROR: beliefs are not enabled (set beliefs.enabled: true)"
+    belief_id = _parse_kv(body, "id") or body.strip()
+    if not belief_id:
+        return "ERROR: provide id: <belief id>"
+    try:
+        b = beliefs.accept_belief(belief_id, voter=member_name)
+    except KeyError:
+        return f"ERROR: no belief found with id {belief_id!r}"
+    return (
+        f"Voted to accept belief [{b.id}] (status: {b.status}).\n"
+        f"  Votes for: {len(b.votes_for)}, against: {len(b.votes_against)}"
+    )
+
+
+def _list_beliefs(
+    body: str,
+    *,
+    beliefs: Any = None,
+    **_: Any,
+) -> str:
+    """List the team's belief board.
+
+    Body format (all optional)::
+
+        status: pending
+
+    Valid status values: ``pending``, ``accepted``, ``contested``, ``rejected``.
+    Omit to list all beliefs.
+    """
+    if beliefs is None:
+        return "ERROR: beliefs are not enabled (set beliefs.enabled: true)"
+    status = _parse_kv(body, "status") or None
+    if status and status not in ("pending", "accepted", "contested", "rejected"):
+        return f"ERROR: unknown status {status!r}; use pending|accepted|contested|rejected"
+    items = beliefs.list_beliefs(status=status)
+    if not items:
+        msg = f"No beliefs with status {status!r}." if status else "The belief board is empty."
+        return msg
+    _ICONS = {"accepted": "✓", "contested": "⚡", "rejected": "✗", "pending": "?"}
+    lines = [f"Belief board — {len(items)} belief(s)" + (f" [status={status}]" if status else "") + ":"]
+    for b in items:
+        icon = _ICONS.get(b.status, "?")
+        conf = f"{b.confidence:.0%}"
+        lines.append(
+            f"  [{icon}] `{b.id}` {b.claim}\n"
+            f"       conf={conf}, by @{b.author}, "
+            f"for={len(b.votes_for)}, against={len(b.votes_against)}, status={b.status}"
+        )
+    return _truncate("\n".join(lines))
+
+
 def _delegate_task(
     body: str,
     *,
@@ -513,28 +812,44 @@ def _delegate_task(
 
 #: All built-in tools, keyed by name.  Members opt-in via ``tools:`` config.
 TOOLS: dict[str, Any] = {
-    "run_python": _run_python,
-    "run_bash": _run_bash,
-    "web_search": _web_search,
-    "read_url": _read_url,
-    "read_file": _read_file,
-    "write_file": _write_file,
-    "append_file": _append_file,
-    "list_files": _list_files,
-    "delegate_task": _delegate_task,
+    "run_python":     _run_python,
+    "run_bash":       _run_bash,
+    "web_search":     _web_search,
+    "read_url":       _read_url,
+    "read_file":      _read_file,
+    "write_file":     _write_file,
+    "append_file":    _append_file,
+    "list_files":     _list_files,
+    "remember":       _remember,
+    "recall":         _recall,
+    "forget":         _forget,
+    "list_memories":  _list_memories,
+    "assert_belief":  _assert_belief,
+    "contest_belief": _contest_belief,
+    "accept_belief":  _accept_belief,
+    "list_beliefs":   _list_beliefs,
+    "delegate_task":  _delegate_task,
 }
 
 #: Human-readable one-line description of each tool (used in system prompts).
 TOOL_DESCRIPTIONS: dict[str, str] = {
-    "run_python":    "Execute Python code; cwd is the shared workspace.",
-    "run_bash":      "Execute a bash command; cwd is the shared workspace.",
-    "web_search":    "Search the web via DuckDuckGo instant answers.",
-    "read_url":      "Fetch and return the text content of a URL.",
-    "read_file":     "Read a file from the shared workspace by relative path.",
-    "write_file":    "Write (create or overwrite) a file in the shared workspace.",
-    "append_file":   "Append text to a file in the shared workspace.",
-    "list_files":    "List files in the shared workspace with optional glob filter.",
-    "delegate_task": (
+    "run_python":     "Execute Python code; cwd is the shared workspace.",
+    "run_bash":       "Execute a bash command; cwd is the shared workspace.",
+    "web_search":     "Search the web via DuckDuckGo instant answers.",
+    "read_url":       "Fetch and return the text content of a URL.",
+    "read_file":      "Read a file from the shared workspace by relative path.",
+    "write_file":     "Write (create or overwrite) a file in the shared workspace.",
+    "append_file":    "Append text to a file in the shared workspace.",
+    "list_files":     "List files in the shared workspace with optional glob filter.",
+    "remember":       "Store a memory in your persistent cross-session memory store (key + multi-line value).",
+    "recall":         "Search your persistent memory by keyword; returns matching entries.",
+    "forget":         "Delete a memory by key from your persistent store.",
+    "list_memories":  "List your stored memories, optionally filtered by tag.",
+    "assert_belief":  "Add a claim to the team's shared belief board with confidence score.",
+    "contest_belief": "Contest an existing team belief (moves it to contested status).",
+    "accept_belief":  "Cast an accept vote for an existing team belief.",
+    "list_beliefs":   "List the team's shared belief board, optionally filtered by status.",
+    "delegate_task":  (
         "Delegate a sub-task to a remote team cluster (team serve) and wait "
         "for its results; files produced by the remote team are written into "
         "the local workspace automatically."
@@ -549,6 +864,9 @@ def execute_tool(
     workspace_path: Path | None = None,
     timeout: int = 30,
     tools: dict | None = None,
+    memory: Any = None,
+    beliefs: Any = None,
+    member_name: str = "unknown",
 ) -> str:
     """Execute the named tool and return its string output.
 
@@ -566,6 +884,14 @@ def execute_tool(
         Optional tool registry override.  Defaults to the built-in
         :data:`TOOLS` dict.  Pass a merged built-ins + skills dict to
         support custom skill tools.
+    memory:
+        :class:`~team.memory.AgentMemory` instance for this member, or
+        ``None`` when memory is disabled.
+    beliefs:
+        :class:`~team.beliefs.BeliefBoard` instance shared by all members,
+        or ``None`` when the belief board is disabled.
+    member_name:
+        Name of the calling member (forwarded to belief tools for attribution).
 
     Raises :class:`KeyError` if *name* is not in the registry.
     All exceptions from the tool implementation are caught and returned
@@ -574,6 +900,13 @@ def execute_tool(
     registry = tools if tools is not None else TOOLS
     fn = registry[name]
     log.info("tool:%s executing", name)
-    result = fn(body, workspace_path=workspace_path, timeout=timeout)
+    result = fn(
+        body,
+        workspace_path=workspace_path,
+        timeout=timeout,
+        memory=memory,
+        beliefs=beliefs,
+        member_name=member_name,
+    )
     log.debug("tool:%s → %d chars", name, len(result))
     return result

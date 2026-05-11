@@ -18,6 +18,12 @@ from team.skills import load_skills
 from team.tools import TOOL_DESCRIPTIONS, TOOLS, execute_tool, parse_tool_blocks
 from team.workspace import SharedWorkspace, list_dir_files
 
+# Optional feature imports — guarded so the modules are only required when enabled.
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from team.memory import AgentMemory
+    from team.beliefs import BeliefBoard
+
 log = logging.getLogger(__name__)
 
 DONE_TOKEN = "[[TEAM_DONE]]"
@@ -40,10 +46,14 @@ class Member:
         team: TeamConfig,
         config: MemberConfig,
         runtime: MemberRuntime,
+        memory: "AgentMemory | None" = None,
+        beliefs: "BeliefBoard | None" = None,
     ):
         self.team = team
         self.config = config
         self.runtime = runtime
+        self.memory = memory
+        self.beliefs = beliefs
 
         # Pick the right LLM client based on the effective backend setting.
         backend = resolve_member_setting(config, team.defaults, "backend") or "ollama"
@@ -152,6 +162,24 @@ class Member:
         prompt: str | None,
     ) -> list[ChatMessage]:
         ctx_lines: list[str] = []
+
+        # Persistent memory (injected first so the agent has it in mind) ------- #
+        if self.memory is not None:
+            mem_summary = self.memory.summary_for_prompt(
+                n=self.team.memory.inject_recent
+            )
+            if mem_summary:
+                ctx_lines.append(mem_summary)
+                ctx_lines.append("")
+
+        # Shared belief board -------------------------------------------------- #
+        if self.beliefs is not None:
+            belief_summary = self.beliefs.summary_for_prompt(
+                limit=self.team.beliefs.inject_limit
+            )
+            if belief_summary:
+                ctx_lines.append(belief_summary)
+                ctx_lines.append("")
 
         # Shared workspace -------------------------------------------------- #
         files = workspace.list_files()
@@ -274,6 +302,9 @@ class Member:
                     tools=self._member_tools,
                     workspace_path=workspace_path,
                     timeout=tool_timeout,
+                    memory=self.memory,
+                    beliefs=self.beliefs,
+                    member_name=self.name,
                 )
                 if on_tool_result:
                     on_tool_result(self.name, tool_name, result)

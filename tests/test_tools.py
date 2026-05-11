@@ -338,3 +338,182 @@ def test_list_files_no_workspace():
     result = execute_tool("list_files", "", workspace_path=None)
     assert result.startswith("ERROR")
 
+
+# --------------------------------------------------------------------------- #
+# memory tools (remember, recall, forget, list_memories)
+# --------------------------------------------------------------------------- #
+
+
+from team.memory import AgentMemory
+
+
+@pytest.fixture
+def mem(tmp_path):
+    return AgentMemory(tmp_path / "m.db")
+
+
+def test_remember_tool_basic(tmp_path, mem):
+    body = "key: exp_baseline\ntags: results\nimportance: 0.8\n---\nAlphaFold beats rosettafold"
+    result = execute_tool("remember", body, memory=mem)
+    assert "exp_baseline" in result
+    assert mem.count() == 1
+
+
+def test_remember_tool_no_memory():
+    body = "key: k\n---\nv"
+    result = execute_tool("remember", body, memory=None)
+    assert result.startswith("ERROR")
+
+
+def test_remember_tool_missing_key():
+    result = execute_tool("remember", "\n---\nsome value", memory=MagicMock())
+    assert result.startswith("ERROR")
+
+
+def test_remember_tool_missing_separator(mem):
+    result = execute_tool("remember", "key: k\nvalue: v", memory=mem)
+    assert result.startswith("ERROR")
+
+
+def test_recall_tool_found(tmp_path, mem):
+    mem.remember("protein_folding", "AlphaFold analysis")
+    result = execute_tool("recall", "query: protein", memory=mem)
+    assert "protein_folding" in result
+    assert "AlphaFold" in result
+
+
+def test_recall_tool_not_found(mem):
+    result = execute_tool("recall", "query: xyz_nothing", memory=mem)
+    assert "No memories" in result or "not found" in result.lower()
+
+
+def test_recall_tool_no_memory():
+    result = execute_tool("recall", "query: anything", memory=None)
+    assert result.startswith("ERROR")
+
+
+def test_forget_tool_existing(mem):
+    mem.remember("k", "v")
+    result = execute_tool("forget", "key: k", memory=mem)
+    assert "Deleted" in result
+    assert mem.count() == 0
+
+
+def test_forget_tool_nonexistent(mem):
+    result = execute_tool("forget", "key: ghost", memory=mem)
+    assert "No memory" in result
+
+
+def test_list_memories_tool_empty(mem):
+    result = execute_tool("list_memories", "", memory=mem)
+    assert "No memories" in result or "stored yet" in result.lower()
+
+
+def test_list_memories_tool_all(mem):
+    mem.remember("a", "va")
+    mem.remember("b", "vb")
+    result = execute_tool("list_memories", "", memory=mem)
+    assert "a" in result and "b" in result
+
+
+def test_list_memories_tool_by_tag(mem):
+    mem.remember("key_science", "va", tags=["science"])
+    mem.remember("key_bio", "vb", tags=["bio"])
+    result = execute_tool("list_memories", "tag: science", memory=mem)
+    assert "key_science" in result
+    assert "key_bio" not in result
+
+
+# --------------------------------------------------------------------------- #
+# belief-board tools
+# --------------------------------------------------------------------------- #
+
+
+from team.beliefs import BeliefBoard
+
+MEMBERS_3 = ["alice", "bob", "carol"]
+
+
+@pytest.fixture
+def bboard(tmp_path):
+    return BeliefBoard(tmp_path / "b.json", member_names=MEMBERS_3, consensus_threshold=0.5)
+
+
+def test_assert_belief_tool_basic(bboard):
+    body = "confidence: 0.8\n---\nRNA polymerase is key"
+    result = execute_tool("assert_belief", body, beliefs=bboard, member_name="alice")
+    assert "asserted" in result.lower() or "belief" in result.lower()
+    assert bboard.count() == 1
+
+
+def test_assert_belief_tool_no_beliefs():
+    body = "confidence: 0.5\n---\nclaim"
+    result = execute_tool("assert_belief", body, beliefs=None, member_name="alice")
+    assert result.startswith("ERROR")
+
+
+def test_assert_belief_tool_missing_separator(bboard):
+    result = execute_tool("assert_belief", "confidence: 0.5\nclaim text no sep", beliefs=bboard, member_name="alice")
+    assert result.startswith("ERROR")
+
+
+def test_accept_belief_tool(bboard):
+    b = bboard.assert_belief("X is true", author="alice")
+    result = execute_tool("accept_belief", f"id: {b.id}", beliefs=bboard, member_name="bob")
+    assert "accept" in result.lower()
+    b2 = bboard.get_belief(b.id)
+    assert "bob" in b2.votes_for
+
+
+def test_accept_belief_tool_unknown_id(bboard):
+    result = execute_tool("accept_belief", "id: xxxxxxxx", beliefs=bboard, member_name="alice")
+    assert result.startswith("ERROR")
+
+
+def test_contest_belief_tool(bboard):
+    b = bboard.assert_belief("X", author="alice")
+    body = f"id: {b.id}\nreason: insufficient data"
+    result = execute_tool("contest_belief", body, beliefs=bboard, member_name="bob")
+    assert "contested" in result.lower()
+    b2 = bboard.get_belief(b.id)
+    assert b2.status == "contested"
+
+
+def test_list_beliefs_tool_empty(bboard):
+    result = execute_tool("list_beliefs", "", beliefs=bboard)
+    assert "empty" in result.lower() or "No belief" in result
+
+
+def test_list_beliefs_tool_all(bboard):
+    bboard.assert_belief("A", author="alice")
+    bboard.assert_belief("B", author="bob")
+    result = execute_tool("list_beliefs", "", beliefs=bboard)
+    assert "A" in result and "B" in result
+
+
+def test_list_beliefs_tool_status_filter(bboard):
+    b = bboard.assert_belief("X", author="alice")
+    bboard.accept_belief(b.id, voter="bob")  # now accepted (2/3 >= 0.5)
+    bboard.assert_belief("Y", author="carol")  # pending
+
+    result = execute_tool("list_beliefs", "status: accepted", beliefs=bboard)
+    assert "X" in result
+    assert "Y" not in result
+
+
+def test_list_beliefs_tool_invalid_status(bboard):
+    result = execute_tool("list_beliefs", "status: unknown_status", beliefs=bboard)
+    assert result.startswith("ERROR")
+
+
+# --------------------------------------------------------------------------- #
+# execute_tool passes memory + beliefs kwargs
+# --------------------------------------------------------------------------- #
+
+
+def test_execute_tool_forwards_memory_and_beliefs(mem, bboard):
+    """Verify execute_tool properly forwards memory/beliefs/member_name."""
+    # Use a tool that requires memory to be non-None to return a non-error result.
+    mem.remember("k", "v")
+    result = execute_tool("recall", "query: k", memory=mem, beliefs=bboard, member_name="alice")
+    assert not result.startswith("ERROR")

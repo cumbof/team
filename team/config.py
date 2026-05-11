@@ -142,6 +142,22 @@ class BridgeConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """Optional per-agent persistent cross-session memory settings."""
+    enabled: bool = False
+    inject_recent: int = 5    # number of recent memories injected into each turn's system context
+    store: str | None = None  # path to the memory store directory; defaults to <workspace>/memory
+
+
+@dataclass
+class BeliefConfig:
+    """Optional shared team belief board settings."""
+    enabled: bool = False
+    consensus_threshold: float = 0.5  # fraction of members required to accept a belief
+    inject_limit: int = 10            # max beliefs shown in each turn's context
+
+
+@dataclass
 class TeamConfig:
     name: str
     goal: str
@@ -151,6 +167,8 @@ class TeamConfig:
     members: list[MemberConfig]
     source_path: Path | None = None
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    beliefs: BeliefConfig = field(default_factory=BeliefConfig)
 
     # Convenience -------------------------------------------------------- #
 
@@ -192,6 +210,32 @@ def _parse_bridge(data: dict) -> BridgeConfig:
     max_conc = data.get("max_concurrent_tasks")
     if max_conc is not None:
         b.max_concurrent_tasks = int(max_conc)
+    return b
+
+
+def _parse_memory(data: dict) -> MemoryConfig:
+    if not data:
+        return MemoryConfig()
+    m = MemoryConfig()
+    if "enabled" in data:
+        m.enabled = bool(data["enabled"])
+    if "inject_recent" in data:
+        m.inject_recent = int(data["inject_recent"])
+    if "store" in data and data["store"] is not None:
+        m.store = str(data["store"])
+    return m
+
+
+def _parse_beliefs(data: dict) -> BeliefConfig:
+    if not data:
+        return BeliefConfig()
+    b = BeliefConfig()
+    if "enabled" in data:
+        b.enabled = bool(data["enabled"])
+    if "consensus_threshold" in data:
+        b.consensus_threshold = float(data["consensus_threshold"])
+    if "inject_limit" in data:
+        b.inject_limit = int(data["inject_limit"])
     return b
 
 
@@ -271,6 +315,8 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
     defaults = _parse_defaults(raw.get("defaults", {}))
     workflow = _parse_workflow(raw.get("workflow", {}))
     bridge = _parse_bridge(raw.get("bridge", {}))
+    memory = _parse_memory(raw.get("memory", {}))
+    beliefs = _parse_beliefs(raw.get("beliefs", {}))
 
     members_raw = _require(raw, "members", "team")
     if not isinstance(members_raw, list) or not members_raw:
@@ -320,6 +366,8 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
         members=members,
         source_path=p,
         bridge=bridge,
+        memory=memory,
+        beliefs=beliefs,
     )
 
 
