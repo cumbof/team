@@ -1,5 +1,7 @@
 # team
 
+![team](assets/logo.png)
+
 **Orchestrate a cluster of containerized local LLMs — each with its own
 persona, role, and goal — that collaborate until the work is done.**
 
