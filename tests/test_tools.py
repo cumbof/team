@@ -211,3 +211,130 @@ def test_read_url_network_error():
 def test_read_url_missing_url():
     result = execute_tool("read_url", "")
     assert result.startswith("ERROR")
+
+
+# --------------------------------------------------------------------------- #
+# write_file
+# --------------------------------------------------------------------------- #
+
+
+def test_write_file_creates_new(tmp_path):
+    body = "path: hello.txt\n---\nHello, world!\n"
+    result = execute_tool("write_file", body, workspace_path=tmp_path)
+    assert "wrote" in result
+    assert (tmp_path / "hello.txt").read_text() == "Hello, world!\n"
+
+
+def test_write_file_overwrites_existing(tmp_path):
+    (tmp_path / "existing.txt").write_text("old content", encoding="utf-8")
+    body = "path: existing.txt\n---\nnew content\n"
+    result = execute_tool("write_file", body, workspace_path=tmp_path)
+    assert "wrote" in result
+    assert (tmp_path / "existing.txt").read_text() == "new content\n"
+
+
+def test_write_file_creates_subdirectory(tmp_path):
+    body = "path: sub/dir/note.md\n---\n# Note\n"
+    result = execute_tool("write_file", body, workspace_path=tmp_path)
+    assert "wrote" in result
+    assert (tmp_path / "sub" / "dir" / "note.md").is_file()
+
+
+def test_write_file_missing_path(tmp_path):
+    body = "\n---\ncontent only"
+    result = execute_tool("write_file", body, workspace_path=tmp_path)
+    assert result.startswith("ERROR")
+
+
+def test_write_file_missing_separator(tmp_path):
+    body = "path: test.txt\nsome content with no separator"
+    result = execute_tool("write_file", body, workspace_path=tmp_path)
+    assert result.startswith("ERROR")
+
+
+def test_write_file_no_workspace():
+    body = "path: file.txt\n---\ncontent"
+    result = execute_tool("write_file", body, workspace_path=None)
+    assert "no workspace" in result.lower() or result.startswith("ERROR")
+
+
+def test_write_file_path_traversal(tmp_path):
+    body = "path: ../../etc/passwd\n---\nevil"
+    result = execute_tool("write_file", body, workspace_path=tmp_path)
+    assert result.startswith("ERROR")
+
+
+# --------------------------------------------------------------------------- #
+# append_file
+# --------------------------------------------------------------------------- #
+
+
+def test_append_file_creates_new(tmp_path):
+    body = "path: log.txt\n---\nfirst line\n"
+    result = execute_tool("append_file", body, workspace_path=tmp_path)
+    assert "appended" in result
+    assert (tmp_path / "log.txt").read_text() == "first line\n"
+
+
+def test_append_file_appends_to_existing(tmp_path):
+    (tmp_path / "log.txt").write_text("line one\n", encoding="utf-8")
+    body = "path: log.txt\n---\nline two\n"
+    result = execute_tool("append_file", body, workspace_path=tmp_path)
+    assert "appended" in result
+    assert (tmp_path / "log.txt").read_text() == "line one\nline two\n"
+
+
+def test_append_file_no_workspace():
+    body = "path: file.txt\n---\ncontent"
+    result = execute_tool("append_file", body, workspace_path=None)
+    assert "no workspace" in result.lower() or result.startswith("ERROR")
+
+
+def test_append_file_path_traversal(tmp_path):
+    body = "path: ../../etc/passwd\n---\nevil"
+    result = execute_tool("append_file", body, workspace_path=tmp_path)
+    assert result.startswith("ERROR")
+
+
+def test_append_file_missing_separator(tmp_path):
+    body = "path: test.txt"
+    result = execute_tool("append_file", body, workspace_path=tmp_path)
+    assert result.startswith("ERROR")
+
+
+# --------------------------------------------------------------------------- #
+# list_files
+# --------------------------------------------------------------------------- #
+
+
+def test_list_files_empty_workspace(tmp_path):
+    result = execute_tool("list_files", "", workspace_path=tmp_path)
+    assert "empty" in result.lower() or "no files" in result.lower()
+
+
+def test_list_files_all(tmp_path):
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    (tmp_path / "b.py").write_text("b", encoding="utf-8")
+    result = execute_tool("list_files", "", workspace_path=tmp_path)
+    assert "a.txt" in result
+    assert "b.py" in result
+
+
+def test_list_files_with_glob_pattern(tmp_path):
+    (tmp_path / "main.py").write_text("x", encoding="utf-8")
+    (tmp_path / "README.md").write_text("y", encoding="utf-8")
+    result = execute_tool("list_files", "pattern: *.py", workspace_path=tmp_path)
+    assert "main.py" in result
+    assert "README.md" not in result
+
+
+def test_list_files_no_match(tmp_path):
+    (tmp_path / "data.csv").write_text("1,2,3", encoding="utf-8")
+    result = execute_tool("list_files", "pattern: *.py", workspace_path=tmp_path)
+    assert "no files" in result.lower() or "match" in result.lower()
+
+
+def test_list_files_no_workspace():
+    result = execute_tool("list_files", "", workspace_path=None)
+    assert result.startswith("ERROR")
+

@@ -62,6 +62,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [Built-in tools](#built-in-tools)
   - [Custom skill plugins](#custom-skill-plugins)
 - [Token usage tracking](#token-usage-tracking)
+- [Run statistics](#run-statistics)
 - [Interactive wizard](#interactive-wizard)
 - [Workflow visualization](#workflow-visualization)
 - [Custom Ollama image](#custom-ollama-image)
@@ -881,7 +882,7 @@ members:
   - name: researcher
     tools: [web_search, read_url]  # per-member override
   - name: data_scientist
-    tools: [run_python, run_bash, read_file]
+    tools: [run_python, run_bash, read_file, write_file, append_file, list_files]
 ```
 
 ### Tool invocation syntax
@@ -909,6 +910,30 @@ path: analysis/results.json
 ```
 ````
 
+````
+```tool:write_file
+path: output/summary.md
+---
+# Summary
+
+This file was written by the agent.
+```
+````
+
+````
+```tool:append_file
+path: logs/run.log
+---
+[step 3] analysis complete.
+```
+````
+
+````
+```tool:list_files
+pattern: *.py
+```
+````
+
 After each tool block the orchestrator executes the tool, injects the result
 back into the conversation, and asks the member to continue.  Once the member
 produces a reply with no tool blocks, that reply is recorded in the
@@ -923,6 +948,33 @@ transcript as usual.
 | `web_search` | Search the web via the DuckDuckGo instant-answer API (no key required). |
 | `read_url` | Fetch and return the plain-text content of a URL. |
 | `read_file` | Read a file from the shared workspace by relative path. |
+| `write_file` | Write (create or overwrite) a file in the shared workspace. |
+| `append_file` | Append text to a file in the shared workspace. |
+| `list_files` | List files in the shared workspace with an optional glob filter. |
+
+**`write_file` and `append_file` body format**
+
+Both tools use a two-part body separated by a `---` line:
+
+```
+path: relative/path/to/file.txt
+---
+File content goes here.
+Multiple lines are fine.
+```
+
+The path is relative to the shared workspace root.  Parent directories are
+created automatically.  `write_file` replaces any existing content;
+`append_file` adds to the end of the file (creating it if it does not exist).
+
+**`list_files` body format**
+
+The body is optional.  If omitted, all workspace files are listed.  Use a
+`pattern:` key to filter by glob pattern:
+
+```
+pattern: **/*.py
+```
 
 ### Security note
 
@@ -1094,6 +1146,49 @@ token usage).
 
 ---
 
+## Run statistics
+
+`team stats` shows a detailed breakdown of a completed run — turn counts,
+token usage per speaker, total duration, and files written — without
+needing to start any containers:
+
+```bash
+team stats my-team.yaml
+```
+
+Example output:
+
+```text
+Team: my-team  18 turns · 29 670 tokens · duration 142.3s · 5 file(s) written
+
+┌─────────────────────────────────────────────────────────────────────┐
+│               Turns & token usage by speaker                        │
+├──────────────┬───────┬───────────────┬──────────────────┬───────────┤
+│ Speaker      │ Turns │ Prompt tokens │ Completion tokens│    Total  │
+├──────────────┼───────┼───────────────┼──────────────────┼───────────┤
+│ @lead        │     5 │        12 450 │            3 210 │    15 660 │
+│ @orchestrator│     1 │             0 │                0 │         0 │
+│ @worker      │    12 │         8 120 │            5 890 │    14 010 │
+├──────────────┼───────┼───────────────┼──────────────────┼───────────┤
+│ total        │    18 │        20 570 │            9 100 │    29 670 │
+└──────────────┴───────┴───────────────┴──────────────────┴───────────┘
+```
+
+The `Transcript.stats()` method in `team/bus.py` is also part of the
+public Python API:
+
+```python
+from team.bus import Transcript
+from team.config import load_team
+
+cfg = load_team("my-team.yaml")
+t = Transcript(persist_path=cfg.workspace / "transcript.jsonl", resume=True)
+s = t.stats()
+print(s["total_turns"], s["duration_seconds"])
+```
+
+---
+
 ## Interactive wizard
 
 `team new` launches a guided wizard that asks you a series of questions
@@ -1211,7 +1306,7 @@ team/
 ├── workspace.py     # parse `file:` blocks, atomic writes, traversal guard, CheckpointManager
 ├── bus.py           # transcript with on-disk JSONL persistence
 ├── personas.py      # render the system prompt + collaboration protocol + tool section
-├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file
+├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file, write_file, append_file, list_files
 ├── skills.py        # skill plugin loader: local files and remote URLs → tool registry
 ├── member.py        # Member: persona + container runtime + chat client + agentic loop
 ├── workflows.py     # round_robin / manager / review_loop / sequential_chain / debate

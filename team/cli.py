@@ -416,6 +416,81 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
     console.print(f"[green]done[/green] — transcript: {orch.transcript_path()}")
 
 
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+def stats(team_file: str) -> None:
+    """Show statistics for the most recent run of a team.
+
+    Displays per-speaker turn counts, token usage, run duration, and the
+    total number of files written to the shared workspace.
+    """
+    import json as _json
+
+    from team.bus import Transcript
+
+    cfg = _load(team_file)
+    p = cfg.workspace / "transcript.jsonl"
+    if not p.is_file():
+        console.print(f"[yellow]no transcript found[/yellow] at {p}")
+        return
+
+    t = Transcript(persist_path=None)
+    from team.bus import Turn as _Turn
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            data = _json.loads(line)
+            t.turns.append(_Turn(**data))
+        except (ValueError, TypeError):
+            continue
+
+    s = t.stats()
+
+    # --- summary row ---
+    dur = s["duration_seconds"]
+    dur_str = f"{dur:.1f}s" if dur is not None else "—"
+
+    console.print(
+        f"\n[bold]Team:[/bold] {cfg.name}  "
+        f"[dim]{s['total_turns']} turns · "
+        f"{s['total_prompt_tokens'] + s['total_completion_tokens']:,} tokens · "
+        f"duration {dur_str} · "
+        f"{s['files_written']} file(s) written[/dim]\n"
+    )
+
+    # --- per-speaker table ---
+    table = Table(title="Turns & token usage by speaker")
+    table.add_column("Speaker")
+    table.add_column("Turns", justify="right")
+    table.add_column("Prompt tokens", justify="right")
+    table.add_column("Completion tokens", justify="right")
+    table.add_column("Total tokens", justify="right")
+
+    for speaker, count in sorted(s["turns_by_speaker"].items()):
+        tok = s["tokens_by_speaker"].get(speaker, {"prompt": 0, "completion": 0})
+        p_tok, c_tok = tok["prompt"], tok["completion"]
+        table.add_row(
+            f"@{speaker}",
+            str(count),
+            str(p_tok),
+            str(c_tok),
+            str(p_tok + c_tok),
+        )
+
+    table.add_section()
+    grand_p = s["total_prompt_tokens"]
+    grand_c = s["total_completion_tokens"]
+    table.add_row(
+        "[bold]total[/bold]",
+        str(s["total_turns"]),
+        str(grand_p),
+        str(grand_c),
+        str(grand_p + grand_c),
+    )
+    console.print(table)
+
+
 # --------------------------------------------------------------------------- #
 # logs
 # --------------------------------------------------------------------------- #

@@ -23,6 +23,9 @@ Available tools
 - ``web_search``  — query DuckDuckGo instant answers.
 - ``read_url``    — fetch and extract text from a URL.
 - ``read_file``   — read a file from the shared workspace by relative path.
+- ``write_file``  — write (create or overwrite) a file in the shared workspace.
+- ``append_file`` — append text to a file in the shared workspace.
+- ``list_files``  — list files in the shared workspace with optional glob filter.
 
 Security note
 -------------
@@ -34,6 +37,7 @@ a run when security matters.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
 import re
@@ -258,6 +262,148 @@ def _read_file(
         return f"ERROR reading file: {exc}"
 
 
+def _split_path_content(body: str) -> tuple[str | None, str | None]:
+    """Extract ``path`` and content from a write/append tool body.
+
+    Expected format::
+
+        path: relative/path.txt
+        ---
+        File content goes here.
+        Multiple lines are fine.
+
+    The ``---`` separator line marks the boundary between the header and the
+    file content.  Everything after the first ``\\n---\\n`` is treated as the
+    raw content to write.
+    """
+    path = _parse_kv(body, "path")
+    idx = body.find("\n---\n")
+    content = body[idx + 5:] if idx != -1 else None
+    return path, content
+
+
+def _write_file(
+    body: str,
+    *,
+    workspace_path: Path | None = None,
+    **_: Any,
+) -> str:
+    """Write (create or overwrite) a file in the shared workspace.
+
+    Body format::
+
+        path: relative/path.txt
+        ---
+        File content goes here.
+
+    The ``---`` line separates the path header from the content.
+    The file and any parent directories are created automatically.
+    Existing content is **replaced**.
+    """
+    if workspace_path is None:
+        return "ERROR: no workspace available"
+    rel, content = _split_path_content(body)
+    if not rel:
+        return "ERROR: provide path: <relative path> on the first line, then --- then content"
+    if content is None:
+        return "ERROR: missing --- separator between path and content"
+    try:
+        target = (workspace_path / rel).resolve()
+        target.relative_to(workspace_path.resolve())  # traversal guard
+    except ValueError:
+        return f"ERROR: path {rel!r} escapes the workspace"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return f"wrote {len(content)} chars to {rel}"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR writing file: {exc}"
+
+
+def _append_file(
+    body: str,
+    *,
+    workspace_path: Path | None = None,
+    **_: Any,
+) -> str:
+    """Append text to a file in the shared workspace.
+
+    Body format::
+
+        path: relative/path.txt
+        ---
+        Text to append.
+
+    If the file does not exist it is created.  A newline is **not**
+    automatically inserted before the appended text — include one in the
+    content if needed.
+    """
+    if workspace_path is None:
+        return "ERROR: no workspace available"
+    rel, content = _split_path_content(body)
+    if not rel:
+        return "ERROR: provide path: <relative path> on the first line, then --- then content"
+    if content is None:
+        return "ERROR: missing --- separator between path and content"
+    try:
+        target = (workspace_path / rel).resolve()
+        target.relative_to(workspace_path.resolve())  # traversal guard
+    except ValueError:
+        return f"ERROR: path {rel!r} escapes the workspace"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write(content)
+        return f"appended {len(content)} chars to {rel}"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR appending to file: {exc}"
+
+
+def _list_files(
+    body: str,
+    *,
+    workspace_path: Path | None = None,
+    **_: Any,
+) -> str:
+    """List files in the shared workspace, optionally filtered by a glob pattern.
+
+    Body format (all optional)::
+
+        pattern: **/*.py
+
+    If no pattern is provided (or the body is empty) all files are listed.
+    Returns a newline-separated list of relative paths, or a message when no
+    files are found.
+    """
+    if workspace_path is None:
+        return "ERROR: no workspace available"
+    pattern = _parse_kv(body, "pattern") or body.strip() or ""
+
+    if not workspace_path.is_dir():
+        return "(workspace is empty)"
+
+    try:
+        all_files = sorted(
+            str(p.relative_to(workspace_path))
+            for p in workspace_path.rglob("*")
+            if p.is_file()
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR listing workspace: {exc}"
+
+    if not all_files:
+        return "(workspace is empty)"
+
+    if pattern:
+        # Use Path.match() which properly handles ** glob patterns.
+        matched = [f for f in all_files if Path(f).match(pattern)]
+        if not matched:
+            return f"(no files match pattern {pattern!r})"
+    else:
+        matched = all_files
+    return _truncate("\n".join(matched))
+
+
 # --------------------------------------------------------------------------- #
 # Registry & dispatch
 # --------------------------------------------------------------------------- #
@@ -269,15 +415,21 @@ TOOLS: dict[str, Any] = {
     "web_search": _web_search,
     "read_url": _read_url,
     "read_file": _read_file,
+    "write_file": _write_file,
+    "append_file": _append_file,
+    "list_files": _list_files,
 }
 
 #: Human-readable one-line description of each tool (used in system prompts).
 TOOL_DESCRIPTIONS: dict[str, str] = {
-    "run_python": "Execute Python code; cwd is the shared workspace.",
-    "run_bash":   "Execute a bash command; cwd is the shared workspace.",
-    "web_search": "Search the web via DuckDuckGo instant answers.",
-    "read_url":   "Fetch and return the text content of a URL.",
-    "read_file":  "Read a file from the shared workspace by relative path.",
+    "run_python":  "Execute Python code; cwd is the shared workspace.",
+    "run_bash":    "Execute a bash command; cwd is the shared workspace.",
+    "web_search":  "Search the web via DuckDuckGo instant answers.",
+    "read_url":    "Fetch and return the text content of a URL.",
+    "read_file":   "Read a file from the shared workspace by relative path.",
+    "write_file":  "Write (create or overwrite) a file in the shared workspace.",
+    "append_file": "Append text to a file in the shared workspace.",
+    "list_files":  "List files in the shared workspace with optional glob filter.",
 }
 
 

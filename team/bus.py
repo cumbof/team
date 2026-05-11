@@ -12,7 +12,7 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 @dataclass
@@ -83,6 +83,50 @@ class Transcript:
             with self.persist_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(asdict(turn), ensure_ascii=False) + "\n")
         return turn
+
+    def stats(self) -> dict[str, Any]:
+        """Return a summary of the transcript's statistics.
+
+        Returns a dict with the following keys:
+
+        * ``total_turns``         — total number of recorded turns.
+        * ``turns_by_speaker``    — ``{speaker: count}`` mapping.
+        * ``total_prompt_tokens`` — sum of prompt tokens across all turns.
+        * ``total_completion_tokens`` — sum of completion tokens.
+        * ``tokens_by_speaker``   — ``{speaker: {"prompt": int, "completion": int}}``.
+        * ``duration_seconds``    — wall time between first and last turn timestamps
+          (``None`` when fewer than two turns exist).
+        * ``files_written``       — total number of file paths recorded as written.
+        """
+        turns_by_speaker: dict[str, int] = {}
+        tokens_by_speaker: dict[str, dict[str, int]] = {}
+        total_prompt = 0
+        total_completion = 0
+        total_files = 0
+
+        for t in self.turns:
+            turns_by_speaker[t.speaker] = turns_by_speaker.get(t.speaker, 0) + 1
+            sp = tokens_by_speaker.setdefault(t.speaker, {"prompt": 0, "completion": 0})
+            sp["prompt"] += t.prompt_tokens
+            sp["completion"] += t.completion_tokens
+            total_prompt += t.prompt_tokens
+            total_completion += t.completion_tokens
+            total_files += len(t.files_written)
+
+        if len(self.turns) >= 2:
+            duration: float | None = self.turns[-1].timestamp - self.turns[0].timestamp
+        else:
+            duration = None
+
+        return {
+            "total_turns": len(self.turns),
+            "turns_by_speaker": turns_by_speaker,
+            "total_prompt_tokens": total_prompt,
+            "total_completion_tokens": total_completion,
+            "tokens_by_speaker": tokens_by_speaker,
+            "duration_seconds": duration,
+            "files_written": total_files,
+        }
 
     def render(self, viewer: str | None = None, max_turns: int | None = None) -> str:
         """Render the transcript as plain text for inclusion in a prompt.
