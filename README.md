@@ -68,6 +68,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Parallel member execution** | `workflow: type: parallel` — all members run simultaneously in each round, bounded by the slowest rather than the sum. |
 | **`team replay`** | Step through a saved transcript turn-by-turn in an interactive terminal viewer; navigate, search by speaker, and view stats. |
 | **Token budget** | Hard-cap total tokens per member per run; gracefully stops with `TokenBudgetError` when exhausted. |
+| **Conditional routing** | Members declare the next speaker via simple YAML rules (`if_contains`, `if_match`, `default`), enabling dynamic branching and state-machine-like workflows. |
 
 ---
 
@@ -2436,6 +2437,70 @@ team replay myteam.yaml | head -100
 | --- | --- | --- |
 | `--from N` | `0` | Start at turn N (0-based). |
 | `--speaker NAME` | — | Jump to the first turn by NAME at startup. |
+
+---
+
+## Conditional routing
+
+Enable dynamic, branching conversations where each member's output determines who speaks next — building state-machine-like workflows without any code.
+
+```yaml
+workflow:
+  type: conditional
+  start: writer       # optional; defaults to the first listed member
+  max_rounds: 20
+
+members:
+  - name: writer
+    model: llama3
+    persona: You are a technical writer.
+    role: Writer
+    routes:
+      - if_contains: "NEEDS_REVISION"
+        next: editor
+      - if_match: "APPROVED|LGTM"
+        next: publisher
+      - default: reviewer    # fallback when nothing else matches
+
+  - name: editor
+    model: llama3
+    persona: You are an editor.
+    role: Editor
+    routes:
+      - if_contains: "DONE"
+        next: publisher
+      - default: writer      # loop back for another draft
+
+  - name: reviewer
+    model: llama3
+    persona: You are a reviewer.
+    role: Reviewer
+    routes:
+      - default: writer
+
+  - name: publisher          # terminal node — no routes needed
+    model: llama3
+    persona: You are a publisher.
+    role: Publisher
+```
+
+### Route rules
+
+Rules are evaluated **top-to-bottom**; the first match wins.
+
+| Key | Behaviour |
+| --- | --- |
+| `if_contains: "TEXT"` | Case-insensitive substring search in the member's last reply. |
+| `if_match: "REGEX"` | Case-insensitive `re.search` against the member's last reply. |
+| `default: member` | Unconditional fallback; fires when no other rule matches. |
+
+A member with **no `routes`** falls back to the standard round-robin next-speaker logic.
+
+### Workflow end conditions
+
+The workflow stops when:
+* any member outputs `[[TEAM_DONE]]`, or
+* the total turn count reaches `max_rounds`.
 
 ---
 

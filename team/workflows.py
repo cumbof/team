@@ -587,6 +587,108 @@ def parallel_rounds(orch: "Orchestrator") -> None:
     log.info("parallel workflow completed %d round(s)", max_rounds)
 
 
+# --------------------------------------------------------------------------- #
+# Conditional routing
+# --------------------------------------------------------------------------- #
+
+
+def _eval_routes(content: str, routes: list) -> str | None:
+    """Return the ``next`` member name of the first matching route, or *None*.
+
+    Rules are evaluated in declaration order:
+    * ``if_contains`` — case-insensitive substring search.
+    * ``if_match`` — case-insensitive regex search (``re.search``).
+    * ``is_default`` — always matches; used as the final fallback.
+    """
+    default_next: str | None = None
+    for route in routes:
+        if route.is_default:
+            # Store but keep evaluating non-default rules first.
+            if default_next is None:
+                default_next = route.next
+            continue
+        if route.if_contains is not None:
+            if route.if_contains.lower() in content.lower():
+                return route.next
+        if route.if_match is not None:
+            if re.search(route.if_match, content, re.IGNORECASE):
+                return route.next
+    return default_next
+
+
+def conditional_routing(orch: "Orchestrator") -> None:
+    """Drive a conversation where each member's output determines the next speaker.
+
+    Configuration:
+
+    .. code-block:: yaml
+
+        workflow:
+          type: conditional
+          start: writer       # optional; defaults to the first listed member
+          max_rounds: 20
+
+        members:
+          - name: writer
+            routes:
+              - if_contains: "NEEDS_REVISION"
+                next: editor
+              - if_match: "APPROVED|LGTM"
+                next: publisher
+              - default: reviewer    # fallback when nothing else matches
+
+          - name: editor
+            routes:
+              - if_contains: "DONE"
+                next: publisher
+              - default: writer
+
+          - name: publisher          # terminal node — no routes needed
+
+    Route rules are evaluated top-to-bottom; the first match wins.  A
+    ``default`` entry acts as the fallback if no conditional rule matches.
+    If a member has no routes at all, the workflow falls back to the standard
+    round-robin next-member logic.
+
+    The workflow ends when:
+    * any member outputs ``[[TEAM_DONE]]``, or
+    * the total turn count reaches ``max_rounds``, or
+    * routing leads to a member with no routes (terminal node) that also has
+      not declared done — the workflow continues from the terminal node and
+      then has no further routing to do, ending the run.
+    """
+    opts = orch.team.workflow.options
+    max_turns = orch.team.workflow.max_rounds
+    member_names = list(orch.members.keys())
+
+    start = opts.get("start") or member_names[0]
+    current = start
+
+    for turn_idx in range(max_turns):
+        log.info("conditional turn %d/%d — speaker: %s", turn_idx + 1, max_turns, current)
+        res = orch.run_turn(current)
+        if res.declared_done:
+            log.info("member %s declared TEAM_DONE", current)
+            return
+
+        member_config = orch.team.member(current)
+        next_member = _eval_routes(res.content, member_config.routes)
+
+        if next_member is None:
+            # No routes defined — fall back to round-robin next.
+            next_member = _next_default(orch, current)
+            log.debug("conditional: no routes for %s; round-robin fallback -> %s", current, next_member)
+        else:
+            log.debug("conditional: %s -> %s (matched route)", current, next_member)
+
+        if orch._on_round_end:
+            orch._on_round_end(turn_idx)
+
+        current = next_member
+
+    log.info("conditional workflow exhausted %d turns", max_turns)
+
+
 WORKFLOWS = {
     "round_robin": round_robin,
     "manager": manager_driven,
@@ -595,6 +697,7 @@ WORKFLOWS = {
     "debate": debate,
     "parallel_review": parallel_review,
     "parallel": parallel_rounds,
+    "conditional": conditional_routing,
 }
 
 

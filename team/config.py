@@ -106,6 +106,15 @@ class Defaults:
 
 
 @dataclass
+class RouteConfig:
+    """A single routing rule attached to a member in a ``conditional`` workflow."""
+    next: str
+    if_contains: str | None = None   # substring match (case-insensitive)
+    if_match: str | None = None      # regex match (case-insensitive, full-string search)
+    is_default: bool = False          # fallback rule — fires when no other rule matches
+
+
+@dataclass
 class WorkflowConfig:
     type: str = "round_robin"
     max_rounds: int = 6
@@ -147,6 +156,8 @@ class MemberConfig:
     turn_timeout: int | None = None     # None = inherit from defaults; 0 = disabled
     # F15: token budget
     token_budget: int | None = None     # None = inherit from defaults; 0 = disabled
+    # Conditional routing: evaluated after each turn to pick the next member.
+    routes: list[RouteConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -295,7 +306,7 @@ def _parse_workflow(data: dict) -> WorkflowConfig:
     if not data:
         return WorkflowConfig()
     wf_type = data.get("type", "round_robin")
-    valid_types = {"round_robin", "manager", "review_loop", "sequential_chain", "debate", "parallel_review", "parallel"}
+    valid_types = {"round_robin", "manager", "review_loop", "sequential_chain", "debate", "parallel_review", "parallel", "conditional"}
     if wf_type not in valid_types:
         raise TeamConfigError(
             f"workflow.type={wf_type!r} is not one of "
@@ -336,6 +347,37 @@ def _resolve_persona(raw_persona: str, raw_role: str | None, ctx: str) -> tuple[
     return raw_role if raw_role is not None else lib_role, lib_persona
 
 
+def _parse_routes(raw: list, ctx: str) -> list[RouteConfig]:
+    """Parse the ``routes`` list from a member YAML block."""
+    if not raw:
+        return []
+    routes = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise TeamConfigError(f"{ctx}.routes[{i}]: must be a mapping")
+        if "next" not in entry and "default" not in entry:
+            raise TeamConfigError(
+                f"{ctx}.routes[{i}]: must have either 'next' or 'default' key"
+            )
+        is_default = "default" in entry
+        next_member = entry.get("next") or entry.get("default")
+        if not next_member:
+            raise TeamConfigError(f"{ctx}.routes[{i}]: 'next'/'default' must be a non-empty member name")
+        if_contains = entry.get("if_contains")
+        if_match = entry.get("if_match")
+        if not is_default and if_contains is None and if_match is None:
+            raise TeamConfigError(
+                f"{ctx}.routes[{i}]: non-default route requires 'if_contains' or 'if_match'"
+            )
+        routes.append(RouteConfig(
+            next=next_member,
+            if_contains=if_contains,
+            if_match=if_match,
+            is_default=is_default,
+        ))
+    return routes
+
+
 def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
     ctx = f"members[{data.get('name', '?')!r}]"
     name = _require(data, "name", ctx)
@@ -369,6 +411,7 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         output_schema=data.get("output_schema"),
         turn_timeout=data.get("turn_timeout"),
         token_budget=data.get("token_budget"),
+        routes=_parse_routes(data.get("routes", []), ctx),
     )
 
 
@@ -450,6 +493,17 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
                 raise TeamConfigError(
                     f"parallel_review member {role_name!r} is not a declared member"
                 )
+
+    if workflow.type == "conditional":
+        start = workflow.options.get("start")
+        if start and start not in seen:
+            raise TeamConfigError(f"workflow.start={start!r} is not a declared member")
+        for mc in members:
+            for i, route in enumerate(mc.routes):
+                if route.next not in seen:
+                    raise TeamConfigError(
+                        f"members[{mc.name!r}].routes[{i}]: next={route.next!r} is not a declared member"
+                    )
 
     return TeamConfig(
         name=name,
