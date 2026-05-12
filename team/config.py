@@ -99,6 +99,8 @@ class Defaults:
     # Per-member ollama_url overrides this value.  Useful for Apple Silicon / CPU-only
     # hosts where GPU passthrough to Docker is not available.
     ollama_url: str | None = None
+    # F12: per-turn timeout (seconds); 0 = disabled
+    turn_timeout: int | None = None
 
 
 @dataclass
@@ -136,6 +138,11 @@ class MemberConfig:
     max_tool_rounds: int | None = None  # None = inherit from defaults
     tool_timeout: int | None = None     # None = inherit from defaults
     skills: list[Any] | None = None     # None = inherit from defaults; [] = no skills
+    # F11: structured JSON output
+    output_format: str | None = None    # "json" to require valid JSON replies
+    output_schema: dict | None = None   # optional JSON Schema to validate the reply against
+    # F12: per-turn timeout
+    turn_timeout: int | None = None     # None = inherit from defaults; 0 = disabled
 
 
 @dataclass
@@ -174,6 +181,7 @@ class TeamConfig:
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     beliefs: BeliefConfig = field(default_factory=BeliefConfig)
+    tests: list[dict] = field(default_factory=list)
 
     # Convenience -------------------------------------------------------- #
 
@@ -245,6 +253,27 @@ def _parse_beliefs(data: dict) -> BeliefConfig:
     if "inject_limit" in data:
         b.inject_limit = int(data["inject_limit"])
     return b
+
+
+def _parse_tests(data: list | None) -> list[dict]:
+    """Validate and return the raw test assertion list from the team YAML.
+
+    Each entry must be a dict with at minimum a ``type`` key.  Unknown keys
+    are preserved so future assertion types can be added without breaking old
+    parsers.
+    """
+    if not data:
+        return []
+    if not isinstance(data, list):
+        raise TeamConfigError("tests: must be a list of assertion dicts")
+    result = []
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            raise TeamConfigError(f"tests[{i}]: each assertion must be a mapping")
+        if "type" not in entry:
+            raise TeamConfigError(f"tests[{i}]: missing required field 'type'")
+        result.append(dict(entry))
+    return result
 
 
 def _parse_defaults(data: dict) -> Defaults:
@@ -332,6 +361,9 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         max_tool_rounds=data.get("max_tool_rounds"),
         tool_timeout=data.get("tool_timeout"),
         skills=data.get("skills"),
+        output_format=data.get("output_format"),
+        output_schema=data.get("output_schema"),
+        turn_timeout=data.get("turn_timeout"),
     )
 
 
@@ -354,6 +386,7 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
     bridge = _parse_bridge(raw.get("bridge", {}))
     memory = _parse_memory(raw.get("memory", {}))
     beliefs = _parse_beliefs(raw.get("beliefs", {}))
+    tests = _parse_tests(raw.get("tests"))
 
     members_raw = _require(raw, "members", "team")
     if not isinstance(members_raw, list) or not members_raw:
@@ -424,6 +457,7 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
         bridge=bridge,
         memory=memory,
         beliefs=beliefs,
+        tests=tests,
     )
 
 

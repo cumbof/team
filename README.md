@@ -62,6 +62,9 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Workspace checkpoints** | Automatic snapshots before every member turn; `team restore` rolls back to any point. |
 | **Run statistics & reports** | Per-member token usage, turn counts, elapsed time — exportable as a Markdown report. |
 | **Interactive wizard** | `team new` walks you through YAML creation; `team visualize` renders the workflow graph. |
+| **Structured JSON output** | Force a member to reply with valid JSON; optionally validate against a JSON Schema with automatic retry. |
+| **Per-turn timeout** | Hard wall-clock deadline per member turn; raises `TurnTimeoutError` if the LLM doesn't respond in time. |
+| **`team test`** | Define assertions in the YAML and run them automatically after a team workflow to verify outputs in CI. |
 
 ---
 
@@ -2202,6 +2205,150 @@ CI: `.github/workflows/tests.yml` runs `pytest` on Python 3.10–3.12.
   reiterating "always emit deliverables in `\`\`\`file:...\`\`\` blocks".
 * **Containers won't stop** — `team down --purge <team.yaml>` force-
   removes containers and per-member model volumes.
+
+---
+
+## Structured JSON output
+
+By default members reply in free-form text.  When you need machine-readable
+output — e.g. an extractor member whose results are consumed by downstream
+code — set `output_format: json` on that member.
+
+```yaml
+members:
+  - name: extractor
+    role: Data extractor
+    model: llama3.1:8b
+    persona: You extract structured data from documents.
+    output_format: json
+    output_schema:                     # optional — validates the reply
+      type: object
+      required: [entities, summary]
+      properties:
+        entities:
+          type: array
+          items: {type: string}
+        summary:
+          type: string
+```
+
+**What happens**
+
+1. The system prompt gains an `## Output format` section instructing the model
+   to reply with valid JSON only.
+2. After the LLM replies, `team` calls `json.loads()` on the content.
+3. If parsing fails (or schema validation fails when `output_schema` is set),
+   the orchestrator sends a correction prompt and retries up to **3 times**.
+4. The parsed object is stored in `TurnResult.json_output` and is accessible
+   from custom workflows or post-run code.
+5. Schema validation requires `pip install jsonschema`; without it the schema
+   check is skipped silently.
+
+> **Note:** `output_format` is per-member only — it is not available as a
+> team-wide `defaults` key.
+
+---
+
+## Per-turn timeout
+
+Set a hard wall-clock deadline (seconds) on how long any single member turn
+may take.  If the LLM doesn't finish within the limit, a `TurnTimeoutError`
+is raised and the workflow stops.
+
+```yaml
+defaults:
+  turn_timeout: 120     # 2 minutes for every member by default
+
+members:
+  - name: fast_reviewer
+    role: Reviewer
+    model: qwen2.5:3b
+    persona: You review code quickly.
+    turn_timeout: 30    # override — this member gets only 30 s
+```
+
+Set `turn_timeout: 0` (or leave it absent) to disable timeouts entirely.
+
+**Implementation details**
+
+The member's `take_turn()` is executed in a `ThreadPoolExecutor` thread and
+`future.result(timeout=…)` enforces the deadline.  If the timeout fires the
+thread is abandoned (it will eventually finish and be garbage-collected), but
+the calling workflow raises `TurnTimeoutError` immediately.
+
+---
+
+## Automated testing with `team test`
+
+`team test` runs the team and then validates a set of assertions defined in the
+`tests:` section of the team YAML.  This makes it easy to build a repeatable
+test suite for your team in CI.
+
+```yaml
+tests:
+  - name: creates hello.py
+    type: file_exists
+    path: hello.py
+
+  - name: script contains print
+    type: file_contains
+    path: hello.py
+    text: "print"
+
+  - name: no error messages
+    type: file_not_contains
+    path: report.txt
+    text: "ERROR"
+
+  - name: results is valid JSON
+    type: json_valid
+    path: results.json
+
+  - name: results matches schema
+    type: json_schema
+    path: results.json
+    schema:
+      type: object
+      required: [entities, summary]
+
+  - name: any member mentioned Python
+    type: transcript_contains
+    text: "Python"
+
+  - name: developer specifically mentioned Python
+    type: transcript_contains
+    speaker: developer
+    text: "Python"
+
+  - name: exactly 4 member turns
+    type: transcript_count
+    count: 4
+```
+
+```
+team test myteam.yaml               # run the team, then assert
+team test myteam.yaml --no-run      # assert against an existing run
+team test myteam.yaml --max-rounds 2 --goal "quick smoke test"
+```
+
+Exits with code **0** if all assertions pass, **1** if any fail (suitable for
+CI gates).
+
+### Assertion reference
+
+| Type | Required fields | Description |
+| --- | --- | --- |
+| `file_exists` | `path` | File must exist in the shared workspace. |
+| `file_not_exists` | `path` | File must *not* exist. |
+| `file_contains` | `path`, `text` | File content must contain the substring. |
+| `file_not_contains` | `path`, `text` | File content must *not* contain the substring. |
+| `json_valid` | `path` | File must be parseable JSON. |
+| `json_schema` | `path`, `schema` | File must be valid JSON matching the JSON Schema. |
+| `transcript_contains` | `text` | At least one turn must contain the text. Add `speaker` to restrict to one member. |
+| `transcript_count` | `count` | Exact number of member turns (excludes `orchestrator`/`human`). |
+
+All `path` values are relative to the **shared workspace** directory
+(`<workspace>/shared/`).
 
 ---
 

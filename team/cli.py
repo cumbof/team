@@ -1137,5 +1137,134 @@ def personas(key: str | None) -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# test
+# --------------------------------------------------------------------------- #
+
+
+@cli.command(name="test")
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--no-run",
+    is_flag=True,
+    help="Skip the team run and validate an existing workspace/transcript directly.",
+)
+@click.option(
+    "--goal",
+    default=None,
+    help="Override the team goal for this test run.",
+)
+@click.option(
+    "--max-rounds",
+    "max_rounds",
+    default=None,
+    type=int,
+    help="Override max_rounds for this test run.",
+)
+@click.option(
+    "--no-gpu",
+    is_flag=True,
+    help="Disable GPU device requests (CPU-only).",
+)
+@click.option(
+    "--host-ollama",
+    "host_ollama",
+    default=None,
+    metavar="URL",
+    help="Skip Docker and connect all members to an existing Ollama instance.",
+)
+def test_cmd(
+    team_file: str,
+    no_run: bool,
+    goal: str | None,
+    max_rounds: int | None,
+    no_gpu: bool,
+    host_ollama: str | None,
+) -> None:
+    """Run the team then validate assertions from the team YAML's tests: section.
+
+    Assertions are defined in the ``tests:`` section of the team YAML::
+
+        tests:
+          - name: creates hello.py
+            type: file_exists
+            path: hello.py
+          - name: script contains print
+            type: file_contains
+            path: hello.py
+            text: "print"
+          - name: any agent mentioned Python
+            type: transcript_contains
+            text: "Python"
+
+    Use ``--no-run`` to validate an existing workspace without re-running the
+    team (useful after a manual run).
+
+    Exits with code 0 if all assertions pass, 1 if any fail.
+    """
+    from team.test_runner import run_assertions
+
+    cfg = _load(team_file)
+
+    if not cfg.tests:
+        console.print("[yellow]no tests: section found in team YAML — nothing to assert.[/yellow]")
+        return
+
+    if not no_run:
+        if goal:
+            cfg.goal = goal
+        if max_rounds is not None:
+            cfg.workflow.max_rounds = max_rounds
+        if host_ollama:
+            _apply_host_ollama(cfg, host_ollama)
+        elif no_gpu:
+            _apply_no_gpu(cfg)
+
+        orch = Orchestrator(cfg)
+        _setup_streaming(orch, console)
+        _print_team_banner(cfg, console)
+        console.print(Rule(f"[dim]round 1 of {cfg.workflow.max_rounds}[/dim]", style="dim"))
+        console.print()
+        with console.status("[bold blue]starting containers and pulling models…[/bold blue]"):
+            orch.up()
+        console.print("[green]✓[/green] team is up\n")
+        try:
+            orch.run()
+        finally:
+            orch.down()
+        console.print()
+
+    transcript_path = cfg.workspace / "transcript.jsonl"
+    results = run_assertions(cfg.tests, cfg.workspace, transcript_path)
+
+    table = Table(
+        title=f"[bold]Test results — {cfg.name}[/bold]",
+        border_style="dim",
+        header_style="bold dim",
+        show_lines=True,
+    )
+    table.add_column("Test", style="bold")
+    table.add_column("Result", justify="center")
+    table.add_column("Detail")
+
+    passed = failed = 0
+    for r in results:
+        if r.passed:
+            icon = "[green]✓ pass[/green]"
+            passed += 1
+        else:
+            icon = "[red]✗ fail[/red]"
+            failed += 1
+        table.add_row(r.name, icon, r.detail)
+
+    console.print(table)
+
+    if failed:
+        console.print(f"\n[red]{failed} test(s) failed · {passed} passed[/red]")
+        sys.exit(1)
+    else:
+        console.print(f"\n[green]all {passed} test(s) passed ✓[/green]")
+
+
 if __name__ == "__main__":  # pragma: no cover
     cli()

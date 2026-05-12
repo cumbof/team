@@ -165,6 +165,25 @@ def render_system_prompt(
     # boilerplate sections above without modifying the shared PROTOCOL constant.
     if member.extra_system:
         parts.extend(["", "## Additional instructions", member.extra_system.strip()])
+    if getattr(member, "output_format", None) == "json":
+        schema_hint = ""
+        if getattr(member, "output_schema", None):
+            import json as _json
+            schema_hint = (
+                "\n\nRequired JSON Schema:\n"
+                f"```json\n{_json.dumps(member.output_schema, indent=2)}\n```"
+            )
+        parts.extend([
+            "",
+            "## Output format",
+            (
+                "**You must respond with valid JSON only.**  "
+                "Do not include any prose, markdown formatting, or explanation "
+                "outside the JSON structure.  Do not wrap the JSON in a code "
+                "fence.  Your entire reply must be parseable by `json.loads()`."
+                + schema_hint
+            ),
+        ])
     if enabled_tools:
         parts.extend(["", _render_tool_section(enabled_tools, tool_descriptions)])
     return "\n".join(parts)

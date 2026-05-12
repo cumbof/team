@@ -31,6 +31,53 @@ DONE_TOKEN = "[[TEAM_DONE]]"
 _VALID_CONTEXT_STRATEGIES = {"none", "sliding_window", "truncate", "summarize"}
 
 
+def _extract_json(text: str) -> "tuple[dict | list | None, str | None]":
+    """Try to extract a JSON value from an LLM reply.
+
+    Attempts (in order):
+    1. Parse the whole string as JSON.
+    2. Extract the first ``json`` fenced code block and parse that.
+    3. Extract the first bare fenced code block and parse that.
+
+    Returns ``(parsed, None)`` on success or ``(None, error_message)`` on failure.
+    """
+    import json
+    import re
+
+    stripped = text.strip()
+    try:
+        return json.loads(stripped), None
+    except json.JSONDecodeError:
+        pass
+
+    for pattern in (r"```json\s*([\s\S]+?)\s*```", r"```\s*([\s\S]+?)\s*```"):
+        m = re.search(pattern, stripped)
+        if m:
+            try:
+                return json.loads(m.group(1).strip()), None
+            except json.JSONDecodeError:
+                pass
+
+    return None, "no valid JSON found in reply"
+
+
+def _validate_json_schema(data: "dict | list", schema: dict) -> "str | None":
+    """Validate *data* against *schema* using jsonschema (if installed).
+
+    Returns ``None`` if valid or jsonschema is not installed, or an error
+    message string if validation fails.
+    """
+    try:
+        import jsonschema  # type: ignore[import]
+        jsonschema.validate(data, schema)
+        return None
+    except ImportError:
+        log.debug("jsonschema not installed; skipping schema validation")
+        return None
+    except Exception as exc:  # jsonschema.ValidationError
+        return str(getattr(exc, "message", exc))
+
+
 @dataclass
 class TurnResult:
     content: str
@@ -38,6 +85,7 @@ class TurnResult:
     files_written: list[str]
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    json_output: "dict | list | None" = None
 
 
 class Member:
@@ -384,6 +432,50 @@ class Member:
 
         declared_done = DONE_TOKEN in content
 
+        # F11: structured JSON output — validate and optionally retry.
+        json_output = None
+        output_format = self.config.output_format
+        if output_format == "json":
+            output_schema = self.config.output_schema
+            retry_messages = list(messages)
+            _max_json_retries = 3
+            for _attempt in range(_max_json_retries):
+                parsed, error = _extract_json(content)
+                if parsed is not None and output_schema:
+                    schema_error = _validate_json_schema(parsed, output_schema)
+                    if schema_error:
+                        error = f"schema validation failed: {schema_error}"
+                        parsed = None
+                if parsed is not None:
+                    json_output = parsed
+                    break
+                log.warning(
+                    "@%s JSON attempt %d/%d failed: %s",
+                    self.name, _attempt + 1, _max_json_retries, error,
+                )
+                if _attempt < _max_json_retries - 1:
+                    retry_messages = retry_messages + [
+                        ChatMessage(role="assistant", content=content),
+                        ChatMessage(
+                            role="user",
+                            content=(
+                                f"Your reply was not valid JSON. Error: {error}. "
+                                "Please respond with ONLY a valid JSON value — "
+                                "no prose, no markdown fences, no explanation."
+                            ),
+                        ),
+                    ]
+                    content = self._call_llm(retry_messages, None)
+                    extra_usage = self.client.last_usage
+                    if extra_usage:
+                        prompt_tokens += extra_usage.prompt_tokens
+                        completion_tokens += extra_usage.completion_tokens
+            else:
+                log.warning(
+                    "@%s: could not produce valid JSON after %d attempts",
+                    self.name, _max_json_retries,
+                )
+
         # F7: route file:private/... blocks to the member's private directory.
         writes: list[str] = []
         if self.config.can_write_files:
@@ -396,5 +488,6 @@ class Member:
             files_written=writes,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            json_output=json_output,
         )
 

@@ -4,18 +4,23 @@ and the chosen workflow together.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 from pathlib import Path
 from typing import Callable
 
 from team.bus import Transcript
-from team.config import TeamConfig
+from team.config import TeamConfig, resolve_member_setting
 from team.container import ContainerManager
 from team.member import DONE_TOKEN, Member, TurnResult
 from team.workflows import get_workflow
 from team.workspace import CheckpointManager, SharedWorkspace
 
 log = logging.getLogger(__name__)
+
+
+class TurnTimeoutError(RuntimeError):
+    """Raised when a member's turn exceeds its configured ``turn_timeout``."""
 
 
 class Orchestrator:
@@ -178,13 +183,29 @@ class Orchestrator:
         log.info("turn: @%s", member_name)
         if self._on_turn_start:
             self._on_turn_start(member_name)
-        result = member.take_turn(
-            self.transcript, self.workspace,
+
+        # F12: per-turn timeout — wrap the member turn in a thread so we can
+        # apply a wall-clock deadline without blocking the event loop.
+        turn_timeout = resolve_member_setting(member.config, self.team.defaults, "turn_timeout")
+        _take_turn_kwargs = dict(
+            transcript=self.transcript,
+            workspace=self.workspace,
             prompt=prompt,
             token_callback=self._on_token,
             on_tool_call=self._on_tool_call,
             on_tool_result=self._on_tool_result,
         )
+        if turn_timeout:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _executor:
+                _future = _executor.submit(member.take_turn, **_take_turn_kwargs)
+                try:
+                    result = _future.result(timeout=turn_timeout)
+                except concurrent.futures.TimeoutError:
+                    raise TurnTimeoutError(
+                        f"@{member_name} turn timed out after {turn_timeout}s"
+                    )
+        else:
+            result = member.take_turn(**_take_turn_kwargs)
         if self._on_turn_end:
             self._on_turn_end(member_name)
         self.transcript.append(
