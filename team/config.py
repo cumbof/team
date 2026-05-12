@@ -93,6 +93,7 @@ class Defaults:
     tools: list[str] = field(default_factory=list)  # built-in tool names enabled by default
     max_tool_rounds: int = 10  # max agentic tool-call rounds per member turn
     tool_timeout: int = 300    # seconds budget per individual tool execution (generous for pip/apt)
+    tool_mode: str = "text"    # "text" (fenced-block parsing) | "native" (LLM function-calling API)
     # F4 skills: external tool plugins (local paths or remote URLs)
     skills: list[Any] = field(default_factory=list)
     # Host Ollama: if set, all members use this URL instead of Docker containers.
@@ -148,6 +149,7 @@ class MemberConfig:
     tools: list[str] | None = None     # None = inherit from defaults; [] = disable tools
     max_tool_rounds: int | None = None  # None = inherit from defaults
     tool_timeout: int | None = None     # None = inherit from defaults
+    tool_mode: str | None = None        # None = inherit from defaults; "text" | "native"
     skills: list[Any] | None = None     # None = inherit from defaults; [] = no skills
     # F11: structured JSON output
     output_format: str | None = None    # "json" to require valid JSON replies
@@ -409,6 +411,7 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         tools=data.get("tools"),
         max_tool_rounds=data.get("max_tool_rounds"),
         tool_timeout=data.get("tool_timeout"),
+        tool_mode=data.get("tool_mode"),
         skills=data.get("skills"),
         output_format=data.get("output_format"),
         output_schema=data.get("output_schema"),
@@ -509,6 +512,18 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
                     raise TeamConfigError(
                         f"members[{mc.name!r}].routes[{i}]: next={route.next!r} is not a declared member"
                     )
+
+    _VALID_TOOL_MODES = {"text", "native"}
+    for mc in members:
+        effective_mode = mc.tool_mode or defaults.tool_mode
+        if effective_mode not in _VALID_TOOL_MODES:
+            raise TeamConfigError(
+                f"members[{mc.name!r}].tool_mode={effective_mode!r} is not one of text | native"
+            )
+    if defaults.tool_mode not in _VALID_TOOL_MODES:
+        raise TeamConfigError(
+            f"defaults.tool_mode={defaults.tool_mode!r} is not one of text | native"
+        )
 
     return TeamConfig(
         name=name,

@@ -12,10 +12,10 @@ from typing import Callable
 from team.bus import Transcript
 from team.config import MemberConfig, TeamConfig, resolve_member_setting
 from team.container import MemberRuntime
-from team.ollama_client import ChatMessage, OllamaClient, OllamaError, OpenAICompatClient
+from team.ollama_client import ChatMessage, OllamaClient, OllamaError, OpenAICompatClient, ToolCall
 from team.personas import render_system_prompt
 from team.skills import load_skills
-from team.tools import TOOL_DESCRIPTIONS, TOOLS, execute_tool, parse_tool_blocks
+from team.tools import TOOL_DESCRIPTIONS, TOOL_SCHEMAS, TOOLS, args_to_body, execute_tool, parse_tool_blocks
 from team.workspace import SharedWorkspace, list_dir_files
 
 # Optional feature imports — guarded so the modules are only required when enabled.
@@ -404,6 +404,133 @@ class Member:
         total_completion += usage.completion_tokens if usage else 0
         return content, total_prompt, total_completion
 
+    def _run_native_agentic_turn(
+        self,
+        messages: list[ChatMessage],
+        workspace: SharedWorkspace,
+        on_tool_call: Callable[[str, str, str], None] | None,
+        on_tool_result: Callable[[str, str, str], None] | None,
+    ) -> tuple[str, int, int]:
+        """Agentic loop using native LLM function-calling (Ollama/OpenAI ``tools`` API).
+
+        The model receives JSON Schema tool definitions and responds with
+        structured :class:`~team.ollama_client.ToolCall` objects instead of
+        fenced text blocks.  Results are passed back via ``tool`` role messages.
+
+        Returns ``(final_content, total_prompt_tokens, total_completion_tokens)``.
+        """
+        max_rounds = (
+            self.config.max_tool_rounds
+            if self.config.max_tool_rounds is not None
+            else self.team.defaults.max_tool_rounds
+        )
+        tool_timeout = (
+            self.config.tool_timeout
+            if self.config.tool_timeout is not None
+            else self.team.defaults.tool_timeout
+        )
+        workspace_path = workspace.shared_dir
+
+        # Build the list of tool schemas for the enabled tools.
+        tool_schemas = [
+            TOOL_SCHEMAS[t] for t in self._enabled_tools if t in TOOL_SCHEMAS
+        ]
+        # For custom skill tools not in TOOL_SCHEMAS, create a minimal schema.
+        for t in self._enabled_tools:
+            if t not in TOOL_SCHEMAS and t in self._member_tools:
+                desc = self._member_tool_descs.get(t, f"Custom tool: {t}")
+                tool_schemas.append({
+                    "type": "function",
+                    "function": {
+                        "name": t,
+                        "description": desc,
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "input": {"type": "string", "description": "Tool input body."}
+                            },
+                            "required": [],
+                        },
+                    },
+                })
+
+        total_prompt = 0
+        total_completion = 0
+        running_messages = list(messages)
+
+        for round_num in range(max_rounds):
+            content, tool_calls = self.client.chat_native(
+                model=self.config.model,
+                messages=running_messages,
+                tools=tool_schemas,
+                temperature=resolve_member_setting(self.config, self.team.defaults, "temperature"),
+                top_p=resolve_member_setting(self.config, self.team.defaults, "top_p"),
+                num_ctx=resolve_member_setting(self.config, self.team.defaults, "context_window"),
+            )
+            usage = self.client.last_usage
+            total_prompt += usage.prompt_tokens if usage else 0
+            total_completion += usage.completion_tokens if usage else 0
+
+            if not tool_calls:
+                # No tool calls — this is the final reply.
+                return content, total_prompt, total_completion
+
+            # Build the assistant message with structured tool_calls.
+            asst_msg = ChatMessage(
+                role="assistant",
+                content=content,
+                tool_calls=tool_calls,
+            )
+            running_messages.append(asst_msg)
+
+            # Execute each tool and collect results as individual tool messages.
+            for tc in tool_calls:
+                tool_name = tc.name
+                if tool_name not in set(self._enabled_tools):
+                    result = f"ERROR: tool {tool_name!r} is not enabled for this member"
+                else:
+                    body = args_to_body(tool_name, tc.arguments)
+                    log.info(
+                        "@%s round %d: native tool call %s(%s)",
+                        self.name, round_num, tool_name,
+                        str(tc.arguments)[:80],
+                    )
+                    if on_tool_call:
+                        on_tool_call(self.name, tool_name, str(tc.arguments))
+                    result = execute_tool(
+                        tool_name,
+                        body,
+                        tools=self._member_tools,
+                        workspace_path=workspace_path,
+                        timeout=tool_timeout,
+                        memory=self.memory,
+                        beliefs=self.beliefs,
+                        member_name=self.name,
+                        bridge_secret=self.team.bridge.secret,
+                    )
+                if on_tool_result:
+                    on_tool_result(self.name, tool_name, result)
+                # Ollama/OpenAI expect a "tool" role message for each call result.
+                running_messages.append(ChatMessage(role="tool", content=result))
+
+        # Exhausted rounds — do one final call with no tools to get a text reply.
+        log.warning(
+            "@%s exhausted %d native tool rounds; requesting final reply",
+            self.name, max_rounds,
+        )
+        content, _ = self.client.chat_native(
+            model=self.config.model,
+            messages=running_messages,
+            tools=[],
+            temperature=resolve_member_setting(self.config, self.team.defaults, "temperature"),
+            top_p=resolve_member_setting(self.config, self.team.defaults, "top_p"),
+            num_ctx=resolve_member_setting(self.config, self.team.defaults, "context_window"),
+        )
+        usage = self.client.last_usage
+        total_prompt += usage.prompt_tokens if usage else 0
+        total_completion += usage.completion_tokens if usage else 0
+        return content, total_prompt, total_completion
+
     def take_turn(
         self,
         transcript: Transcript,
@@ -418,7 +545,16 @@ class Member:
 
         messages = self._build_messages(transcript, workspace, prompt)
 
-        if self._enabled_tools:
+        tool_mode = resolve_member_setting(self.config, self.team.defaults, "tool_mode") or "text"
+
+        if self._enabled_tools and tool_mode == "native":
+            content, prompt_tokens, completion_tokens = self._run_native_agentic_turn(
+                messages,
+                workspace,
+                on_tool_call,
+                on_tool_result,
+            )
+        elif self._enabled_tools:
             content, prompt_tokens, completion_tokens = self._run_agentic_turn(
                 messages,
                 workspace,

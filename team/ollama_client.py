@@ -39,12 +39,29 @@ class LLMRetryExhaustedError(OllamaError):
 
 
 @dataclass
+class ToolCall:
+    """A single structured tool invocation returned by a model that supports
+    native function calling (Ollama ``tools`` API / OpenAI function calling).
+    """
+    name: str
+    arguments: dict  # already parsed to a dict
+
+
+@dataclass
 class ChatMessage:
-    role: str  # "system" | "user" | "assistant"
+    role: str  # "system" | "user" | "assistant" | "tool"
     content: str
+    # Populated when role=="assistant" and the model returned tool calls.
+    tool_calls: "list[ToolCall]" = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {"role": self.role, "content": self.content}
+        d: dict = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            d["tool_calls"] = [
+                {"function": {"name": tc.name, "arguments": tc.arguments}}
+                for tc in self.tool_calls
+            ]
+        return d
 
 
 @dataclass
@@ -306,6 +323,84 @@ class OllamaClient:
             f"stream_chat failed after {self.max_retries + 1} attempt(s): {last_exc}"
         ) from last_exc
 
+    def chat_native(
+        self,
+        model: str,
+        messages: "Iterable[ChatMessage]",
+        tools: "list[dict]",
+        *,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        num_ctx: int | None = None,
+    ) -> "tuple[str, list[ToolCall]]":
+        """Send a chat request with native function-calling tool definitions.
+
+        Returns ``(content, tool_calls)`` where exactly one will be non-empty:
+
+        * If the model chooses to call tools, ``content`` is empty and
+          ``tool_calls`` contains one or more :class:`ToolCall` objects.
+        * If the model produces a final text reply, ``content`` is the text
+          and ``tool_calls`` is an empty list.
+        """
+        options = self._build_options(temperature, top_p, num_ctx, None)
+        # Ollama /api/chat accepts "tools" in the top-level payload.
+        payload: dict = {
+            "model": model,
+            "messages": [m.to_dict() for m in messages],
+            "stream": False,
+            "tools": tools,
+            "options": options,
+        }
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                r = self._session.post(
+                    self._url("/api/chat"), json=payload, timeout=self.timeout
+                )
+                if r.status_code >= 500:
+                    raise requests.HTTPError(f"server error {r.status_code}", response=r)
+                if r.status_code >= 400:
+                    raise OllamaError(f"chat_native failed ({r.status_code}): {r.text}")
+                data = r.json()
+                msg = data.get("message", {})
+                self.last_usage = TokenUsage(
+                    prompt_tokens=data.get("prompt_eval_count", 0),
+                    completion_tokens=data.get("eval_count", 0),
+                )
+                raw_calls = msg.get("tool_calls") or []
+                if raw_calls:
+                    parsed: list[ToolCall] = []
+                    for tc in raw_calls:
+                        fn = tc.get("function", {})
+                        args = fn.get("arguments", {})
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
+                        parsed.append(ToolCall(name=fn.get("name", ""), arguments=args))
+                    return "", parsed
+                content = msg.get("content", "")
+                return content, []
+            except OllamaError:
+                raise
+            except (
+                requests.ConnectionError,
+                requests.Timeout,
+                requests.HTTPError,
+            ) as exc:
+                last_exc = exc
+                if attempt < self.max_retries:
+                    wait = self.retry_backoff ** attempt
+                    log.warning(
+                        "chat_native: transient error (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, self.max_retries + 1, wait, exc,
+                    )
+                    time.sleep(wait)
+        raise LLMRetryExhaustedError(
+            f"chat_native failed after {self.max_retries + 1} attempt(s): {last_exc}"
+        ) from last_exc
+
 
 # --------------------------------------------------------------------------- #
 # OpenAI-compatible client (works with OpenAI, LM Studio, vLLM, llama.cpp,
@@ -542,5 +637,75 @@ class OpenAICompatClient:
                     time.sleep(wait)
         raise LLMRetryExhaustedError(
             f"stream_chat failed after {self.max_retries + 1} attempt(s): {last_exc}"
+        ) from last_exc
+
+    def chat_native(
+        self,
+        model: str,
+        messages: "Iterable[ChatMessage]",
+        tools: "list[dict]",
+        *,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        num_ctx: int | None = None,
+    ) -> "tuple[str, list[ToolCall]]":
+        """OpenAI-compat native function-calling chat.
+
+        Returns ``(content, tool_calls)`` — same contract as
+        :meth:`OllamaClient.chat_native`.
+        """
+        opts = self._build_options(temperature, top_p, num_ctx, None)
+        payload: dict = {
+            "model": model,
+            "messages": [m.to_dict() for m in messages],
+            "stream": False,
+            "tools": tools,
+            **opts,
+        }
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                r = self._session.post(
+                    self._url("/v1/chat/completions"), json=payload, timeout=self.timeout
+                )
+                if r.status_code >= 500:
+                    raise requests.HTTPError(f"server error {r.status_code}", response=r)
+                if r.status_code >= 400:
+                    raise OllamaError(f"chat_native failed ({r.status_code}): {r.text}")
+                data = r.json()
+                msg = (data.get("choices") or [{}])[0].get("message", {})
+                usage = data.get("usage") or {}
+                self.last_usage = TokenUsage(
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                )
+                raw_calls = msg.get("tool_calls") or []
+                if raw_calls:
+                    parsed: list[ToolCall] = []
+                    for tc in raw_calls:
+                        fn = tc.get("function", {})
+                        args = fn.get("arguments", {})
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
+                        parsed.append(ToolCall(name=fn.get("name", ""), arguments=args))
+                    return "", parsed
+                content = msg.get("content") or ""
+                return content, []
+            except OllamaError:
+                raise
+            except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as exc:
+                last_exc = exc
+                if attempt < self.max_retries:
+                    wait = self.retry_backoff ** attempt
+                    log.warning(
+                        "openai_compat chat_native: transient error (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, self.max_retries + 1, wait, exc,
+                    )
+                    time.sleep(wait)
+        raise LLMRetryExhaustedError(
+            f"chat_native failed after {self.max_retries + 1} attempt(s): {last_exc}"
         ) from last_exc
 

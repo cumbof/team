@@ -48,7 +48,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Containerised members** | Every LLM runs in its own Docker + Ollama container with configurable CPU, RAM, and GPU limits. |
 | **Flexible workflows** | `round_robin`, `manager`, `review_loop`, `sequential_chain`, `debate`, `parallel_review` — pick or combine. |
 | **Shared workspace** | Members read and write real files (code, reports, data) to a host directory. |
-| **Agent tool use** | 19 built-in tools (Python, Bash, web search, file I/O, memory, beliefs, decisions, delegation); extend with custom skills. |
+| **Agent tool use** | 19 built-in tools (Python, Bash, web search, file I/O, memory, beliefs, decisions, delegation); `tool_mode: text` (fenced blocks) or `tool_mode: native` (OpenAI/Ollama function-calling API with JSON Schema); extend with custom skills. |
 | **Predefined persona library** | 16 ready-made personas (`@pi`, `@engineer`, `@reviewer` …) stored as individual YAML files in `personas/`; extend with your own via `TEAM_PERSONA_DIR`. |
 | **Per-agent persistent memory** | SQLite-backed memory that survives between runs; agents `remember` and `recall` across sessions. |
 | **Shared team belief board** | Structured collective knowledge with confidence scores, voting, and consensus tracking. |
@@ -353,6 +353,7 @@ members:
 | `tools` | list | `[]` | Built-in tools enabled for all members by default. |
 | `max_tool_rounds` | int | `10` | Maximum agentic tool-call rounds per member turn. |
 | `tool_timeout` | int | `300` | Seconds budget per individual tool execution (generous default to allow package installs). |
+| `tool_mode` | string | `"text"` | Tool invocation mode: `"text"` (fenced blocks) or `"native"` (LLM function-calling API). |
 | `skills` | list | `[]` | Skill plugin sources (local paths or remote URLs) available to all members. |
 | `ollama_url` | string | unset | Route **all** members to an existing Ollama instance at this URL instead of starting Docker containers. Per-member `ollama_url` overrides this. See [Apple Silicon / no-Docker](#apple-silicon--no-docker-ollama). |
 
@@ -401,6 +402,7 @@ workflow:
 | `tools` | no | List of tool names this member may use (e.g. `[web_search, run_python]`). |
 | `max_tool_rounds` | no | Per-member override of the tool-round limit. |
 | `tool_timeout` | no | Per-member override of the per-tool execution timeout (seconds, default 300). |
+| `tool_mode` | no | Per-member override: `"text"` or `"native"` (default inherits from `defaults.tool_mode`). |
 | `skills` | no | Member-specific skill sources merged with `defaults.skills`. |
 
 ---
@@ -1083,9 +1085,14 @@ members:
 
 ## Agent mode and tool use
 
-Members can act as **agents**: they may call external tools by emitting a
-special fenced code block in their reply, then receive the tool's output and
-continue reasoning — all within the same logical turn.
+Members can act as **agents**: they may call external tools, then receive
+the tool's output and continue reasoning — all within the same logical turn.
+Two invocation modes are supported:
+
+| Mode | How it works |
+| --- | --- |
+| `text` (default) | Member emits fenced `tool:` blocks in its reply; orchestrator parses and executes them. Works with any model. |
+| `native` | Uses the LLM's **function-calling API** (Ollama `tools` parameter / OpenAI function calling). Requires a compatible model (Llama 3.1+, Qwen 2.5, GPT-4 family, etc.). |
 
 ### Enabling tools
 
@@ -1094,15 +1101,17 @@ defaults:
   tools: [web_search, run_python]  # enable globally
   max_tool_rounds: 10              # max tool-call rounds per turn (default: 10)
   tool_timeout: 300                # seconds per tool execution (default: 300)
+  tool_mode: text                  # "text" (default) or "native"
 
 members:
   - name: researcher
     tools: [web_search, read_url]  # per-member override
+    tool_mode: native              # this member uses function-calling API
   - name: data_scientist
     tools: [run_python, run_bash, read_file, write_file, append_file, list_files]
 ```
 
-### Tool invocation syntax
+### Tool invocation syntax — `text` mode
 
 A member invokes a tool by emitting a fenced block with a `tool:<name>`
 info-string:
@@ -1112,6 +1121,24 @@ info-string:
 query: IPCC AR6 key findings 2024
 ```
 ````
+
+### Tool invocation — `native` mode
+
+In native mode the model receives **JSON Schema** definitions for all
+enabled tools and returns structured `tool_calls` objects (OpenAI/Ollama
+function-calling format) instead of text fenced blocks.  The orchestrator
+executes the tools and passes results back via `tool` role messages — no
+text parsing required.
+
+Every built-in tool has a corresponding JSON Schema automatically provided
+to the model.  Custom skill tools that lack a schema receive a minimal
+`input: string` schema.
+
+> **Model requirements**: native mode requires a model that supports
+> function calling.  For Ollama, use `llama3.1:8b` or newer, `qwen2.5:7b`,
+> `mistral-nemo`, etc.  For OpenAI-compat backends, any GPT-4 / Claude
+> model works.  If you pass native mode to a model that ignores the `tools`
+> parameter, it will fall back to producing a text reply (no tool calls).
 
 ````
 ```tool:run_python
@@ -1251,13 +1278,24 @@ connection.
 
 ### How it works
 
+**Text mode** (`tool_mode: text`):
 ```
 member turn:
   1. LLM called with system prompt + conversation context
-  2. If reply contains tool blocks → execute each tool
+  2. If reply contains tool: fenced blocks → execute each tool
   3. Tool results injected as a follow-up user message
   4. LLM called again (no streaming; repeats up to max_tool_rounds)
   5. If no tool blocks in reply → reply recorded in transcript
+```
+
+**Native mode** (`tool_mode: native`):
+```
+member turn:
+  1. LLM called with JSON Schema tool definitions in the "tools" parameter
+  2. If response contains tool_calls → execute each named tool using args_to_body()
+  3. Each result injected as a "tool" role message
+  4. LLM called again (repeats up to max_tool_rounds)
+  5. When LLM returns text (no tool_calls) → reply recorded in transcript
 ```
 
 Token usage from all tool-call rounds is accumulated and reported in the

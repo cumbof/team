@@ -896,6 +896,294 @@ def _read_decisions(
 
 
 # --------------------------------------------------------------------------- #
+# Native function-calling schemas
+# --------------------------------------------------------------------------- #
+
+def _fn(name: str, description: str, props: dict, required: list[str]) -> dict:
+    """Build an OpenAI/Ollama-compatible function-tool dict."""
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": props,
+                "required": required,
+            },
+        },
+    }
+
+
+#: OpenAI/Ollama-compatible JSON Schema definitions for every built-in tool.
+#: Used when ``tool_mode: native`` is configured.
+TOOL_SCHEMAS: dict[str, dict] = {
+    "run_python": _fn(
+        "run_python",
+        "Execute Python code in the shared workspace directory and return stdout/stderr.",
+        {"code": {"type": "string", "description": "Python source code to execute."}},
+        ["code"],
+    ),
+    "run_bash": _fn(
+        "run_bash",
+        "Execute a bash command in the shared workspace directory and return stdout/stderr.",
+        {"command": {"type": "string", "description": "Bash command to execute."}},
+        ["command"],
+    ),
+    "web_search": _fn(
+        "web_search",
+        "Search the web via the DuckDuckGo instant-answer API and return a summary.",
+        {"query": {"type": "string", "description": "Search terms."}},
+        ["query"],
+    ),
+    "read_url": _fn(
+        "read_url",
+        "Fetch a URL and return its text content (HTML tags stripped).",
+        {"url": {"type": "string", "description": "URL to fetch."}},
+        ["url"],
+    ),
+    "read_file": _fn(
+        "read_file",
+        "Read a file from the shared workspace by relative path and return its contents.",
+        {"path": {"type": "string", "description": "Relative path inside the shared workspace."}},
+        ["path"],
+    ),
+    "write_file": _fn(
+        "write_file",
+        "Write (create or overwrite) a file in the shared workspace.",
+        {
+            "path":    {"type": "string", "description": "Relative path inside the shared workspace."},
+            "content": {"type": "string", "description": "File content to write."},
+        },
+        ["path", "content"],
+    ),
+    "append_file": _fn(
+        "append_file",
+        "Append text to a file in the shared workspace (creates the file if it does not exist).",
+        {
+            "path":    {"type": "string", "description": "Relative path inside the shared workspace."},
+            "content": {"type": "string", "description": "Text to append."},
+        },
+        ["path", "content"],
+    ),
+    "list_files": _fn(
+        "list_files",
+        "List files in the shared workspace, optionally filtered by a glob pattern.",
+        {"pattern": {"type": "string", "description": "Glob pattern, e.g. **/*.py. Omit to list all."}},
+        [],
+    ),
+    "remember": _fn(
+        "remember",
+        "Store a named memory in your persistent cross-session memory store.",
+        {
+            "key":        {"type": "string",  "description": "Unique memory key."},
+            "value":      {"type": "string",  "description": "Value to store (multi-line text allowed)."},
+            "tags":       {"type": "string",  "description": "Comma-separated tags (optional)."},
+            "importance": {"type": "number",  "description": "Importance score 0–1 (default 1.0)."},
+        },
+        ["key", "value"],
+    ),
+    "recall": _fn(
+        "recall",
+        "Search your persistent memory by keyword.",
+        {
+            "query": {"type": "string",  "description": "Keywords to search for."},
+            "limit": {"type": "integer", "description": "Maximum results to return (default 5)."},
+        },
+        ["query"],
+    ),
+    "forget": _fn(
+        "forget",
+        "Delete a memory from your persistent store by key.",
+        {"key": {"type": "string", "description": "Key of the memory to delete."}},
+        ["key"],
+    ),
+    "list_memories": _fn(
+        "list_memories",
+        "List memories in your persistent store, optionally filtered by tag.",
+        {
+            "tag":   {"type": "string",  "description": "Filter by tag (optional)."},
+            "limit": {"type": "integer", "description": "Maximum entries to return (default 20)."},
+        },
+        [],
+    ),
+    "assert_belief": _fn(
+        "assert_belief",
+        "Add a claim to the team's shared belief board.",
+        {
+            "claim":      {"type": "string", "description": "The claim text."},
+            "confidence": {"type": "number", "description": "Confidence 0–1 (default 0.5)."},
+            "evidence":   {"type": "string", "description": "Supporting evidence (optional)."},
+        },
+        ["claim"],
+    ),
+    "contest_belief": _fn(
+        "contest_belief",
+        "Contest an existing team belief, moving it to contested status.",
+        {
+            "id":     {"type": "string", "description": "Belief ID to contest."},
+            "reason": {"type": "string", "description": "Reason for contesting (optional but recommended)."},
+        },
+        ["id"],
+    ),
+    "accept_belief": _fn(
+        "accept_belief",
+        "Cast an accept vote for an existing team belief.",
+        {"id": {"type": "string", "description": "Belief ID to accept."}},
+        ["id"],
+    ),
+    "list_beliefs": _fn(
+        "list_beliefs",
+        "List the team's shared belief board, optionally filtered by status.",
+        {
+            "status": {
+                "type": "string",
+                "enum": ["pending", "accepted", "contested", "rejected"],
+                "description": "Filter by status (optional, omit to list all).",
+            }
+        },
+        [],
+    ),
+    "delegate_task": _fn(
+        "delegate_task",
+        "Delegate a sub-task to a remote team cluster (team serve) and wait for its results.",
+        {
+            "url":     {"type": "string",  "description": "Remote bridge server URL."},
+            "goal":    {"type": "string",  "description": "What the remote team should accomplish."},
+            "context": {"type": "string",  "description": "Optional background for the remote team."},
+            "files":   {"type": "string",  "description": "Comma-separated relative paths of files to send."},
+            "timeout": {"type": "integer", "description": "Seconds to wait for the remote team (default 600)."},
+        },
+        ["url", "goal"],
+    ),
+    "log_decision": _fn(
+        "log_decision",
+        "Append a timestamped decision entry to decisions.md in the shared workspace.",
+        {
+            "title":        {"type": "string", "description": "Short decision title."},
+            "rationale":    {"type": "string", "description": "Why this decision was made (optional)."},
+            "alternatives": {"type": "string", "description": "Alternatives considered (optional)."},
+        },
+        ["title"],
+    ),
+    "read_decisions": _fn(
+        "read_decisions",
+        "Read the full decision log (decisions.md) from the shared workspace.",
+        {},
+        [],
+    ),
+}
+
+
+def args_to_body(tool_name: str, args: dict) -> str:
+    """Convert a JSON argument dict (from native LLM function calling) to the
+    text body format expected by the existing tool implementations.
+
+    This lets the same tool functions handle both text-block invocations and
+    native function-call invocations without duplication.
+    """
+    if tool_name in ("run_python",):
+        return args.get("code", "")
+
+    if tool_name in ("run_bash",):
+        return args.get("command", "")
+
+    if tool_name == "web_search":
+        q = args.get("query", "")
+        return f"query: {q}"
+
+    if tool_name == "read_url":
+        return f"url: {args.get('url', '')}"
+
+    if tool_name == "read_file":
+        return f"path: {args.get('path', '')}"
+
+    if tool_name in ("write_file", "append_file"):
+        path = args.get("path", "")
+        content = args.get("content", "")
+        return f"path: {path}\n---\n{content}"
+
+    if tool_name == "list_files":
+        pat = args.get("pattern", "")
+        return f"pattern: {pat}" if pat else ""
+
+    if tool_name == "remember":
+        lines = [f"key: {args.get('key', '')}"]
+        if args.get("tags"):
+            lines.append(f"tags: {args['tags']}")
+        if args.get("importance") is not None:
+            lines.append(f"importance: {args['importance']}")
+        lines.append("---")
+        lines.append(args.get("value", ""))
+        return "\n".join(lines)
+
+    if tool_name == "recall":
+        body = f"query: {args.get('query', '')}"
+        if args.get("limit"):
+            body += f"\nlimit: {args['limit']}"
+        return body
+
+    if tool_name == "forget":
+        return f"key: {args.get('key', '')}"
+
+    if tool_name == "list_memories":
+        lines = []
+        if args.get("tag"):
+            lines.append(f"tag: {args['tag']}")
+        if args.get("limit"):
+            lines.append(f"limit: {args['limit']}")
+        return "\n".join(lines)
+
+    if tool_name == "assert_belief":
+        lines = []
+        if args.get("confidence") is not None:
+            lines.append(f"confidence: {args['confidence']}")
+        if args.get("evidence"):
+            lines.append(f"evidence: {args['evidence']}")
+        lines.append("---")
+        lines.append(args.get("claim", ""))
+        return "\n".join(lines)
+
+    if tool_name == "contest_belief":
+        body = f"id: {args.get('id', '')}"
+        if args.get("reason"):
+            body += f"\nreason: {args['reason']}"
+        return body
+
+    if tool_name == "accept_belief":
+        return f"id: {args.get('id', '')}"
+
+    if tool_name == "list_beliefs":
+        status = args.get("status", "")
+        return f"status: {status}" if status else ""
+
+    if tool_name == "delegate_task":
+        lines = [f"url: {args.get('url', '')}", f"goal: {args.get('goal', '')}"]
+        if args.get("context"):
+            lines.append(f"context: {args['context']}")
+        if args.get("files"):
+            lines.append(f"files: {args['files']}")
+        if args.get("timeout"):
+            lines.append(f"timeout: {args['timeout']}")
+        return "\n".join(lines)
+
+    if tool_name == "log_decision":
+        lines = [f"title: {args.get('title', '')}"]
+        if args.get("rationale"):
+            lines.append(f"rationale: {args['rationale']}")
+        if args.get("alternatives"):
+            lines.append(f"alternatives: {args['alternatives']}")
+        return "\n".join(lines)
+
+    if tool_name == "read_decisions":
+        return ""
+
+    # Unknown tool or custom skill — pass args as JSON so the skill can parse them.
+    import json as _json
+    return _json.dumps(args, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------- #
 # Registry & dispatch
 # --------------------------------------------------------------------------- #
 
