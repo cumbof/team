@@ -286,16 +286,29 @@ class BridgeServer:
     # ------------------------------------------------------------------ #
 
     def start(self) -> None:
-        """Start the HTTP server in a background daemon thread."""
+        """Start the HTTP server in a background daemon thread.
+
+        Blocks until the server loop is confirmed ready to accept connections
+        (up to 5 seconds) before returning.
+        """
         self._http = HTTPServer(("", self._port), _Handler)
+        self._port = self._http.server_address[1]  # update with actual bound port
         self._http.store = self.store           # type: ignore[attr-defined]
         self._http.bridge_server = self         # type: ignore[attr-defined]
+
+        ready = threading.Event()
+
+        def _serve() -> None:
+            ready.set()
+            self._http.serve_forever()  # type: ignore[union-attr]
+
         self._thread = threading.Thread(
-            target=self._http.serve_forever,
+            target=_serve,
             daemon=True,
             name="bridge-http",
         )
         self._thread.start()
+        ready.wait(timeout=5)
         log.info("bridge server listening on port %d", self._port)
 
     def stop(self) -> None:
@@ -330,18 +343,19 @@ class BridgeServer:
     def _run_task(self, task: BridgeTask) -> None:
         """Worker: acquire a slot, run the workflow, release the slot."""
         self._semaphore.acquire()
-        self.store.mark_running(task.task_id)
-        sub_ws = self._workspace_root / task.task_id
-        sub_ws.mkdir(parents=True, exist_ok=True)
-        log.info("bridge: running task %s (goal: %.60s…)", task.task_id, task.goal)
         try:
-            summary, files = self._runner(
-                sub_ws, task.goal, task.context, task.files
-            )
-            self.store.mark_complete(task.task_id, summary, files)
-            log.info("bridge: task %s complete (%d file(s))", task.task_id, len(files))
-        except Exception as exc:  # noqa: BLE001
-            log.exception("bridge: task %s failed: %s", task.task_id, exc)
-            self.store.mark_error(task.task_id, str(exc))
+            self.store.mark_running(task.task_id)
+            sub_ws = self._workspace_root / task.task_id
+            sub_ws.mkdir(parents=True, exist_ok=True)
+            log.info("bridge: running task %s (goal: %.60s…)", task.task_id, task.goal)
+            try:
+                summary, files = self._runner(
+                    sub_ws, task.goal, task.context, task.files
+                )
+                self.store.mark_complete(task.task_id, summary, files)
+                log.info("bridge: task %s complete (%d file(s))", task.task_id, len(files))
+            except Exception as exc:  # noqa: BLE001
+                log.exception("bridge: task %s failed: %s", task.task_id, exc)
+                self.store.mark_error(task.task_id, str(exc))
         finally:
             self._semaphore.release()

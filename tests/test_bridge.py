@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,17 +24,37 @@ from team.bridge_server import BridgeServer
 from team.tools import execute_tool
 
 
+def _tcp_loopback_available() -> bool:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.listen(1)
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.settimeout(1)
+        try:
+            client.connect(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+        finally:
+            client.close()
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+_requires_loopback_tcp = pytest.mark.skipif(
+    not _tcp_loopback_available(),
+    reason="TCP loopback connections are not available in this environment",
+)
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-
-
-def _free_port() -> int:
-    """Return an OS-assigned free TCP port."""
-    import socket
-    with socket.socket() as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
 
 
 def _stub_runner(
@@ -173,18 +194,18 @@ class TestTaskStore:
 
 @pytest.fixture
 def bridge(tmp_path):
-    """Start a BridgeServer with the stub runner on a free port."""
-    port = _free_port()
+    """Start a BridgeServer with the stub runner on an OS-assigned free port."""
     server = BridgeServer(
         runner=_stub_runner,
-        port=port,
+        port=0,  # let the OS pick a free port; server.port has the actual value
         workspace_root=tmp_path / "ws",
     )
     server.start()
-    yield server, port
+    yield server, server.port
     server.stop()
 
 
+@_requires_loopback_tcp
 class TestBridgeIntegration:
     def test_health_endpoint(self, bridge):
         server, port = bridge
@@ -248,15 +269,14 @@ class TestBridgeIntegration:
         def _failing_runner(ws, goal, ctx, files):
             raise RuntimeError("deliberate failure")
 
-        port = _free_port()
         server = BridgeServer(
             runner=_failing_runner,
-            port=port,
+            port=0,
             workspace_root=tmp_path / "ws",
         )
         server.start()
         try:
-            client = BridgeClient(f"http://127.0.0.1:{port}")
+            client = BridgeClient(f"http://127.0.0.1:{server.port}")
             task = BridgeTask(goal="will fail")
             task_id = client.submit_task(task)
             result = client.wait_for_result(task_id, timeout=10, poll_interval=0.1)

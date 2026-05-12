@@ -63,6 +63,11 @@ _NEXT_RE = re.compile(r"NEXT:\s*@?([a-z0-9_-]+)", re.IGNORECASE)
 
 def manager_driven(orch: "Orchestrator") -> None:
     manager_name = orch.team.workflow.options.get("manager")
+    if not manager_name or manager_name not in orch.members:
+        raise ValueError(
+            f"manager_driven workflow requires 'manager' option set to a valid member name "
+            f"(got {manager_name!r}; available: {list(orch.members)})"
+        )
     manager = orch.members[manager_name]
     max_rounds = orch.team.workflow.max_rounds
 
@@ -125,8 +130,20 @@ def _next_default(orch: "Orchestrator", current: str) -> str:
 
 def review_loop(orch: "Orchestrator") -> None:
     opts = orch.team.workflow.options
-    producer = orch.members[opts["producer"]]
-    reviewer = orch.members[opts["reviewer"]]
+    producer_name = opts.get("producer")
+    reviewer_name = opts.get("reviewer")
+    if not producer_name or producer_name not in orch.members:
+        raise ValueError(
+            f"review_loop workflow requires 'producer' option set to a valid member name "
+            f"(got {producer_name!r}; available: {list(orch.members)})"
+        )
+    if not reviewer_name or reviewer_name not in orch.members:
+        raise ValueError(
+            f"review_loop workflow requires 'reviewer' option set to a valid member name "
+            f"(got {reviewer_name!r}; available: {list(orch.members)})"
+        )
+    producer = orch.members[producer_name]
+    reviewer = orch.members[reviewer_name]
     max_rounds = orch.team.workflow.max_rounds
     approve_token = opts.get("approve_token", "APPROVED")
 

@@ -260,7 +260,6 @@ def _read_file(
         return "ERROR: no workspace available"
     try:
         target = (workspace_path / rel).resolve()
-        workspace_path.resolve()
         target.relative_to(workspace_path.resolve())  # traversal guard
     except ValueError:
         return f"ERROR: path {rel!r} escapes the workspace"

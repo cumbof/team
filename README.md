@@ -2284,6 +2284,12 @@ exercise config parsing, the file-block parser/safety guard, transcript
 rendering, the persona renderer, and every workflow against a fake
 orchestrator.
 
+The bridge **integration** tests (`TestBridgeIntegration` in
+`tests/test_bridge.py`) spin up a real in-process HTTP server on
+`127.0.0.1`.  They are automatically **skipped** when TCP loopback
+connections are unavailable in the test environment (e.g. some
+sandboxed CI runners).
+
 CI: `.github/workflows/tests.yml` runs `pytest` on Python 3.10–3.12.
 
 ---
