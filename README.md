@@ -70,6 +70,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Token budget** | Hard-cap total tokens per member per run; gracefully stops with `TokenBudgetError` when exhausted. |
 | **Conditional routing** | Members declare the next speaker via simple YAML rules (`if_contains`, `if_match`, `default`), enabling dynamic branching and state-machine-like workflows. |
 | **LLM retry with backoff** | Automatic retry with exponential backoff on transient errors (5xx, connection refused, timeout); configurable per member. Raises `LLMRetryExhaustedError` when all attempts fail. |
+| **Cost estimation** | Estimated USD cost displayed in the token-usage table after every run (`team run`, `team stats`). Built-in pricing for OpenAI, Anthropic, Google, and Mistral; local Ollama models show `$0.00 (local)`. |
 
 ---
 
@@ -2438,6 +2439,28 @@ team replay myteam.yaml | head -100
 | --- | --- | --- |
 | `--from N` | `0` | Start at turn N (0-based). |
 | `--speaker NAME` | — | Jump to the first turn by NAME at startup. |
+
+---
+
+## Cost estimation
+
+After every `team run` and `team stats` command, the token-usage table includes an **Est. cost** column with a USD estimate based on the model used by each member.
+
+Local Ollama models always show **$0.00 (local)** since they run on your hardware.  Cloud models (`backend: openai_compat`) are looked up in the built-in pricing table.
+
+### Built-in pricing table
+
+| Provider | Models |
+| --- | --- |
+| **OpenAI** | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo`, `o1`, `o1-mini`, `o3`, `o3-mini` |
+| **Anthropic** | `claude-opus-4`, `claude-sonnet-4`, `claude-3-5-sonnet`, `claude-3-5-haiku`, `claude-3-opus`, `claude-3-sonnet`, `claude-3-haiku` |
+| **Google** | `gemini-2.0-flash`, `gemini-1.5-pro`, `gemini-1.5-flash` |
+| **Mistral** | `mistral-large`, `mistral-medium`, `mistral-small`, `codestral` |
+| **Meta (cloud-hosted)** | `llama-3.1-405b`, `llama-3.1-70b`, `llama-3.1-8b`, `llama-3-70b`, `llama-3-8b` |
+
+Model names are matched by prefix/substring so versioned names like `gpt-4o-2024-08-06` automatically map to `gpt-4o` pricing.  If a model is not recognised, the cost column shows **?**.
+
+> **Prices are estimates only.** Provider pricing changes over time — update `team/pricing.py` with the latest figures from your provider's pricing page.
 
 ---
 

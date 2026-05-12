@@ -321,6 +321,9 @@ def _print_status(orch: Orchestrator) -> None:
 
 def _print_token_summary(orch: Orchestrator) -> None:
     """Print a token usage summary table after a workflow completes."""
+    from team.config import resolve_member_setting
+    from team.pricing import estimate_cost, format_cost
+
     totals = orch._token_totals
     if not any(v["prompt"] + v["completion"] for v in totals.values()):
         return
@@ -330,19 +333,36 @@ def _print_token_summary(orch: Orchestrator) -> None:
     table.add_column("prompt", justify="right")
     table.add_column("completion", justify="right")
     table.add_column("total", justify="right")
+    table.add_column("est. cost", justify="right")
     grand_p = grand_c = 0
+    grand_cost: float | None = 0.0
     for i, (name, counts) in enumerate(totals.items()):
         color = _get_member_color(name, orch.team.members)
         p, c = counts["prompt"], counts["completion"]
         grand_p += p
         grand_c += c
+        try:
+            mc = orch.team.member(name)
+            backend = resolve_member_setting(mc, orch.team.defaults, "backend") or "ollama"
+            is_local = backend == "ollama"
+            cost = estimate_cost(mc.model, p, c, is_local=is_local)
+        except (KeyError, AttributeError):
+            cost = None
+        if cost is None:
+            grand_cost = None  # if any member cost is unknown, total is unknown
+        elif grand_cost is not None:
+            grand_cost += cost
         table.add_row(
             f"[bold {color}]@{name}[/bold {color}]",
             str(p), str(c), str(p + c),
+            format_cost(cost),
         )
     table.add_section()
-    table.add_row("[bold]total[/bold]", str(grand_p), str(grand_c),
-                  str(grand_p + grand_c))
+    table.add_row(
+        "[bold]total[/bold]",
+        str(grand_p), str(grand_c), str(grand_p + grand_c),
+        format_cost(grand_cost),
+    )
     console.print(table)
 
 
@@ -663,6 +683,9 @@ def stats(team_file: str) -> None:
 
     s = t.stats()
 
+    from team.config import resolve_member_setting
+    from team.pricing import estimate_cost, format_cost
+
     # --- summary row ---
     dur = s["duration_seconds"]
     dur_str = f"{dur:.1f}s" if dur is not None else "—"
@@ -682,16 +705,29 @@ def stats(team_file: str) -> None:
     table.add_column("Prompt tokens", justify="right")
     table.add_column("Completion tokens", justify="right")
     table.add_column("Total tokens", justify="right")
+    table.add_column("Est. cost", justify="right")
 
+    grand_cost: float | None = 0.0
     for speaker, count in sorted(s["turns_by_speaker"].items()):
         tok = s["tokens_by_speaker"].get(speaker, {"prompt": 0, "completion": 0})
         p_tok, c_tok = tok["prompt"], tok["completion"]
+        try:
+            mc = cfg.member(speaker)
+            backend = resolve_member_setting(mc, cfg.defaults, "backend") or "ollama"
+            cost = estimate_cost(mc.model, p_tok, c_tok, is_local=(backend == "ollama"))
+        except (KeyError, AttributeError):
+            cost = None
+        if cost is None:
+            grand_cost = None
+        elif grand_cost is not None:
+            grand_cost += cost
         table.add_row(
             f"@{speaker}",
             str(count),
             str(p_tok),
             str(c_tok),
             str(p_tok + c_tok),
+            format_cost(cost),
         )
 
     table.add_section()
@@ -703,6 +739,7 @@ def stats(team_file: str) -> None:
         str(grand_p),
         str(grand_c),
         str(grand_p + grand_c),
+        format_cost(grand_cost),
     )
     console.print(table)
 
