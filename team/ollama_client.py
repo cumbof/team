@@ -75,6 +75,21 @@ class TokenUsage:
         return self.prompt_tokens + self.completion_tokens
 
 
+def _coerce_keep_alive(value: str) -> "str | int":
+    """Return *value* as an int when it is a bare integer string.
+
+    Ollama's Go backend parses ``keep_alive`` as a ``time.Duration`` when the
+    JSON value is a string, which requires a unit suffix (e.g. ``"5m"``).
+    The special sentinels ``-1`` (keep forever) and ``0`` (unload immediately)
+    must be sent as JSON *numbers* to avoid the "missing unit in duration"
+    error.
+    """
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
 class OllamaClient:
     def __init__(
         self,
@@ -187,7 +202,7 @@ class OllamaClient:
             "options": options,
         }
         if keep_alive is not None:
-            payload["keep_alive"] = keep_alive
+            payload["keep_alive"] = _coerce_keep_alive(keep_alive)
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -263,7 +278,7 @@ class OllamaClient:
             "options": options,
         }
         if keep_alive is not None:
-            payload["keep_alive"] = keep_alive
+            payload["keep_alive"] = _coerce_keep_alive(keep_alive)
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             # Track whether we've yielded any tokens during this attempt.
@@ -359,7 +374,7 @@ class OllamaClient:
             "options": options,
         }
         if keep_alive is not None:
-            payload["keep_alive"] = keep_alive
+            payload["keep_alive"] = _coerce_keep_alive(keep_alive)
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:

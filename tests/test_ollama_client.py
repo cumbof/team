@@ -437,14 +437,14 @@ def test_openai_compat_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_chat_sends_keep_alive_in_payload() -> None:
-    """keep_alive is forwarded to the Ollama /api/chat payload."""
+    """keep_alive bare integer string is coerced to int in the payload."""
     client = _client()
     with patch.object(
         client._session, "post", return_value=_chat_response("hi")
     ) as mock_post:
         client.chat("m", [ChatMessage("user", "hello")], keep_alive="-1")
     payload = mock_post.call_args.kwargs["json"]
-    assert payload.get("keep_alive") == "-1"
+    assert payload.get("keep_alive") == -1
 
 
 def test_chat_omits_keep_alive_when_none() -> None:
