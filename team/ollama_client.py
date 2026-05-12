@@ -177,14 +177,17 @@ class OllamaClient:
         top_p: float | None = None,
         num_ctx: int | None = None,
         stop: list[str] | None = None,
+        keep_alive: str | None = None,
     ) -> str:
         options = self._build_options(temperature, top_p, num_ctx, stop)
-        payload = {
+        payload: dict = {
             "model": model,
             "messages": [m.to_dict() for m in messages],
             "stream": False,
             "options": options,
         }
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -241,6 +244,7 @@ class OllamaClient:
         top_p: float | None = None,
         num_ctx: int | None = None,
         stop: list[str] | None = None,
+        keep_alive: str | None = None,
     ) -> Iterator[str]:
         """Yield content tokens as they stream from the Ollama API.
 
@@ -252,12 +256,14 @@ class OllamaClient:
         that need the full response should join the chunks themselves.
         """
         options = self._build_options(temperature, top_p, num_ctx, stop)
-        payload = {
+        payload: dict = {
             "model": model,
             "messages": [m.to_dict() for m in messages],
             "stream": True,
             "options": options,
         }
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             # Track whether we've yielded any tokens during this attempt.
@@ -332,6 +338,7 @@ class OllamaClient:
         temperature: float | None = None,
         top_p: float | None = None,
         num_ctx: int | None = None,
+        keep_alive: str | None = None,
     ) -> "tuple[str, list[ToolCall]]":
         """Send a chat request with native function-calling tool definitions.
 
@@ -351,6 +358,8 @@ class OllamaClient:
             "tools": tools,
             "options": options,
         }
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -511,6 +520,7 @@ class OpenAICompatClient:
         top_p: float | None = None,
         num_ctx: int | None = None,
         stop: list[str] | None = None,
+        keep_alive: str | None = None,  # accepted for interface parity; ignored by OpenAI-compat
     ) -> str:
         opts = self._build_options(temperature, top_p, num_ctx, stop)
         payload = {
@@ -567,6 +577,7 @@ class OpenAICompatClient:
         top_p: float | None = None,
         num_ctx: int | None = None,
         stop: list[str] | None = None,
+        keep_alive: str | None = None,  # accepted for interface parity; ignored by OpenAI-compat
     ) -> Iterator[str]:
         """Yield content tokens as they arrive via OpenAI SSE streaming."""
         opts = self._build_options(temperature, top_p, num_ctx, stop)
@@ -648,6 +659,7 @@ class OpenAICompatClient:
         temperature: float | None = None,
         top_p: float | None = None,
         num_ctx: int | None = None,
+        keep_alive: str | None = None,  # accepted for interface parity; ignored by OpenAI-compat
     ) -> "tuple[str, list[ToolCall]]":
         """OpenAI-compat native function-calling chat.
 

@@ -310,6 +310,7 @@ class Member:
             temperature=resolve_member_setting(self.config, self.team.defaults, "temperature"),
             top_p=resolve_member_setting(self.config, self.team.defaults, "top_p"),
             num_ctx=resolve_member_setting(self.config, self.team.defaults, "context_window"),
+            keep_alive=resolve_member_setting(self.config, self.team.defaults, "keep_alive"),
         )
         if token_callback is not None:
             chunks: list[str] = []
@@ -466,6 +467,7 @@ class Member:
                 temperature=resolve_member_setting(self.config, self.team.defaults, "temperature"),
                 top_p=resolve_member_setting(self.config, self.team.defaults, "top_p"),
                 num_ctx=resolve_member_setting(self.config, self.team.defaults, "context_window"),
+                keep_alive=resolve_member_setting(self.config, self.team.defaults, "keep_alive"),
             )
             usage = self.client.last_usage
             total_prompt += usage.prompt_tokens if usage else 0
@@ -525,6 +527,7 @@ class Member:
             temperature=resolve_member_setting(self.config, self.team.defaults, "temperature"),
             top_p=resolve_member_setting(self.config, self.team.defaults, "top_p"),
             num_ctx=resolve_member_setting(self.config, self.team.defaults, "context_window"),
+            keep_alive=resolve_member_setting(self.config, self.team.defaults, "keep_alive"),
         )
         usage = self.client.last_usage
         total_prompt += usage.prompt_tokens if usage else 0

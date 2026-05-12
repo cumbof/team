@@ -127,6 +127,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 - [Custom Ollama image](#custom-ollama-image)
 - [Streaming output](#streaming-output)
 - [Retry and back-off](#retry-and-back-off)
+- [Model retention (`keep_alive`)](#model-retention-keep_alive)
 - [Pre-flight checks](#pre-flight-checks)
 - [Exporting a run report](#exporting-a-run-report)
 - [Resuming an interrupted run](#resuming-an-interrupted-run)
@@ -358,6 +359,7 @@ members:
 | `tool_mode` | string | `"text"` | Tool invocation mode: `"text"` (fenced blocks) or `"native"` (LLM function-calling API). |
 | `skills` | list | `[]` | Skill plugin sources (local paths or remote URLs) available to all members. |
 | `ollama_url` | string | unset | Route **all** members to an existing Ollama instance at this URL instead of starting Docker containers. Per-member `ollama_url` overrides this. See [Apple Silicon / no-Docker](#apple-silicon--no-docker-ollama). |
+| `keep_alive` | string | `"-1"` | How long Ollama keeps a model loaded in RAM after a request. `"-1"` (default) means keep forever — models stay resident between turns. Accepts any Ollama duration string (`"5m"`, `"1h"`) or `"0"` to unload immediately after each call. |
 
 ### `workflow`
 
@@ -406,6 +408,7 @@ workflow:
 | `tool_timeout` | no | Per-member override of the per-tool execution timeout (seconds, default 300). |
 | `tool_mode` | no | Per-member override: `"text"` or `"native"` (default inherits from `defaults.tool_mode`). |
 | `skills` | no | Member-specific skill sources merged with `defaults.skills`. |
+| `keep_alive` | no | Per-member override for Ollama model retention (e.g. `"5m"`, `"-1"`). Inherits from `defaults.keep_alive` when absent. |
 
 ---
 
@@ -2510,6 +2513,31 @@ Local Ollama models always show **$0.00 (local)** since they run on your hardwar
 Model names are matched by prefix/substring so versioned names like `gpt-4o-2024-08-06` automatically map to `gpt-4o` pricing.  If a model is not recognised, the cost column shows **?**.
 
 > **Prices are estimates only.** Provider pricing changes over time — update `team/pricing.py` with the latest figures from your provider's pricing page.
+
+---
+
+## Model retention (`keep_alive`)
+
+By default, `team` sets Ollama's `keep_alive` to `"-1"` on every chat request, which tells Ollama to keep the model loaded in RAM indefinitely.  Without this, Ollama's built-in default evicts a model after 5 minutes of inactivity — a problem for large models (tens of gigabytes) that must repeatedly load and unload between turns.
+
+```yaml
+defaults:
+  keep_alive: "-1"   # keep every model loaded for the duration of the run (default)
+
+members:
+  - name: summarizer
+    model: llama3.2:3b
+    keep_alive: "5m"   # lightweight model — OK to evict after 5 minutes of idle
+    ...
+```
+
+| Value | Behaviour |
+| --- | --- |
+| `"-1"` | Keep the model loaded until Ollama stops or another model claim evicts it. **Recommended for team runs.** |
+| `"5m"`, `"1h"`, … | Evict after the given idle period (Ollama duration string). |
+| `"0"` | Unload immediately after each request (maximises GPU headroom at the cost of reload latency). |
+
+`keep_alive` is an Ollama-only parameter.  When the `openai_compat` backend is used it is silently ignored.
 
 ---
 

@@ -429,3 +429,41 @@ def test_openai_compat_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpenAICompatClient(base_url="http://x", api_key="env:MY_KEY")
     assert client._session.headers.get("Authorization") == "Bearer secret"
 
+
+
+# --------------------------------------------------------------------------- #
+# keep_alive tests
+# --------------------------------------------------------------------------- #
+
+
+def test_chat_sends_keep_alive_in_payload() -> None:
+    """keep_alive is forwarded to the Ollama /api/chat payload."""
+    client = _client()
+    with patch.object(
+        client._session, "post", return_value=_chat_response("hi")
+    ) as mock_post:
+        client.chat("m", [ChatMessage("user", "hello")], keep_alive="-1")
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload.get("keep_alive") == "-1"
+
+
+def test_chat_omits_keep_alive_when_none() -> None:
+    """keep_alive is not sent when not specified (preserves Ollama default)."""
+    client = _client()
+    with patch.object(
+        client._session, "post", return_value=_chat_response("hi")
+    ) as mock_post:
+        client.chat("m", [ChatMessage("user", "hello")])
+    payload = mock_post.call_args.kwargs["json"]
+    assert "keep_alive" not in payload
+
+
+def test_stream_chat_sends_keep_alive_in_payload() -> None:
+    """keep_alive is forwarded to the Ollama streaming /api/chat payload."""
+    client = _client()
+    with patch.object(
+        client._session, "post", return_value=_stream_response(["hi"])
+    ) as mock_post:
+        list(client.stream_chat("m", [ChatMessage("user", "hello")], keep_alive="30m"))
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload.get("keep_alive") == "30m"

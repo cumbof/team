@@ -104,6 +104,11 @@ class Defaults:
     turn_timeout: int | None = None
     # F15: token budget — max (prompt + completion) tokens per member per run
     token_budget: int | None = None  # None = disabled
+    # keep_alive: how long Ollama keeps a model loaded after a request.
+    # "-1" means keep loaded indefinitely (recommended for team runs so large
+    # models are not evicted between turns).  Accepts any Ollama duration
+    # string (e.g. "5m", "1h") or "-1" / "0".
+    keep_alive: str = "-1"
 
 
 @dataclass
@@ -158,6 +163,9 @@ class MemberConfig:
     turn_timeout: int | None = None     # None = inherit from defaults; 0 = disabled
     # F15: token budget
     token_budget: int | None = None     # None = inherit from defaults; 0 = disabled
+    # keep_alive: per-member override for Ollama model retention (e.g. "5m", "-1").
+    # None = inherit from defaults.keep_alive.
+    keep_alive: str | None = None
     # Retry settings — override defaults.max_retries / defaults.retry_backoff per member
     max_retries: int | None = None      # None = inherit from defaults
     retry_backoff: float | None = None  # None = inherit from defaults
@@ -419,6 +427,7 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         token_budget=data.get("token_budget"),
         max_retries=data.get("max_retries"),
         retry_backoff=data.get("retry_backoff"),
+        keep_alive=data.get("keep_alive"),
         routes=_parse_routes(data.get("routes", []), ctx),
     )
 
