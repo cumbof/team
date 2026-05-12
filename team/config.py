@@ -156,6 +156,9 @@ class MemberConfig:
     turn_timeout: int | None = None     # None = inherit from defaults; 0 = disabled
     # F15: token budget
     token_budget: int | None = None     # None = inherit from defaults; 0 = disabled
+    # Retry settings — override defaults.max_retries / defaults.retry_backoff per member
+    max_retries: int | None = None      # None = inherit from defaults
+    retry_backoff: float | None = None  # None = inherit from defaults
     # Conditional routing: evaluated after each turn to pick the next member.
     routes: list[RouteConfig] = field(default_factory=list)
 
@@ -411,6 +414,8 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         output_schema=data.get("output_schema"),
         turn_timeout=data.get("turn_timeout"),
         token_budget=data.get("token_budget"),
+        max_retries=data.get("max_retries"),
+        retry_backoff=data.get("retry_backoff"),
         routes=_parse_routes(data.get("routes", []), ctx),
     )
 

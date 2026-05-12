@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 import requests
 
-from team.ollama_client import ChatMessage, OllamaClient, OllamaError, TokenUsage
+from team.ollama_client import ChatMessage, LLMRetryExhaustedError, OllamaClient, OllamaError, TokenUsage
 
 
 # --------------------------------------------------------------------------- #
@@ -194,7 +194,7 @@ def test_chat_raises_after_exhausting_retries() -> None:
     fail = requests.ConnectionError("down")
     with patch.object(client._session, "post", side_effect=[fail, fail, fail]):
         with patch("team.ollama_client.time.sleep"):
-            with pytest.raises(OllamaError, match="3 attempt"):
+            with pytest.raises(LLMRetryExhaustedError, match="3 attempt"):
                 client.chat("m", [ChatMessage("user", "hi")])
 
 
@@ -287,7 +287,7 @@ def test_stream_chat_raises_after_exhausting_retries() -> None:
     fail = requests.ConnectionError("down")
     with patch.object(client._session, "post", side_effect=[fail, fail, fail]):
         with patch("team.ollama_client.time.sleep"):
-            with pytest.raises(OllamaError, match="3 attempt"):
+            with pytest.raises(LLMRetryExhaustedError, match="3 attempt"):
                 list(client.stream_chat("m", [ChatMessage("user", "hi")]))
 
 

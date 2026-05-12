@@ -69,6 +69,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **`team replay`** | Step through a saved transcript turn-by-turn in an interactive terminal viewer; navigate, search by speaker, and view stats. |
 | **Token budget** | Hard-cap total tokens per member per run; gracefully stops with `TokenBudgetError` when exhausted. |
 | **Conditional routing** | Members declare the next speaker via simple YAML rules (`if_contains`, `if_match`, `default`), enabling dynamic branching and state-machine-like workflows. |
+| **LLM retry with backoff** | Automatic retry with exponential backoff on transient errors (5xx, connection refused, timeout); configurable per member. Raises `LLMRetryExhaustedError` when all attempts fail. |
 
 ---
 
@@ -2437,6 +2438,38 @@ team replay myteam.yaml | head -100
 | --- | --- | --- |
 | `--from N` | `0` | Start at turn N (0-based). |
 | `--speaker NAME` | — | Jump to the first turn by NAME at startup. |
+
+---
+
+## LLM retry with backoff
+
+`team` automatically retries LLM calls that fail due to transient infrastructure errors — connection refused, timeouts, and HTTP 5xx responses from the server — using **exponential backoff**.
+
+```yaml
+defaults:
+  max_retries: 3       # attempts per call (default: 3; 0 = no retries)
+  retry_backoff: 2.0   # backoff base in seconds (wait = backoff ** attempt)
+
+members:
+  - name: alice
+    max_retries: 5     # per-member override
+    retry_backoff: 1.5
+```
+
+### How it works
+
+| Scenario | Behaviour |
+| --- | --- |
+| Connection refused / timeout | Retried up to `max_retries` times. |
+| HTTP 5xx (server error) | Retried — the server never processed the request. |
+| HTTP 4xx (client error) | **Not retried** — a bad model name or malformed request won't self-heal. |
+| Partial streaming response | **Not retried** — the caller already received tokens; replaying would produce duplicates. |
+
+The wait between attempts is `retry_backoff ** attempt` seconds (attempt 0 → 1 s, attempt 1 → 2 s, attempt 2 → 4 s for the default `retry_backoff=2.0`).
+
+### When all retries are exhausted
+
+`LLMRetryExhaustedError` (a subclass of `OllamaError`) is raised.  The CLI catches it and prints a red error panel instead of crashing, preserving any transcript written so far.
 
 ---
 

@@ -29,6 +29,15 @@ class OllamaError(RuntimeError):
     pass
 
 
+class LLMRetryExhaustedError(OllamaError):
+    """Raised when all retry attempts for an LLM call have been exhausted.
+
+    This is a subclass of :class:`OllamaError` so existing ``except OllamaError``
+    clauses continue to work, but callers that want to handle exhausted retries
+    specifically (e.g. to emit a distinct CLI error panel) can catch this type.
+    """
+
+
 @dataclass
 class ChatMessage:
     role: str  # "system" | "user" | "assistant"
@@ -202,7 +211,7 @@ class OllamaClient:
                         exc,
                     )
                     time.sleep(wait)
-        raise OllamaError(
+        raise LLMRetryExhaustedError(
             f"chat failed after {self.max_retries + 1} attempt(s): {last_exc}"
         ) from last_exc
 
@@ -293,7 +302,7 @@ class OllamaClient:
                         exc,
                     )
                     time.sleep(wait)
-        raise OllamaError(
+        raise LLMRetryExhaustedError(
             f"stream_chat failed after {self.max_retries + 1} attempt(s): {last_exc}"
         ) from last_exc
 
@@ -450,7 +459,7 @@ class OpenAICompatClient:
                         attempt + 1, self.max_retries + 1, wait, exc,
                     )
                     time.sleep(wait)
-        raise OllamaError(
+        raise LLMRetryExhaustedError(
             f"chat failed after {self.max_retries + 1} attempt(s): {last_exc}"
         ) from last_exc
 
@@ -531,7 +540,7 @@ class OpenAICompatClient:
                         attempt + 1, self.max_retries + 1, wait, exc,
                     )
                     time.sleep(wait)
-        raise OllamaError(
+        raise LLMRetryExhaustedError(
             f"stream_chat failed after {self.max_retries + 1} attempt(s): {last_exc}"
         ) from last_exc
 

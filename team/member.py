@@ -105,21 +105,23 @@ class Member:
 
         # Pick the right LLM client based on the effective backend setting.
         backend = resolve_member_setting(config, team.defaults, "backend") or "ollama"
+        eff_max_retries: int = resolve_member_setting(config, team.defaults, "max_retries") or team.defaults.max_retries
+        eff_retry_backoff: float = resolve_member_setting(config, team.defaults, "retry_backoff") or team.defaults.retry_backoff
         if backend == "openai_compat":
             api_key = resolve_member_setting(config, team.defaults, "api_key")
             self.client: OllamaClient | OpenAICompatClient = OpenAICompatClient(
                 base_url=runtime.base_url,
                 api_key=api_key,
                 timeout=team.defaults.request_timeout,
-                max_retries=team.defaults.max_retries,
-                retry_backoff=team.defaults.retry_backoff,
+                max_retries=eff_max_retries,
+                retry_backoff=eff_retry_backoff,
             )
         else:
             self.client = OllamaClient(
                 base_url=runtime.base_url,
                 timeout=team.defaults.request_timeout,
-                max_retries=team.defaults.max_retries,
-                retry_backoff=team.defaults.retry_backoff,
+                max_retries=eff_max_retries,
+                retry_backoff=eff_retry_backoff,
             )
 
         # Resolve skill sources (member override → defaults) and load them.

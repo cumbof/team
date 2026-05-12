@@ -582,10 +582,12 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
     console.print(Rule(f"[dim]round 1 of {cfg.workflow.max_rounds}[/dim]", style="dim"))
     console.print()
     _budget_hit = False
+    _retry_exhausted = False
     try:
         orch.run()
     except Exception as _exc:
         from team.orchestrator import TokenBudgetError
+        from team.ollama_client import LLMRetryExhaustedError
         if isinstance(_exc, TokenBudgetError):
             _budget_hit = True
             console.print()
@@ -600,6 +602,20 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
                     border_style="yellow",
                 )
             )
+        elif isinstance(_exc, LLMRetryExhaustedError):
+            _retry_exhausted = True
+            console.print()
+            console.print(
+                Panel(
+                    f"[red]{_exc}[/red]\n\n"
+                    "[dim]All retry attempts failed.  Check that the Ollama container is "
+                    "healthy and the model is loaded.  You can increase "
+                    "[bold]max_retries[/bold] or [bold]retry_backoff[/bold] in the team "
+                    "YAML to allow more attempts before giving up.[/dim]",
+                    title="[bold red]✗ LLM connection failed[/bold red]",
+                    border_style="red",
+                )
+            )
         else:
             raise
     finally:
@@ -607,7 +623,12 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
             orch.down()
     console.print()
     _print_token_summary(orch)
-    status_icon = "[yellow]⚠ stopped[/yellow]" if _budget_hit else "[green]✓ done[/green]"
+    if _retry_exhausted:
+        status_icon = "[red]✗ failed[/red]"
+    elif _budget_hit:
+        status_icon = "[yellow]⚠ stopped[/yellow]"
+    else:
+        status_icon = "[green]✓ done[/green]"
     console.print(f"{status_icon}  transcript → {orch.transcript_path()}")
 
 
@@ -1289,8 +1310,15 @@ def test_cmd(
             orch.run()
         except Exception as _exc:
             from team.orchestrator import TokenBudgetError
+            from team.ollama_client import LLMRetryExhaustedError
             if isinstance(_exc, TokenBudgetError):
                 console.print(f"\n[yellow]⚠ token budget exhausted:[/yellow] {_exc}")
+            elif isinstance(_exc, LLMRetryExhaustedError):
+                console.print(
+                    f"\n[red]✗ LLM connection failed (all retries exhausted):[/red] {_exc}\n"
+                    "[dim]Cannot run assertions — no transcript was produced.[/dim]"
+                )
+                sys.exit(1)
             else:
                 raise
         finally:
