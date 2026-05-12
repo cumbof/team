@@ -1303,5 +1303,351 @@ def test_cmd(
         console.print(f"\n[green]all {passed} test(s) passed ✓[/green]")
 
 
+# --------------------------------------------------------------------------- #
+# replay helpers (terminal I/O — Unix only)
+# --------------------------------------------------------------------------- #
+
+
+def _read_key_unix() -> str:
+    """Read a single keypress from stdin in raw terminal mode (Unix only).
+
+    Returns a normalised name:
+    * printable character as-is (``'n'``, ``'q'``, …)
+    * ``'ENTER'``, ``'SPACE'``, ``'BACKSPACE'``
+    * ``'ARROW_LEFT'``, ``'ARROW_RIGHT'``, ``'ARROW_UP'``, ``'ARROW_DOWN'``
+    * ``'ESCAPE'`` (bare Esc with no follow-up within 50 ms)
+    * ``'UNKNOWN'`` for unrecognised escape sequences
+    """
+    import select
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.buffer.read(1).decode("utf-8", errors="replace")
+        if ch == "\x1b":
+            ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+            if ready:
+                ch2 = sys.stdin.buffer.read(1).decode("utf-8", errors="replace")
+                if ch2 == "[":
+                    ready2, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if ready2:
+                        ch3 = sys.stdin.buffer.read(1).decode("utf-8", errors="replace")
+                        return {
+                            "A": "ARROW_UP",
+                            "B": "ARROW_DOWN",
+                            "C": "ARROW_RIGHT",
+                            "D": "ARROW_LEFT",
+                        }.get(ch3, "UNKNOWN")
+                return "UNKNOWN"
+            return "ESCAPE"
+        if ch in ("\r", "\n"):
+            return "ENTER"
+        if ch == " ":
+            return "SPACE"
+        if ch in ("\x7f", "\x08"):
+            return "BACKSPACE"
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _readline_raw_unix() -> str:
+    """Read characters in raw mode until Enter, echoing them.
+
+    Handles printable characters and backspace.  Returns the collected string
+    without the trailing newline.  Used for inline prompts inside the replay
+    interactive loop (no shell-level readline needed).
+    """
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    chars: list[str] = []
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.buffer.read(1).decode("utf-8", errors="replace")
+            if ch in ("\r", "\n"):
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                break
+            if ch in ("\x7f", "\x08"):
+                if chars:
+                    chars.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+            elif ch.isprintable():
+                chars.append(ch)
+                sys.stdout.write(ch)
+                sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return "".join(chars)
+
+
+def _replay_render_turn(
+    session: "Any",
+    team_name: str,
+    members: list,
+    cons: Console,
+    *,
+    show_stats: bool = False,
+) -> None:
+    """Clear the screen and render the current turn (or stats) + footer."""
+    import time as _time
+
+    cons.clear()
+    turn = session.current()
+    if turn is None:
+        cons.print("[yellow]No turns in transcript.[/yellow]")
+        return
+
+    color = _get_member_color(turn.speaker, members)
+    total = session.total
+    idx = session.index
+    pct = f"{(idx + 1) / total * 100:.0f}%" if total else "—"
+
+    header = Text()
+    header.append("📼 replay", style="bold")
+    header.append(f"  ·  {team_name}", style="dim")
+    header.append("  ·  turn ")
+    header.append(str(idx + 1), style="bold")
+    header.append(f"/{total}  ({pct})", style="dim")
+    header.append("  ·  ")
+    header.append(f"@{turn.speaker}", style=f"bold {color}")
+    header.append(f"  {turn.role}", style="dim")
+    cons.print(Rule(header, style="dim"))
+    cons.print()
+
+    if show_stats:
+        s = session.stats()
+        dur = s["duration_seconds"]
+        dur_str = f"{dur:.1f}s" if dur is not None else "—"
+        cons.print(
+            f"[bold]Totals:[/bold]  {s['total_turns']} turns  ·  "
+            f"{s['total_prompt_tokens'] + s['total_completion_tokens']:,} tokens  ·  "
+            f"{s['files_written']} file(s) written  ·  duration {dur_str}\n"
+        )
+        tbl = Table(show_lines=False, box=None, padding=(0, 2), show_header=True)
+        tbl.add_column("Speaker", style="bold")
+        tbl.add_column("Turns", justify="right")
+        tbl.add_column("Prompt", justify="right")
+        tbl.add_column("Completion", justify="right")
+        tbl.add_column("Total", justify="right")
+        for sp, count in sorted(s["turns_by_speaker"].items()):
+            tok = s["tokens_by_speaker"].get(sp, {"prompt": 0, "completion": 0})
+            sp_color = _get_member_color(sp, members)
+            tbl.add_row(
+                f"[{sp_color}]@{sp}[/{sp_color}]",
+                str(count),
+                str(tok["prompt"]),
+                str(tok["completion"]),
+                str(tok["prompt"] + tok["completion"]),
+            )
+        cons.print(tbl)
+    else:
+        body = Text(turn.content.rstrip())
+        if turn.files_written:
+            body.append(f"\n\n📄 wrote: {', '.join(turn.files_written)}", style="dim green")
+        tok_str = ""
+        if turn.prompt_tokens or turn.completion_tokens:
+            tok_str = f"  ·  {turn.prompt_tokens}↑ {turn.completion_tokens}↓ tok"
+        title = (
+            f"[bold {color}]@{turn.speaker}[/bold {color}]"
+            f" [dim]· {turn.role}  ·  turn {turn.index}{tok_str}[/dim]"
+        )
+        cons.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
+
+    # Footer ---------------------------------------------------------------- #
+    cons.print()
+    at_start = session.at_start
+    at_end = session.at_end
+    prev_style = "dim" if not at_start else "dim"
+    next_style = "dim" if not at_end else "dim"
+    nav_prev = f"[{prev_style}]←/p[/{prev_style}] prev"
+    nav_next = f"[{next_style}]→/n[/{next_style}] next"
+    s_label = "[bold]stats ✓[/bold]" if show_stats else "stats"
+    cons.print(
+        f"  {nav_prev}   {nav_next}"
+        f"   [dim]g[/dim] goto"
+        f"   [dim]f[/dim] find speaker"
+        f"   [dim]s[/dim] {s_label}"
+        f"   [dim]q[/dim] quit",
+        highlight=False,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# replay command
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--from",
+    "start_turn",
+    default=0,
+    type=int,
+    show_default=True,
+    help="Start at turn N (0-based index).",
+)
+@click.option(
+    "--speaker",
+    default=None,
+    metavar="NAME",
+    help="Jump to the first turn by SPEAKER at startup.",
+)
+def replay(team_file: str, start_turn: int, speaker: str | None) -> None:
+    """Browse a saved transcript turn-by-turn in an interactive viewer.
+
+    Loads the persisted transcript from the team's workspace and lets you
+    step through it one turn at a time using keyboard shortcuts.
+
+    \b
+    Navigation keys:
+      → / n / Space / Enter   advance to next turn
+      ← / p / b               go back one turn
+      g                        jump to a specific turn number
+      f                        find the next turn by a given speaker
+      s                        toggle the stats summary panel
+      q / Esc                  quit
+
+    Non-interactive mode (piped stdin): all turns are printed and the
+    command exits immediately — useful for scripting.
+
+    \b
+    Examples:
+      team replay myteam.yaml
+      team replay myteam.yaml --from 5
+      team replay myteam.yaml --speaker alice
+    """
+    import time as _time
+
+    from team.replay import ReplaySession, load_transcript
+
+    cfg = _load(team_file)
+    transcript_p = cfg.workspace / "transcript.jsonl"
+    turns = load_transcript(transcript_p)
+
+    if not turns:
+        console.print(f"[yellow]no transcript found[/yellow] at {transcript_p}")
+        console.print("[dim]Run the team first: team run myteam.yaml[/dim]")
+        return
+
+    session = ReplaySession(turns)
+
+    # Apply startup positioning -------------------------------------------- #
+    if speaker:
+        # Jump to the first turn by the requested speaker.
+        if turns[0].speaker.lower() == speaker.lower():
+            pass  # already there
+        elif not session.find_next(speaker):
+            console.print(f"[yellow]no turns by @{speaker} in transcript[/yellow]")
+            return
+    elif start_turn > 0:
+        if not session.jump(start_turn):
+            console.print(
+                f"[red]turn {start_turn} out of range "
+                f"(transcript has {session.total} turn(s), 0–{session.total - 1})[/red]"
+            )
+            return
+
+    # Non-interactive fallback (e.g. piped stdin) -------------------------- #
+    if not sys.stdin.isatty():
+        for t in turns:
+            color = _get_member_color(t.speaker, cfg.members)
+            title = (
+                f"[bold {color}]@{t.speaker}[/bold {color}]"
+                f" [dim]· {t.role}  ·  turn {t.index}[/dim]"
+            )
+            body = Text(t.content)
+            if t.files_written:
+                body.append(f"\n\n📄 wrote: {', '.join(t.files_written)}", style="dim green")
+            console.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
+            console.print()
+        return
+
+    # Interactive mode (requires Unix terminal) ---------------------------- #
+    try:
+        import termios  # noqa: F401
+        import tty  # noqa: F401
+    except ImportError:
+        console.print(
+            "[yellow]Interactive replay requires a Unix terminal "
+            "(termios/tty not available).[/yellow]"
+        )
+        console.print("[dim]Falling back to non-interactive output.[/dim]")
+        for t in turns:
+            color = _get_member_color(t.speaker, cfg.members)
+            title = (
+                f"[bold {color}]@{t.speaker}[/bold {color}]"
+                f" [dim]· {t.role}  ·  turn {t.index}[/dim]"
+            )
+            body = Text(t.content)
+            console.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
+            console.print()
+        return
+
+    show_stats = False
+    while True:
+        _replay_render_turn(session, cfg.name, cfg.members, console, show_stats=show_stats)
+
+        try:
+            key = _read_key_unix()
+        except Exception:
+            break
+
+        if key in ("n", "SPACE", "ENTER", "ARROW_RIGHT"):
+            show_stats = False
+            if not session.next():
+                console.print()
+                console.print("[dim]  ─── end of transcript ───[/dim]")
+                _time.sleep(0.7)
+        elif key in ("p", "b", "ARROW_LEFT"):
+            show_stats = False
+            session.prev()
+        elif key == "g":
+            console.print(
+                f"\n  [bold]Go to turn[/bold] [dim](0–{session.total - 1}):[/dim] ",
+                end="",
+            )
+            sys.stdout.flush()
+            raw = _readline_raw_unix().strip()
+            try:
+                target = int(raw)
+                if not session.jump(target):
+                    console.print(f"[red]  out of range (0–{session.total - 1})[/red]")
+                    _time.sleep(0.6)
+            except ValueError:
+                pass
+            show_stats = False
+        elif key == "f":
+            console.print("\n  [bold]Find speaker[/bold] [dim](name):[/dim] ", end="")
+            sys.stdout.flush()
+            raw = _readline_raw_unix().strip()
+            if raw:
+                # Try forward first; if nothing found, try backward (wrap).
+                if not session.find_next(raw):
+                    if not session.find_prev(raw):
+                        console.print(f"[yellow]  no turns by @{raw}[/yellow]")
+                        _time.sleep(0.6)
+            show_stats = False
+        elif key == "s":
+            show_stats = not show_stats
+        elif key in ("q", "ESCAPE"):
+            break
+        # Any other key — re-render silently.
+
+    console.clear()
+    console.print(
+        f"[dim]replay ended  ·  team [bold]{cfg.name}[/bold]  ·  {session.total} turn(s)[/dim]"
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     cli()

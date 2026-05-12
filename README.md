@@ -66,6 +66,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Per-turn timeout** | Hard wall-clock deadline per member turn; raises `TurnTimeoutError` if the LLM doesn't respond in time. |
 | **`team test`** | Define assertions in the YAML and run them automatically after a team workflow to verify outputs in CI. |
 | **Parallel member execution** | `workflow: type: parallel` — all members run simultaneously in each round, bounded by the slowest rather than the sum. |
+| **`team replay`** | Step through a saved transcript turn-by-turn in an interactive terminal viewer; navigate, search by speaker, and view stats. |
 
 ---
 
@@ -2390,6 +2391,50 @@ CI gates).
 
 All `path` values are relative to the **shared workspace** directory
 (`<workspace>/shared/`).
+
+---
+
+## `team replay` — interactive transcript browser
+
+After a run completes, `team replay` lets you step through the saved
+transcript turn-by-turn in an interactive terminal viewer — like a
+debugger for a past run.  No LLM calls, no Docker, no network — it
+works entirely from the persisted `transcript.jsonl` file.
+
+```
+team replay myteam.yaml                     # start at turn 0
+team replay myteam.yaml --from 5            # start at turn 5
+team replay myteam.yaml --speaker alice     # jump to alice's first turn
+```
+
+### Navigation keybindings
+
+| Key | Action |
+| --- | --- |
+| `→` / `n` / Space / Enter | Advance to the next turn |
+| `←` / `p` / `b` | Go back one turn |
+| `g` | Prompt for a turn number and jump directly to it |
+| `f` | Prompt for a speaker name and jump to their next turn |
+| `s` | Toggle the stats summary panel (token totals, turn counts) |
+| `q` / Esc | Quit |
+
+### Non-interactive mode
+
+When stdin is not a TTY (e.g. a CI pipeline or a pipe), `team replay`
+prints all turns sequentially — the same rich panel rendering used by
+`team transcript` — and exits immediately.  This makes it safe to use
+in scripts:
+
+```bash
+team replay myteam.yaml | head -100
+```
+
+### Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--from N` | `0` | Start at turn N (0-based). |
+| `--speaker NAME` | — | Jump to the first turn by NAME at startup. |
 
 ---
 
