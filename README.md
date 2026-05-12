@@ -1,9 +1,13 @@
 # team
 
-![team](assets/logo.png)
-
 **Orchestrate a cluster of containerized local LLMs — each with its own
 persona, role, and goal — that collaborate until the work is done.**
+
+![PyPI - Version](https://img.shields.io/pypi/v/team-core)
+![Build Status](https://img.shields.io/github/actions/workflow/status/cumbof/team/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/cumbof/team/blob/main/LICENSE)
+
+![team](assets/logo.png)
 
 `team` lets you describe a small "organisation" of LLMs in a single YAML
 file and then bring it to life: every member runs in **its own isolated
