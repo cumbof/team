@@ -1587,20 +1587,56 @@ Add a `bridge:` section to your YAML to configure the server behaviour:
 bridge:
   listen_port: 7001          # default port for `team serve` (default: 7000)
   max_concurrent_tasks: 2   # allow up to 2 simultaneous remote tasks (default: 1)
+  secret: "change-me"       # shared secret for HMAC-SHA256 authentication (see below)
 ```
 
 The `--port` flag on `team serve` overrides `listen_port` at runtime.
 
-### Security considerations
+### Security — HMAC-SHA256 shared secret
+
+Every bridge request is authenticated with a **shared secret** known only to
+the two collaborating labs.  Both sides must set the **same value** under
+`bridge.secret` in their respective team YAML files.
+
+```yaml
+# lab-a.yaml
+bridge:
+  secret: "super-secret-lab-key-change-me"
+
+# lab-b.yaml
+bridge:
+  listen_port: 7001
+  secret: "super-secret-lab-key-change-me"
+```
+
+The client signs every outgoing request with
+`HMAC-SHA256(secret, "{unix_timestamp}:{raw_body}")` and attaches two headers:
+
+| Header | Description |
+|--------|-------------|
+| `X-Bridge-Timestamp` | Unix timestamp (integer seconds) |
+| `X-Bridge-Signature` | HMAC-SHA256 hex digest |
+
+The server rejects requests that:
+* are missing either header → `401 Unauthorized`
+* have a timestamp older than **5 minutes** (replay-attack protection) → `401`
+* carry an invalid signature → `401`
+
+If `bridge.secret` is **not set** the server accepts all requests (open mode,
+backward compatible — use only on fully trusted private networks).
+
+### Additional security considerations
 
 > **The bridge server runs your team's full LLM workflow — including any
 > enabled tools such as `run_python` and `run_bash` — for every task it
-> receives.**  Only expose a bridge server to networks you trust.
+> receives.**  Always set `bridge.secret`; only expose a bridge server to
+> networks you trust.
 
 Practical recommendations:
-
-* Run `team serve` behind a reverse proxy (nginx, Caddy) with TLS and
-  authentication if the server is reachable from the public internet.
+* Always set a strong, random `bridge.secret` on both sides (treat it like a
+  database password).
+* Run `team serve` behind a reverse proxy (nginx, Caddy) with TLS if the
+  server is reachable from the public internet.
 * Restrict the tools available to remote-triggered runs to the minimum
   needed (e.g. disable `run_bash` if the remote goal is purely analytical).
 * Set `max_concurrent_tasks: 1` (the default) if your hardware cannot
