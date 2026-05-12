@@ -66,6 +66,7 @@ def _mock_member(name, content="ok", declared_done=False, delay=0.0):
     m.config.name = name
     m.config.role = name.capitalize()
     m.config.turn_timeout = None
+    m.config.token_budget = None  # no budget limit by default
 
     def _take_turn(*args, **kwargs):
         if delay:

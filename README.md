@@ -67,6 +67,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **`team test`** | Define assertions in the YAML and run them automatically after a team workflow to verify outputs in CI. |
 | **Parallel member execution** | `workflow: type: parallel` — all members run simultaneously in each round, bounded by the slowest rather than the sum. |
 | **`team replay`** | Step through a saved transcript turn-by-turn in an interactive terminal viewer; navigate, search by speaker, and view stats. |
+| **Token budget** | Hard-cap total tokens per member per run; gracefully stops with `TokenBudgetError` when exhausted. |
 
 ---
 
@@ -2435,6 +2436,33 @@ team replay myteam.yaml | head -100
 | --- | --- | --- |
 | `--from N` | `0` | Start at turn N (0-based). |
 | `--speaker NAME` | — | Jump to the first turn by NAME at startup. |
+
+---
+
+## Token budget
+
+Prevent runaway costs by capping how many tokens a member may consume across all turns in a single run.
+
+```yaml
+defaults:
+  token_budget: 5000   # max prompt+completion tokens per member per run
+
+members:
+  - name: alice
+    token_budget: 10000  # per-member override
+```
+
+When a member's cumulative token usage reaches the budget before their next turn, `TokenBudgetError` is raised and the run stops gracefully. The transcript and any workspace files written so far are preserved, and `team run --resume` with a higher budget can continue from where it left off.
+
+> **Note:** Replayed turns (from `--resume`) do **not** count toward the budget.
+
+### Budget resolution
+
+| Setting | Effective budget |
+| --- | --- |
+| `token_budget` in `defaults` only | Applied to every member. |
+| `token_budget` in a specific member | Overrides the `defaults` value for that member only. |
+| Neither set | No limit — member runs until the workflow ends. |
 
 ---
 

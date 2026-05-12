@@ -101,6 +101,8 @@ class Defaults:
     ollama_url: str | None = None
     # F12: per-turn timeout (seconds); 0 = disabled
     turn_timeout: int | None = None
+    # F15: token budget — max (prompt + completion) tokens per member per run
+    token_budget: int | None = None  # None = disabled
 
 
 @dataclass
@@ -143,6 +145,8 @@ class MemberConfig:
     output_schema: dict | None = None   # optional JSON Schema to validate the reply against
     # F12: per-turn timeout
     turn_timeout: int | None = None     # None = inherit from defaults; 0 = disabled
+    # F15: token budget
+    token_budget: int | None = None     # None = inherit from defaults; 0 = disabled
 
 
 @dataclass
@@ -364,6 +368,7 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         output_format=data.get("output_format"),
         output_schema=data.get("output_schema"),
         turn_timeout=data.get("turn_timeout"),
+        token_budget=data.get("token_budget"),
     )
 
 

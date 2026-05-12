@@ -23,6 +23,10 @@ class TurnTimeoutError(RuntimeError):
     """Raised when a member's turn exceeds its configured ``turn_timeout``."""
 
 
+class TokenBudgetError(RuntimeError):
+    """Raised when a member has exhausted its configured ``token_budget``."""
+
+
 class Orchestrator:
     def __init__(self, team: TeamConfig, container_manager: ContainerManager | None = None, resume: bool = False):
         self.team = team
@@ -177,12 +181,24 @@ class Orchestrator:
         # transcript relative to the new live turns.
         self._check_inject()
 
+        # F15: token budget check — only on the live path (replay never consumes
+        # real tokens and must not be blocked by a spent budget).
+        member = self.members[member_name]
+        token_budget = resolve_member_setting(member.config, self.team.defaults, "token_budget")
+        if token_budget:
+            totals = self._token_totals.get(member_name, {"prompt": 0, "completion": 0})
+            used = totals["prompt"] + totals["completion"]
+            if used >= token_budget:
+                raise TokenBudgetError(
+                    f"@{member_name} has exhausted its token budget "
+                    f"({used:,} of {token_budget:,} tokens used)"
+                )
+
         # Snapshot the shared workspace before this member writes anything so
         # users can restore the project to this state if the turn produces
         # undesirable changes.
         self.checkpoints.create(len(self.transcript.turns), member_name)
 
-        member = self.members[member_name]
         log.info("turn: @%s", member_name)
         if self._on_turn_start:
             self._on_turn_start(member_name)
@@ -280,6 +296,26 @@ class Orchestrator:
         replay_map: dict[str, TurnResult] = {n: r for n, r in replay}
         live_results: dict[str, TurnResult] = {}
         live_errors: dict[str, Exception] = {}
+
+        # F15: filter out budget-exhausted members before dispatching threads.
+        # Replay turns are exempt (they don't consume real tokens).
+        non_exhausted: list[str] = []
+        for name in to_run:
+            member_obj = self.members[name]
+            token_budget = resolve_member_setting(
+                member_obj.config, self.team.defaults, "token_budget"
+            )
+            if token_budget:
+                totals = self._token_totals.get(name, {"prompt": 0, "completion": 0})
+                used = totals["prompt"] + totals["completion"]
+                if used >= token_budget:
+                    live_errors[name] = TokenBudgetError(
+                        f"@{name} has exhausted its token budget "
+                        f"({used:,} of {token_budget:,} tokens used)"
+                    )
+                    continue
+            non_exhausted.append(name)
+        to_run = non_exhausted
 
         if to_run:
             # Check for a human directive before launching threads.

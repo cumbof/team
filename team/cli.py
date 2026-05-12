@@ -581,14 +581,34 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
     _print_team_banner(cfg, console)
     console.print(Rule(f"[dim]round 1 of {cfg.workflow.max_rounds}[/dim]", style="dim"))
     console.print()
+    _budget_hit = False
     try:
         orch.run()
+    except Exception as _exc:
+        from team.orchestrator import TokenBudgetError
+        if isinstance(_exc, TokenBudgetError):
+            _budget_hit = True
+            console.print()
+            console.print(
+                Panel(
+                    f"[yellow]{_exc}[/yellow]\n\n"
+                    "[dim]The run stopped before that member's next turn.  "
+                    "Increase [bold]token_budget[/bold] in the team YAML "
+                    "or use [bold]team run --resume[/bold] with a higher budget "
+                    "to continue from where it left off.[/dim]",
+                    title="[bold yellow]⚠ token budget exhausted[/bold yellow]",
+                    border_style="yellow",
+                )
+            )
+        else:
+            raise
     finally:
         if not keep_up:
             orch.down()
     console.print()
     _print_token_summary(orch)
-    console.print(f"[green]✓ done[/green]  transcript → {orch.transcript_path()}")
+    status_icon = "[yellow]⚠ stopped[/yellow]" if _budget_hit else "[green]✓ done[/green]"
+    console.print(f"{status_icon}  transcript → {orch.transcript_path()}")
 
 
 @cli.command()
@@ -1267,6 +1287,12 @@ def test_cmd(
         console.print("[green]✓[/green] team is up\n")
         try:
             orch.run()
+        except Exception as _exc:
+            from team.orchestrator import TokenBudgetError
+            if isinstance(_exc, TokenBudgetError):
+                console.print(f"\n[yellow]⚠ token budget exhausted:[/yellow] {_exc}")
+            else:
+                raise
         finally:
             orch.down()
         console.print()
