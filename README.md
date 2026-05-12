@@ -1,7 +1,7 @@
 # team
 
-**Orchestrate a cluster of containerized local LLMs — each with its own
-persona, role, and goal — that collaborate until the work is done.**
+Orchestrate a cluster of containerized local LLMs — each with its own
+persona, role, and goal — that collaborate until the work is done.
 
 ![PyPI - Version](https://img.shields.io/pypi/v/team-core)
 ![Build Status](https://img.shields.io/github/actions/workflow/status/cumbof/team/tests.yml)
