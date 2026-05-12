@@ -5,6 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ team.name }} — team run report</title>
 <style>
+  :root {
+    --bg: #ffffff;
+    --fg: #24292f;
+    --muted: #57606a;
+    --faint: #8c959f;
+    --border: #d0d7de;
+    --surface: #f6f8fa;
+    --accent: #0969da;
+    --accent-bg: #ddf4ff;
+    --code-bg: #f6f8fa;
+    --green: #1a7f37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #8b949e;
+      --faint: #6e7681;
+      --border: #30363d;
+      --surface: #161b22;
+      --accent: #58a6ff;
+      --accent-bg: #0c2d6b;
+      --code-bg: #161b22;
+      --green: #3fb950;
+    }
+  }
   *, *::before, *::after { box-sizing: border-box; }
   body {
     font-family: system-ui, -apple-system, sans-serif;
@@ -12,34 +38,52 @@
     margin: 2rem auto;
     padding: 0 1.5rem;
     line-height: 1.65;
-    color: #24292f;
-    background: #fff;
+    color: var(--fg);
+    background: var(--bg);
   }
   h1 { font-size: 1.8rem; margin-bottom: .25rem; }
-  h2 { font-size: 1.25rem; margin-top: 2rem; border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+  h2 { font-size: 1.25rem; margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
   h3 { font-size: 1rem; margin: 0; }
+  a { color: var(--accent); }
+
   .goal {
-    background: #f6f8fa;
-    border-left: 4px solid #0969da;
+    background: var(--accent-bg);
+    border-left: 4px solid var(--accent);
     padding: .75rem 1rem;
     margin: 1rem 0 2rem;
     border-radius: 0 6px 6px 0;
     white-space: pre-wrap;
+    color: var(--fg);
   }
+
+  /* Members */
   .members { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 2rem; }
   .member-card {
-    border: 1px solid #d0d7de;
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: .6rem 1rem;
     min-width: 180px;
-    background: #f6f8fa;
+    background: var(--surface);
   }
-  .member-card .handle { font-weight: 700; color: #0969da; }
-  .member-card .role { font-size: .85rem; color: #57606a; }
-  .member-card .model { font-size: .78rem; font-family: monospace; color: #57606a; margin-top: .2rem; }
-  .workflow-meta { font-size: .9rem; color: #57606a; margin-bottom: 2rem; }
+  .member-card .handle { font-weight: 700; color: var(--accent); }
+  .member-card .role { font-size: .85rem; color: var(--muted); }
+  .member-card .model { font-size: .78rem; font-family: monospace; color: var(--muted); margin-top: .2rem; }
+
+  .workflow-meta { font-size: .9rem; color: var(--muted); margin-bottom: 2rem; }
+
+  /* Token table */
+  table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; font-size: .9rem; }
+  th, td { padding: .4rem .75rem; border: 1px solid var(--border); text-align: right; }
+  th { background: var(--surface); text-align: left; font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  tr.total-row td { font-weight: 700; background: var(--surface); border-top: 2px solid var(--border); }
+  .cost { font-family: monospace; }
+  .cost-local { color: var(--green); }
+  .cost-unknown { color: var(--faint); }
+
+  /* Transcript */
   .turn {
-    border: 1px solid #d0d7de;
+    border: 1px solid var(--border);
     border-radius: 8px;
     margin-bottom: 1.25rem;
     overflow: hidden;
@@ -48,40 +92,63 @@
     display: flex;
     align-items: baseline;
     gap: .75rem;
-    background: #f6f8fa;
+    background: var(--surface);
     padding: .5rem 1rem;
-    border-bottom: 1px solid #d0d7de;
+    border-bottom: 1px solid var(--border);
   }
-  .turn-index { font-size: .8rem; color: #57606a; }
-  .turn-handle { font-weight: 700; color: #0969da; }
-  .turn-role { font-size: .85rem; color: #57606a; }
-  .turn-time { font-size: .78rem; color: #8c959f; margin-left: auto; }
-  .turn-body { padding: .75rem 1rem; white-space: pre-wrap; word-break: break-word; }
-  .files-written { font-size: .8rem; color: #57606a; padding: .4rem 1rem; background: #f6f8fa; border-top: 1px solid #d0d7de; }
+  .turn-index { font-size: .8rem; color: var(--faint); }
+  .turn-handle { font-weight: 700; color: var(--accent); }
+  .turn-role { font-size: .85rem; color: var(--muted); }
+  .turn-tokens { font-size: .78rem; color: var(--faint); font-family: monospace; }
+  .turn-time { font-size: .78rem; color: var(--faint); margin-left: auto; }
+  .turn-body {
+    padding: .75rem 1rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--fg);
+  }
+  .turn-body code { background: var(--code-bg); border-radius: 3px; padding: .1em .3em; font-size: .9em; }
+  .files-written {
+    font-size: .8rem;
+    color: var(--muted);
+    padding: .4rem 1rem;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
   .files-written code { font-size: .85em; }
+
+  /* Artifacts */
   .artifact { margin-bottom: 1.5rem; }
   .artifact-name {
     font-family: monospace;
     font-size: .9rem;
-    background: #f6f8fa;
-    border: 1px solid #d0d7de;
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: 6px 6px 0 0;
     padding: .4rem .8rem;
-    color: #24292f;
+    color: var(--fg);
     border-bottom: none;
   }
   .artifact pre {
     margin: 0;
-    background: #f6f8fa;
-    border: 1px solid #d0d7de;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
     border-radius: 0 0 6px 6px;
     padding: .75rem 1rem;
     overflow-x: auto;
     font-size: .85rem;
     white-space: pre;
+    color: var(--fg);
   }
-  .no-data { color: #57606a; font-style: italic; }
-  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #d0d7de; font-size: .8rem; color: #8c959f; }
+
+  .no-data { color: var(--muted); font-style: italic; }
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    font-size: .8rem;
+    color: var(--faint);
+  }
 </style>
 </head>
 <body>
@@ -104,7 +171,45 @@
 <div class="workflow-meta">
   Workflow: <strong>{{ team.workflow.type }}</strong> &nbsp;·&nbsp;
   Max rounds: <strong>{{ team.workflow.max_rounds }}</strong>
+  {% if token_summary.duration_seconds %}
+  &nbsp;·&nbsp; Duration: <strong>{{ "%.1f"|format(token_summary.duration_seconds) }}s</strong>
+  {% endif %}
 </div>
+
+{% if token_summary.by_member %}
+<h2>Token usage &amp; estimated cost</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Member</th><th>Model</th>
+      <th>Prompt</th><th>Completion</th><th>Total</th><th>Est. cost</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for name, d in token_summary.by_member.items() %}
+    <tr>
+      <td><strong>@{{ name }}</strong></td>
+      <td><code>{{ d.model }}</code></td>
+      <td>{{ "{:,}".format(d.prompt) }}</td>
+      <td>{{ "{:,}".format(d.completion) }}</td>
+      <td>{{ "{:,}".format(d.total) }}</td>
+      <td class="cost {% if d.cost == 0 %}cost-local{% elif d.cost is none %}cost-unknown{% endif %}">
+        {{ d.cost_fmt }}
+      </td>
+    </tr>
+    {% endfor %}
+    <tr class="total-row">
+      <td colspan="2"><strong>total</strong></td>
+      <td>{{ "{:,}".format(token_summary.total_prompt) }}</td>
+      <td>{{ "{:,}".format(token_summary.total_completion) }}</td>
+      <td>{{ "{:,}".format(token_summary.total_tokens) }}</td>
+      <td class="cost {% if token_summary.total_cost == 0 %}cost-local{% elif token_summary.total_cost is none %}cost-unknown{% endif %}">
+        <strong>{{ token_summary.total_cost_fmt }}</strong>
+      </td>
+    </tr>
+  </tbody>
+</table>
+{% endif %}
 
 <h2>Transcript</h2>
 
@@ -116,6 +221,9 @@
       <span class="turn-index">turn {{ turn.index }}</span>
       <span class="turn-handle">@{{ turn.speaker }}</span>
       <span class="turn-role">{{ turn.role }}</span>
+      {% if turn.prompt_tokens or turn.completion_tokens %}
+      <span class="turn-tokens">{{ turn.prompt_tokens }}↑ {{ turn.completion_tokens }}↓ tok</span>
+      {% endif %}
       {% if turn.timestamp %}
       <span class="turn-time">{{ turn.timestamp | fmt_ts }}</span>
       {% endif %}
@@ -123,7 +231,7 @@
     <div class="turn-body">{{ turn.content | trim }}</div>
     {% if turn.files_written %}
     <div class="files-written">
-      wrote: {% for f in turn.files_written %}<code>{{ f }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+      📄 wrote: {% for f in turn.files_written %}<code>{{ f }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
     </div>
     {% endif %}
   </div>
@@ -146,7 +254,8 @@
 {% endif %}
 
 <footer>
-  Generated by <strong>team</strong> &nbsp;·&nbsp; workspace: {{ workspace }}
+  Generated by <strong>team-core</strong> v{{ version }} &nbsp;·&nbsp; {{ generated_at }}
+  &nbsp;·&nbsp; workspace: {{ workspace }}
 </footer>
 
 </body>

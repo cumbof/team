@@ -732,7 +732,7 @@ team run         <team.yaml>          Up + run workflow + (down).
                  [--no-gpu] [--host-ollama URL]
 team transcript  <team.yaml>          Render the persisted transcript.
 team export      <team.yaml>          Export transcript + artifacts to a report.
-                 [--format markdown|html] [--output PATH]
+                 [--format markdown|html|json] [--output PATH] [--no-artifacts]
 team checkpoints <team.yaml>          List all workspace checkpoints.
 team restore     <team.yaml> <ID>     Restore the shared workspace to a checkpoint.
 team down        <team.yaml>          Stop & remove containers (and volumes).
@@ -819,18 +819,27 @@ into a single shareable document:
 
 ```bash
 team export my-team.yaml                          # Markdown (default)
-team export my-team.yaml --format html            # self-contained HTML
+team export my-team.yaml --format html            # self-contained HTML (dark-mode aware)
+team export my-team.yaml --format json            # machine-readable JSON
 team export my-team.yaml --output ~/Desktop/run.md
+team export my-team.yaml --no-artifacts           # omit workspace files (faster, smaller)
 ```
 
 The report includes:
 * Team name, goal, members, and workflow settings.
 * Every member turn with speaker, role, content, and files written.
-* Full contents of all files produced in the shared workspace.
+* **Token usage & estimated cost table** — per member and totals.
+* Full contents of all files produced in the shared workspace (omit with `--no-artifacts`).
 
-The default output path is `<workspace>/report.md` (or `.html`).  The
-HTML variant is a fully self-contained file with embedded CSS — no
-external dependencies required.
+Output path defaults to `<workspace>/report.md` / `.html` / `.json`.
+
+**Format details:**
+
+| Format | Description |
+| --- | --- |
+| `markdown` | Single `.md` file with transcript, token table, and fenced artifact blocks. |
+| `html` | Self-contained `.html` — embedded CSS, no external deps, respects `prefers-color-scheme: dark`. |
+| `json` | Structured JSON (`format_version: 1`) with `team`, `stats`, `token_usage`, `turns`, and `artifacts` keys — suitable for post-processing. |
 
 ---
 

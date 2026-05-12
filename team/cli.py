@@ -889,7 +889,7 @@ def transcript(team_file: str) -> None:
 @click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
 @click.option(
     "--format", "fmt",
-    type=click.Choice(["markdown", "html"], case_sensitive=False),
+    type=click.Choice(["markdown", "html", "json"], case_sensitive=False),
     default="markdown",
     show_default=True,
     help="Output format.",
@@ -899,10 +899,16 @@ def transcript(team_file: str) -> None:
     "output_path",
     type=click.Path(dir_okay=False, writable=True),
     default=None,
-    help="Output file. Defaults to <workspace>/report.md (or .html).",
+    help="Output file. Defaults to <workspace>/report.md / .html / .json.",
 )
-def export(team_file: str, fmt: str, output_path: str | None) -> None:
-    """Export the run transcript and shared artifacts to a Markdown or HTML report."""
+@click.option(
+    "--no-artifacts",
+    is_flag=True,
+    default=False,
+    help="Omit workspace files from the report (useful for large codebases).",
+)
+def export(team_file: str, fmt: str, output_path: str | None, no_artifacts: bool) -> None:
+    """Export the run transcript and shared artifacts to a Markdown, HTML, or JSON report."""
     from team.export import export_run
 
     cfg = _load(team_file)
@@ -911,10 +917,10 @@ def export(team_file: str, fmt: str, output_path: str | None) -> None:
         console.print(f"[yellow]no transcript found[/yellow] at {transcript_p}")
         sys.exit(1)
 
-    text = export_run(cfg, fmt=fmt)  # type: ignore[arg-type]
+    text = export_run(cfg, fmt=fmt, no_artifacts=no_artifacts)  # type: ignore[arg-type]
 
     if output_path is None:
-        ext = "html" if fmt == "html" else "md"
+        ext = {"html": "html", "json": "json"}.get(fmt, "md")
         out = cfg.workspace / f"report.{ext}"
     else:
         out = Path(output_path)
