@@ -710,6 +710,7 @@ def _delegate_task(
     *,
     workspace_path: Path | None = None,
     timeout: int = 600,
+    bridge_secret: str | None = None,
     **_: Any,
 ) -> str:
     """Delegate a sub-task to a remote team cluster and return its results.
@@ -777,7 +778,7 @@ def _delegate_task(
         sender="local-team",
     )
 
-    client = BridgeClient(url)
+    client = BridgeClient(url, secret=bridge_secret)
     log.info("delegate_task: submitting task to %s (goal: %.60s…)", url, goal)
     try:
         task_id = client.submit_task(task)
@@ -962,6 +963,7 @@ def execute_tool(
     memory: Any = None,
     beliefs: Any = None,
     member_name: str = "unknown",
+    bridge_secret: str | None = None,
 ) -> str:
     """Execute the named tool and return its string output.
 
@@ -1002,6 +1004,7 @@ def execute_tool(
         memory=memory,
         beliefs=beliefs,
         member_name=member_name,
+        bridge_secret=bridge_secret,
     )
     log.debug("tool:%s → %d chars", name, len(result))
     return result

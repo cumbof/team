@@ -28,11 +28,72 @@ with a bridge server — no shared code required.
 
 from __future__ import annotations
 
+import hashlib
+import hmac as _hmac
 import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
+
+
+# --------------------------------------------------------------------------- #
+# HMAC-SHA256 request signing
+# --------------------------------------------------------------------------- #
+
+#: Requests with a timestamp older than this (seconds) are rejected.
+TIMESTAMP_TOLERANCE: int = 300
+
+
+def sign_request(secret: str, timestamp: str, body: bytes) -> str:
+    """Return the HMAC-SHA256 hex digest that authenticates a bridge request.
+
+    The signed message is ``"{timestamp}:" + body`` so that both the
+    freshness token and the payload are covered by the MAC.
+
+    Parameters
+    ----------
+    secret:
+        Shared secret known to both the client and server.
+    timestamp:
+        Unix timestamp string (integer seconds).  Must match the
+        ``X-Bridge-Timestamp`` header sent with the request.
+    body:
+        Raw request body bytes.  Pass ``b""`` for GET requests.
+    """
+    msg = f"{timestamp}:".encode() + body
+    return _hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
+
+
+def verify_signature(
+    secret: str, timestamp: str, body: bytes, signature: str
+) -> bool:
+    """Return ``True`` when *signature* is valid and *timestamp* is fresh.
+
+    Uses :func:`hmac.compare_digest` to prevent timing-based side-channel
+    attacks.  Rejects requests whose timestamp is older than
+    :data:`TIMESTAMP_TOLERANCE` seconds (replay-attack protection).
+
+    Parameters
+    ----------
+    secret:
+        Shared secret configured on the server.
+    timestamp:
+        Value of the ``X-Bridge-Timestamp`` header.
+    body:
+        Raw request body bytes (``b""`` for GET requests).
+    signature:
+        Value of the ``X-Bridge-Signature`` header (hex digest only,
+        no prefix).
+    """
+    try:
+        age = abs(time.time() - float(timestamp))
+    except ValueError:
+        return False
+    if age > TIMESTAMP_TOLERANCE:
+        return False
+    expected = sign_request(secret, timestamp, body)
+    return _hmac.compare_digest(expected, signature)
 
 
 # --------------------------------------------------------------------------- #

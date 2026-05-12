@@ -46,7 +46,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Callable
 
-from team.bridge import BridgeResult, BridgeTask, TaskStore
+from team.bridge import BridgeResult, BridgeTask, TaskStore, verify_signature
 
 log = logging.getLogger(__name__)
 
@@ -143,16 +143,35 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_json(self) -> dict | None:
+    def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", 0))
         if not length:
+            return b""
+        return self.rfile.read(length)
+
+    def _parse_json(self, body: bytes) -> dict | None:
+        if not body:
             return None
         try:
-            return json.loads(self.rfile.read(length))
+            return json.loads(body)
         except (json.JSONDecodeError, ValueError):
             return None
 
+    def _check_auth(self, body: bytes) -> bool:
+        """Return True if the request is authenticated (or auth is disabled)."""
+        secret = self.server.bridge_server._secret  # noqa: SLF001
+        if not secret:
+            return True
+        timestamp = self.headers.get("X-Bridge-Timestamp", "")
+        signature = self.headers.get("X-Bridge-Signature", "")
+        if not timestamp or not signature:
+            return False
+        return verify_signature(secret, timestamp, body, signature)
+
     def do_GET(self) -> None:  # noqa: N802
+        if not self._check_auth(b""):
+            self._send_json(401, {"error": "unauthorized"})
+            return
         if self.path == "/health":
             self._handle_health()
         elif self.path.startswith("/tasks/"):
@@ -162,8 +181,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        body = self._read_body()
+        if not self._check_auth(body):
+            self._send_json(401, {"error": "unauthorized"})
+            return
         if self.path == "/tasks":
-            self._handle_post_task()
+            self._handle_post_task(body)
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -187,8 +210,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, result.to_dict())
 
-    def _handle_post_task(self) -> None:
-        data = self._read_json()
+    def _handle_post_task(self, body: bytes) -> None:
+        data = self._parse_json(body)
         if not data:
             self._send_json(400, {"error": "invalid or empty JSON body"})
             return
@@ -239,6 +262,7 @@ class BridgeServer:
         port: int = 7000,
         max_concurrent_tasks: int = 1,
         workspace_root: Path | None = None,
+        secret: str | None = None,
     ) -> None:
         if runner is None:
             if cfg_path is None:
@@ -249,6 +273,7 @@ class BridgeServer:
 
         self._runner = runner
         self._port = port
+        self._secret = secret
         self._semaphore = threading.Semaphore(max_concurrent_tasks)
         self._workspace_root: Path = Path(workspace_root or "./bridge_workspaces").resolve()
 

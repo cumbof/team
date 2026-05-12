@@ -143,6 +143,7 @@ class BridgeConfig:
     """Optional bridge server settings (used by ``team serve``)."""
     listen_port: int = 7000
     max_concurrent_tasks: int = 1
+    secret: str | None = None
 
 
 @dataclass
@@ -214,6 +215,9 @@ def _parse_bridge(data: dict) -> BridgeConfig:
     max_conc = data.get("max_concurrent_tasks")
     if max_conc is not None:
         b.max_concurrent_tasks = int(max_conc)
+    secret = data.get("secret")
+    if secret is not None:
+        b.secret = str(secret)
     return b
 
 

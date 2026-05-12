@@ -598,6 +598,7 @@ def serve(team_file: str, port: int | None) -> None:
         port=listen_port,
         max_concurrent_tasks=max_conc,
         workspace_root=cfg.workspace / "bridge_workspaces",
+        secret=cfg.bridge.secret,
     )
     server.start()
     console.print(

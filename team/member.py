@@ -332,6 +332,7 @@ class Member:
                     memory=self.memory,
                     beliefs=self.beliefs,
                     member_name=self.name,
+                    bridge_secret=self.team.bridge.secret,
                 )
                 if on_tool_result:
                     on_tool_result(self.name, tool_name, result)

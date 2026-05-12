@@ -29,12 +29,13 @@ All network calls use ``requests`` (already a project dependency) and raise
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 
 import requests
 
-from team.bridge import BridgeResult, BridgeTask
+from team.bridge import BridgeResult, BridgeTask, sign_request
 
 log = logging.getLogger(__name__)
 
@@ -58,9 +59,24 @@ class BridgeClient:
         Per-HTTP-call timeout in seconds (default: 30).
     """
 
-    def __init__(self, base_url: str, *, request_timeout: int = 30) -> None:
+    def __init__(self, base_url: str, *, request_timeout: int = 30, secret: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self._timeout = request_timeout
+        self._secret = secret
+
+    # ------------------------------------------------------------------ #
+    # Auth helpers
+    # ------------------------------------------------------------------ #
+
+    def _auth_headers(self, body: bytes = b"") -> dict[str, str]:
+        """Return HMAC auth headers, or an empty dict when no secret is set."""
+        if not self._secret:
+            return {}
+        timestamp = str(int(time.time()))
+        return {
+            "X-Bridge-Timestamp": timestamp,
+            "X-Bridge-Signature": sign_request(self._secret, timestamp, body),
+        }
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -136,7 +152,7 @@ class BridgeClient:
     def _get(self, path: str) -> dict:
         url = self.base_url + path
         try:
-            resp = requests.get(url, timeout=self._timeout)
+            resp = requests.get(url, headers=self._auth_headers(), timeout=self._timeout)
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as exc:
@@ -144,13 +160,10 @@ class BridgeClient:
 
     def _post(self, path: str, payload: dict) -> dict:
         url = self.base_url + path
+        body = json.dumps(payload, ensure_ascii=False).encode()
+        headers = {"Content-Type": "application/json", **self._auth_headers(body)}
         try:
-            resp = requests.post(
-                url,
-                json=payload,
-                timeout=self._timeout,
-                headers={"Content-Type": "application/json"},
-            )
+            resp = requests.post(url, data=body, headers=headers, timeout=self._timeout)
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as exc:
