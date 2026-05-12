@@ -291,7 +291,7 @@ def _parse_workflow(data: dict) -> WorkflowConfig:
     if not data:
         return WorkflowConfig()
     wf_type = data.get("type", "round_robin")
-    valid_types = {"round_robin", "manager", "review_loop", "sequential_chain", "debate", "parallel_review"}
+    valid_types = {"round_robin", "manager", "review_loop", "sequential_chain", "debate", "parallel_review", "parallel"}
     if wf_type not in valid_types:
         raise TeamConfigError(
             f"workflow.type={wf_type!r} is not one of "

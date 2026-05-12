@@ -433,12 +433,49 @@ def _setup_streaming(orch: Orchestrator, cons: Console) -> None:
         ))
         cons.print()
 
+    def on_parallel_round_start(names: list) -> None:
+        """Show a brief notice while parallel LLM calls are in flight."""
+        member_list = "  ".join(
+            f"[bold {_get_member_color(n, orch.team.members)}]@{n}[/bold {_get_member_color(n, orch.team.members)}]"
+            for n in names
+        )
+        cons.print(
+            Rule(
+                f"[bold blue]⚡ parallel[/bold blue] [dim]{member_list}[/dim]",
+                style="blue dim",
+            )
+        )
+        cons.print()
+
+    def on_parallel_round_end(results: list) -> None:
+        """Render all parallel-turn panels as completed static panels."""
+        for name, result in results:
+            color = _get_member_color(name, orch.team.members)
+            try:
+                role = orch.team.member(name).role
+            except KeyError:
+                role = ""
+            title = (
+                f"[bold {color}]@{name}[/bold {color}]"
+                f" [dim]· {role}[/dim]"
+            )
+            body = Text(result.content.strip() if result.content else "")
+            if result.files_written:
+                body.append(
+                    f"\n\n📄 wrote: {', '.join(result.files_written)}",
+                    style="dim green",
+                )
+            cons.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
+            cons.print()
+
     orch._on_turn_start = on_turn_start
     orch._on_token = on_token
     orch._on_turn_end = on_turn_end
     orch._on_tool_call = on_tool_call
     orch._on_tool_result = on_tool_result
     orch._on_round_end = on_round_end
+    orch._on_parallel_round_start = on_parallel_round_start
+    orch._on_parallel_round_end = on_parallel_round_end
 
 
 def _setup_interactive(orch: Orchestrator, cons: Console) -> None:

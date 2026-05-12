@@ -44,6 +44,9 @@ class Orchestrator:
         # F4: agent tool-use hooks for console display.
         self._on_tool_call: Callable[[str, str, str], None] | None = None
         self._on_tool_result: Callable[[str, str, str], None] | None = None
+        # F14: parallel round hooks.
+        self._on_parallel_round_start: "Callable[[list[str]], None] | None" = None
+        self._on_parallel_round_end: "Callable[[list[tuple[str, TurnResult]]], None] | None" = None
         self.inject_path: Path = team.workspace / "inject.txt"
         # F6: token usage accumulated across live turns (not replayed ones).
         self._token_totals: dict[str, dict[str, int]] = {}
@@ -221,6 +224,137 @@ class Orchestrator:
         totals["prompt"] += result.prompt_tokens
         totals["completion"] += result.completion_tokens
         return result
+
+    def run_parallel_round(
+        self,
+        member_names: list[str],
+        prompts: "dict[str, str | None] | None" = None,
+    ) -> "list[tuple[str, TurnResult]]":
+        """Run *member_names* concurrently and commit their turns in declaration order.
+
+        All members receive the **same transcript snapshot** — the state at the
+        start of the round — so no member sees another's reply from this batch.
+        After all threads complete, turns are appended in the order given by
+        *member_names*, keeping the transcript deterministic across resume runs.
+
+        Per-member ``turn_timeout`` settings are honoured.  If a member exceeds
+        its deadline a :exc:`TurnTimeoutError` is raised (for the first offender
+        in declaration order) after the round completes.
+
+        **Thread-safety note**: ``member.take_turn()`` reads the transcript
+        (read-only during the parallel window) and writes to the shared workspace.
+        Concurrent writes to the *same* file path are a race condition and should
+        be avoided by ensuring parallel members work on disjoint paths.
+
+        Parameters
+        ----------
+        member_names:
+            Ordered list of member names to run.  Turns are committed in this
+            order regardless of which thread finishes first.
+        prompts:
+            Optional per-member prompt overrides (keyed by member name).
+        """
+        prompts = prompts or {}
+
+        # Separate cached (replay) members from live ones.
+        replay: list[tuple[str, TurnResult]] = []
+        to_run: list[str] = []
+        for name in member_names:
+            if self._replay_queue and self._replay_queue[0].speaker == name:
+                cached = self._replay_queue.pop(0)
+                log.info(
+                    "resume: replaying parallel turn %d for @%s",
+                    cached.index, name,
+                )
+                for path in cached.files_written:
+                    self.workspace.touch(path)
+                replay.append((name, TurnResult(
+                    content=cached.content,
+                    declared_done=DONE_TOKEN in cached.content,
+                    files_written=cached.files_written,
+                )))
+            else:
+                to_run.append(name)
+
+        # Build result maps.
+        replay_map: dict[str, TurnResult] = {n: r for n, r in replay}
+        live_results: dict[str, TurnResult] = {}
+        live_errors: dict[str, Exception] = {}
+
+        if to_run:
+            # Check for a human directive before launching threads.
+            self._check_inject()
+
+            # Create a checkpoint for each live member.
+            turn_idx = len(self.transcript.turns)
+            for name in to_run:
+                self.checkpoints.create(turn_idx, name)
+
+            if self._on_parallel_round_start:
+                self._on_parallel_round_start(to_run)
+
+            def _run_one(name: str) -> None:
+                member = self.members[name]
+                turn_timeout = resolve_member_setting(
+                    member.config, self.team.defaults, "turn_timeout"
+                )
+                kwargs: dict = dict(
+                    transcript=self.transcript,
+                    workspace=self.workspace,
+                    prompt=prompts.get(name),
+                )
+                try:
+                    if turn_timeout:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _inner:
+                            _fut = _inner.submit(member.take_turn, **kwargs)
+                            try:
+                                live_results[name] = _fut.result(timeout=turn_timeout)
+                            except concurrent.futures.TimeoutError:
+                                raise TurnTimeoutError(
+                                    f"@{name} turn timed out after {turn_timeout}s"
+                                )
+                    else:
+                        live_results[name] = member.take_turn(**kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    live_errors[name] = exc
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(to_run), thread_name_prefix="parallel_member"
+            ) as pool:
+                futures = [pool.submit(_run_one, name) for name in to_run]
+                concurrent.futures.wait(futures)
+
+        # Commit results in declaration order; raise first error encountered.
+        ordered: list[tuple[str, TurnResult]] = []
+        first_error: Exception | None = None
+        for name in member_names:
+            if name in live_errors:
+                if first_error is None:
+                    first_error = live_errors[name]
+                continue
+            result = replay_map.get(name) or live_results.get(name)
+            if result is None:
+                continue
+            if name in live_results:
+                self.transcript.append(
+                    speaker=name,
+                    role=self.members[name].config.role,
+                    content=result.content,
+                    files_written=result.files_written,
+                    prompt_tokens=result.prompt_tokens,
+                    completion_tokens=result.completion_tokens,
+                )
+                totals = self._token_totals.setdefault(name, {"prompt": 0, "completion": 0})
+                totals["prompt"] += result.prompt_tokens
+                totals["completion"] += result.completion_tokens
+            ordered.append((name, result))
+
+        if self._on_parallel_round_end:
+            self._on_parallel_round_end(ordered)
+
+        if first_error is not None:
+            raise first_error
+        return ordered
 
     # ------------------------------------------------------------------ #
     # Drive a workflow

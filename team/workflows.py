@@ -536,8 +536,55 @@ def parallel_review(orch: "Orchestrator") -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Dispatch
+# Parallel rounds
 # --------------------------------------------------------------------------- #
+
+
+def parallel_rounds(orch: "Orchestrator") -> None:
+    """All members speak simultaneously in every round.
+
+    Each round dispatches one LLM call per member concurrently.  Members
+    receive the same transcript snapshot (the state at the start of the round),
+    so they cannot reference each other's output from the *current* round —
+    only from previous rounds.  After all threads complete, turns are appended
+    to the transcript in member-declaration order.
+
+    This is ideal for independent-expert or brainstorming scenarios where you
+    want parallel depth rather than sequential dialogue.
+
+    The workflow ends when any member emits ``[[TEAM_DONE]]`` (checked after
+    each round) or when ``max_rounds`` is exhausted.
+
+    Example YAML::
+
+        workflow:
+          type: parallel
+          max_rounds: 4
+
+    Thread-safety note
+    ------------------
+    ``member.take_turn()`` is called concurrently from multiple threads.
+    The shared transcript is read-only during each parallel window; writes
+    happen sequentially after the window closes.  Concurrent writes to the
+    *same workspace file path* are a race condition — ensure parallel members
+    work on disjoint output paths.
+    """
+    member_names = list(orch.members.keys())
+    max_rounds = orch.team.workflow.max_rounds
+
+    for round_idx in range(max_rounds):
+        log.info(
+            "parallel round %d/%d — dispatching %d members",
+            round_idx + 1, max_rounds, len(member_names),
+        )
+        results = orch.run_parallel_round(member_names)
+        if any(result.declared_done for _, result in results):
+            log.info("a member declared TEAM_DONE — parallel workflow ending")
+            return
+        if orch._on_round_end:
+            orch._on_round_end(round_idx)
+
+    log.info("parallel workflow completed %d round(s)", max_rounds)
 
 
 WORKFLOWS = {
@@ -547,6 +594,7 @@ WORKFLOWS = {
     "sequential_chain": sequential_chain,
     "debate": debate,
     "parallel_review": parallel_review,
+    "parallel": parallel_rounds,
 }
 
 

@@ -65,6 +65,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Structured JSON output** | Force a member to reply with valid JSON; optionally validate against a JSON Schema with automatic retry. |
 | **Per-turn timeout** | Hard wall-clock deadline per member turn; raises `TurnTimeoutError` if the LLM doesn't respond in time. |
 | **`team test`** | Define assertions in the YAML and run them automatically after a team workflow to verify outputs in CI. |
+| **Parallel member execution** | `workflow: type: parallel` — all members run simultaneously in each round, bounded by the slowest rather than the sum. |
 
 ---
 
@@ -537,6 +538,46 @@ workflow:
 > Each reviewer reads the transcript (read-only during the parallel window)
 > and calls its own model.  Reviewers should not use file-writing tools
 > during their review turns to avoid concurrent workspace writes.
+
+---
+
+### `parallel`
+
+All members speak **simultaneously** in every round.  Unlike `parallel_review`
+(which has a fixed producer → reviewers → synthesizer structure), `parallel`
+is fully symmetric: every declared member runs at the same time, every round.
+
+Each member receives the same transcript snapshot at the start of the round —
+it cannot see what another member wrote *in the current round*, only in
+previous rounds.  After all threads complete, turns are appended in member
+declaration order so the transcript is deterministic and `--resume` works.
+
+```yaml
+workflow:
+  type: parallel
+  max_rounds: 4
+```
+
+**When to use `parallel`**
+
+- Independent expert panels — each member evaluates the problem from its own
+  perspective and writes its findings simultaneously.
+- Embarrassingly parallel tasks — member A generates candidate A, member B
+  generates candidate B; a later sequential step (or `sequential_chain`) picks
+  the best.
+- Speed-critical brainstorming where sequential dialogue would be too slow.
+
+**Rendering**
+
+The CLI shows a `⚡ parallel` separator banner before the round starts, then
+renders each member's completed panel (with full content, file-write list, and
+colour) when the round finishes — no token-by-token streaming during the
+parallel window.
+
+> **Thread-safety note:** Members read the transcript concurrently (safe) and
+> write to the shared workspace.  Concurrent writes to the *same file path*
+> are a race condition.  Design your team so that parallel members produce
+> output in disjoint paths (e.g. `member_a/output.txt` vs `member_b/output.txt`).
 
 ---
 
