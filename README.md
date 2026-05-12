@@ -71,6 +71,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Conditional routing** | Members declare the next speaker via simple YAML rules (`if_contains`, `if_match`, `default`), enabling dynamic branching and state-machine-like workflows. |
 | **LLM retry with backoff** | Automatic retry with exponential backoff on transient errors (5xx, connection refused, timeout); configurable per member. Raises `LLMRetryExhaustedError` when all attempts fail. |
 | **Cost estimation** | Estimated USD cost displayed in the token-usage table after every run (`team run`, `team stats`). Built-in pricing for OpenAI, Anthropic, Google, and Mistral; local Ollama models show `$0.00 (local)`. |
+| **Multi-team pipelines** | Chain multiple team runs with `team pipeline`; upstream artifacts and transcript summaries are automatically injected into downstream stages via `inject_files`, `inject_context`, and `goal_override` templates. |
 
 ---
 
@@ -131,6 +132,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 - [Resuming an interrupted run](#resuming-an-interrupted-run)
 - [Workspace checkpoints](#workspace-checkpoints)
 - [Human-in-the-loop intervention](#human-in-the-loop-intervention)
+- [Multi-team pipelines](#multi-team-pipelines)
 - [Examples](#examples)
 - [Architecture overview](#architecture-overview)
 - [Development](#development)
@@ -2631,6 +2633,83 @@ When a member's cumulative token usage reaches the budget before their next turn
 | `token_budget` in `defaults` only | Applied to every member. |
 | `token_budget` in a specific member | Overrides the `defaults` value for that member only. |
 | Neither set | No limit — member runs until the workflow ends. |
+
+---
+
+## Multi-team pipelines
+
+A *pipeline* lets you chain multiple team runs together so that the output of one team — its shared workspace files and a transcript summary — is automatically injected into the next team's context.
+
+### Pipeline YAML
+
+Create a `pipeline.yaml` alongside your team files:
+
+```yaml
+name: research-and-write
+description: Research a topic, then write a publication-ready paper.
+workspace: ./runs/research-and-write   # optional; default is ./runs/<name>
+
+stages:
+  - id: research
+    team: ./teams/researcher.yaml
+
+  - id: writing
+    team: ./teams/writer.yaml
+    depends_on: [research]          # wait for research to complete
+    inject_files: true              # copy research's shared/ files here
+    inject_context: true            # write context.md from research output
+    goal_override: |                # {stage_id.summary} templates available
+      Write a publication-ready paper based on the research below.
+
+      {research.summary}
+```
+
+### Running a pipeline
+
+```bash
+team pipeline pipeline.yaml
+```
+
+Preview the execution plan without running anything:
+
+```bash
+team pipeline pipeline.yaml --dry-run
+```
+
+### Stage fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | string | *(required)* | Unique stage identifier used in `depends_on` and goal templates. |
+| `team` | path | *(required)* | Path to the team YAML file (relative to the pipeline file). |
+| `depends_on` | list of IDs | `[]` | Stages that must complete before this stage runs. |
+| `inject_files` | bool | `false` | Copy every file from upstream stages' `shared/` directories into this stage's `shared/` directory before the team starts. |
+| `inject_context` | bool | `false` | Write a `context.md` file into this stage's workspace summarising upstream stages' output. Members pick it up automatically. |
+| `goal_override` | string | — | Replace the team YAML's `goal` for this pipeline run. Supports `{stage_id.summary}` template substitution. |
+
+### How data flows
+
+Each stage runs inside its own sub-workspace: `<pipeline.workspace>/<stage.id>/`. At the end of every stage the runner extracts:
+
+- **Summary** — the last five member turns from the transcript, concatenated.
+- **Artifacts** — all files in `shared/`, keyed by relative path.
+
+When the next stage has `inject_files: true`, artifact files are copied verbatim into the destination stage's `shared/` directory before its team starts. When `inject_context: true`, a `context.md` is written at the stage workspace root with the summaries and file lists from all upstream stages.
+
+### Goal templates
+
+`goal_override` is a Python `str.format()` template. Each upstream stage result is available as `{stage_id.summary}`:
+
+```yaml
+goal_override: |
+  Review the following research and identify gaps.
+
+  Research output:
+  {research.summary}
+
+  Initial draft:
+  {writing.summary}
+```
 
 ---
 

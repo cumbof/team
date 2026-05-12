@@ -1579,6 +1579,108 @@ def _replay_render_turn(
 
 
 # --------------------------------------------------------------------------- #
+# pipeline command
+# --------------------------------------------------------------------------- #
+
+
+@cli.command()
+@click.argument("pipeline_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Validate the pipeline YAML and print the execution plan without running anything.",
+)
+def pipeline(pipeline_file: str, dry_run: bool) -> None:
+    """Run a multi-team pipeline defined in a YAML file.
+
+    A pipeline chains multiple team runs in sequence, automatically passing
+    shared workspace files and transcript summaries from one stage to the next.
+
+    Example pipeline.yaml::
+
+    \b
+        name: research-and-write
+        stages:
+          - id: research
+            team: ./teams/researcher.yaml
+          - id: writing
+            team: ./teams/writer.yaml
+            depends_on: [research]
+            inject_files: true
+            inject_context: true
+            goal_override: |
+              Write a paper based on: {research.summary}
+    """
+    from team.pipeline import PipelineError, PipelineRunner, _toposort, load_pipeline
+
+    try:
+        cfg = load_pipeline(pipeline_file)
+    except PipelineError as exc:
+        console.print(f"[red]pipeline error:[/red] {exc}")
+        sys.exit(1)
+
+    order = _toposort(cfg.stages)
+    stage_by_id = {s.id: s for s in cfg.stages}
+
+    # Print execution plan.
+    console.print()
+    console.print(
+        Panel(
+            f"[bold]{cfg.name}[/bold]\n[dim]{cfg.description}[/dim]\n\n"
+            + "\n".join(
+                f"  [bold bright_cyan]{i + 1}.[/bold bright_cyan] "
+                f"[bold]{sid}[/bold]"
+                + (
+                    f"  [dim]← {', '.join(stage_by_id[sid].depends_on)}[/dim]"
+                    if stage_by_id[sid].depends_on
+                    else ""
+                )
+                + f"\n     [dim]{stage_by_id[sid].team_file}[/dim]"
+                for i, sid in enumerate(order)
+            ),
+            title="[bold blue]🔗  pipeline[/bold blue]",
+            border_style="blue",
+            padding=(1, 2),
+        )
+    )
+    console.print()
+
+    if dry_run:
+        console.print("[yellow]dry-run:[/yellow] pipeline validated — no stages were executed.")
+        return
+
+    runner = PipelineRunner(cfg, console=console)
+    try:
+        results = runner.run()
+    except PipelineError as exc:
+        console.print(f"\n[red]✗ pipeline failed:[/red] {exc}")
+        sys.exit(1)
+
+    # Summary table.
+    table = Table(title="Pipeline results")
+    table.add_column("Stage", style="bold")
+    table.add_column("Status")
+    table.add_column("Duration", justify="right")
+    table.add_column("Artifacts", justify="right")
+    table.add_column("Workspace")
+
+    for r in results:
+        status = "[green]✓ done[/green]" if r.success else "[red]✗ failed[/red]"
+        table.add_row(
+            r.stage_id,
+            status,
+            f"{r.duration_seconds:.1f}s",
+            str(len(r.artifacts)),
+            str(r.workspace),
+        )
+
+    console.print(table)
+    console.print()
+    console.print(f"[green]✓ pipeline complete[/green]  ·  {len(results)} stage(s)  ·  workspace → {cfg.workspace}")
+
+
+# --------------------------------------------------------------------------- #
 # replay command
 # --------------------------------------------------------------------------- #
 
