@@ -7,9 +7,13 @@ import sys
 from pathlib import Path
 
 import click
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.logging import RichHandler
+from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
+from rich.text import Text
 
 from team._version import __version__
 from team.config import TeamConfigError, load_team
@@ -17,6 +21,35 @@ from team.orchestrator import Orchestrator
 
 console = Console()
 
+# Colour palette — one colour per team member, cycles if there are more members than colours.
+_MEMBER_COLORS = [
+    "bright_cyan", "bright_green", "bright_yellow", "bright_magenta",
+    "cornflower_blue", "orange1", "spring_green1", "plum1", "gold1", "violet",
+]
+
+
+def _get_member_color(name: str, members: list) -> str:
+    idx = next((i for i, m in enumerate(members) if m.name == name), 0)
+    return _MEMBER_COLORS[idx % len(_MEMBER_COLORS)]
+
+
+def _print_team_banner(cfg, cons: Console) -> None:
+    """Render a rich overview panel before the run starts."""
+    body = Text()
+    body.append(cfg.goal.strip(), style="italic")
+    body.append("\n\n")
+    body.append("Workflow  ", style="dim")
+    body.append(cfg.workflow.type, style="bold")
+    body.append(f"  ·  max {cfg.workflow.max_rounds} rounds"
+                f"  ·  {len(cfg.members)} member(s)\n", style="dim")
+    for i, m in enumerate(cfg.members):
+        color = _MEMBER_COLORS[i % len(_MEMBER_COLORS)]
+        body.append(f"\n  ● @{m.name}", style=f"bold {color}")
+        body.append(f"  {m.role}", style="default")
+        body.append(f"  [{m.model}]", style="dim italic")
+    cons.print(Panel(body, title=f"[bold]🤖  {cfg.name}[/bold]",
+                     border_style="blue", padding=(1, 2)))
+    cons.print()
 
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
@@ -273,115 +306,163 @@ def status(team_file: str) -> None:
 
 
 def _print_status(orch: Orchestrator) -> None:
-    table = Table(title=f"team {orch.team.name}")
+    table = Table(title=f"[bold]team · {orch.team.name}[/bold]",
+                  border_style="dim", header_style="bold dim")
     for col in ("member", "role", "model", "container", "status"):
         table.add_column(col)
-    for row in orch.status():
-        table.add_row(row["member"], row["role"], row["model"], row["container"], row["status"])
+    for i, row in enumerate(orch.status()):
+        color = _MEMBER_COLORS[i % len(_MEMBER_COLORS)]
+        table.add_row(
+            f"[bold {color}]@{row['member']}[/bold {color}]",
+            row["role"], row["model"], row["container"], row["status"],
+        )
     console.print(table)
 
 
 def _print_token_summary(orch: Orchestrator) -> None:
-    """Print a token usage summary table after a workflow completes (F6)."""
+    """Print a token usage summary table after a workflow completes."""
     totals = orch._token_totals
     if not any(v["prompt"] + v["completion"] for v in totals.values()):
-        return  # all-zero (e.g. pure replay run or backend doesn't report tokens)
-    table = Table(title="Token usage (live turns)")
+        return
+    table = Table(title="[bold]Token usage[/bold]",
+                  border_style="dim", header_style="bold dim")
     table.add_column("member")
     table.add_column("prompt", justify="right")
     table.add_column("completion", justify="right")
     table.add_column("total", justify="right")
     grand_p = grand_c = 0
-    for name, counts in totals.items():
+    for i, (name, counts) in enumerate(totals.items()):
+        color = _get_member_color(name, orch.team.members)
         p, c = counts["prompt"], counts["completion"]
         grand_p += p
         grand_c += c
-        table.add_row(f"@{name}", str(p), str(c), str(p + c))
+        table.add_row(
+            f"[bold {color}]@{name}[/bold {color}]",
+            str(p), str(c), str(p + c),
+        )
     table.add_section()
-    table.add_row("[bold]total[/bold]", str(grand_p), str(grand_c), str(grand_p + grand_c))
+    table.add_row("[bold]total[/bold]", str(grand_p), str(grand_c),
+                  str(grand_p + grand_c))
     console.print(table)
 
 
-def _setup_streaming(orch: Orchestrator, console: Console) -> None:
-    """Wire token-by-token output to the console for live turns.
+def _setup_streaming(orch: Orchestrator, cons: Console) -> None:
+    """Wire live panel rendering for each member turn.
 
-    Three closures are attached to the orchestrator as hook attributes.
-    They are called by ``Orchestrator.run_turn()`` during live (non-replay)
-    turns.  Using closures rather than subclassing keeps the orchestrator
-    decoupled from the CLI.
+    Each member turn is rendered inside a colour-coded Rich Panel that updates
+    token-by-token as the LLM streams its reply.  Tool invocations and their
+    results are appended to the same panel so the user sees a single coherent
+    view per turn.  A dim Rule separates rounds.
     """
-    import sys
+    # Mutable closure state — avoids global variables.
+    state: dict = {
+        "live": None,
+        "text": Text(),
+        "tools": [],
+        "name": "",
+        "role": "",
+        "color": "cyan",
+    }
+
+    def _panel() -> Panel:
+        parts: list = []
+        if len(state["text"]) > 0:
+            parts.append(state["text"])
+        parts.extend(state["tools"])
+        body = Group(*parts) if parts else Text("thinking…", style="dim italic")
+        title = (
+            f"[bold {state['color']}]@{state['name']}[/bold {state['color']}]"
+            f" [dim]· {state['role']}[/dim]"
+        )
+        return Panel(body, title=title, border_style=state["color"], padding=(0, 1))
 
     def on_turn_start(name: str) -> None:
+        state["name"] = name
+        state["text"] = Text()
+        state["tools"] = []
         try:
-            role = orch.team.member(name).role
-            console.print(f"\n[bold cyan]@{name}[/bold cyan] [dim]({role})[/dim]")
+            state["role"] = orch.team.member(name).role
         except KeyError:
-            console.print(f"\n[bold cyan]@{name}[/bold cyan]")
+            state["role"] = ""
+        state["color"] = _get_member_color(name, orch.team.members)
+        live = Live(_panel(), console=cons, refresh_per_second=12, transient=False)
+        live.start()
+        state["live"] = live
 
     def on_token(token: str) -> None:
-        # Write directly to stdout (bypassing Rich) so the token appears
-        # immediately without any markup processing or buffering.
-        sys.stdout.write(token)
-        sys.stdout.flush()
+        state["text"].append(token)
+        if state["live"]:
+            state["live"].update(_panel())
 
-    def on_turn_end(name: str) -> None:
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+    def on_turn_end(_name: str) -> None:
+        live = state["live"]
+        if live:
+            live.update(_panel())
+            live.stop()
+            state["live"] = None
+
+    def on_tool_call(_member: str, tool_name: str, body: str) -> None:
+        preview = body[:70].replace("\n", " ").strip()
+        if len(body) > 70:
+            preview += "…"
+        row = Text()
+        row.append("\n  🔧 ", style="bold magenta")
+        row.append(tool_name, style="bold magenta")
+        row.append(f"  {preview}", style="dim")
+        state["tools"].append(row)
+        if state["live"]:
+            state["live"].update(_panel())
+
+    def on_tool_result(_member: str, _tool: str, result: str) -> None:
+        preview = result[:120].replace("\n", " ").strip()
+        if len(result) > 120:
+            preview += "…"
+        row = Text()
+        row.append("     ↳ ", style="dim green")
+        row.append(preview, style="dim")
+        state["tools"].append(row)
+        if state["live"]:
+            state["live"].update(_panel())
+
+    def on_round_end(round_idx: int) -> None:
+        max_rounds = orch.team.workflow.max_rounds
+        cons.print()
+        cons.print(Rule(
+            f"[dim]round {round_idx + 1} of {max_rounds} complete[/dim]",
+            style="dim",
+        ))
+        cons.print()
 
     orch._on_turn_start = on_turn_start
     orch._on_token = on_token
     orch._on_turn_end = on_turn_end
-
-    def on_tool_call(member_name: str, tool_name: str, body: str) -> None:
-        # Ensure we're on a fresh line (streaming may not have ended with \n).
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        preview = body[:80].replace("\n", " ").strip()
-        if len(body) > 80:
-            preview += "…"
-        console.print(
-            f"  [bold magenta]🔧 tool:[/bold magenta] [magenta]{tool_name}[/magenta]"
-            f" [dim]{preview}[/dim]"
-        )
-
-    def on_tool_result(member_name: str, tool_name: str, result: str) -> None:
-        preview = result[:120].replace("\n", " ").strip()
-        if len(result) > 120:
-            preview += "…"
-        console.print(f"  [dim]   ↳ {preview}[/dim]")
-
     orch._on_tool_call = on_tool_call
     orch._on_tool_result = on_tool_result
+    orch._on_round_end = on_round_end
 
 
-def _setup_interactive(orch: Orchestrator, console: Console) -> None:
-    """Attach a round-end callback that pauses for human input.
+def _setup_interactive(orch: Orchestrator, cons: Console) -> None:
+    """Layer interactive prompts on top of the round-end hook.
 
-    After every workflow round the user is prompted for an optional directive.
-    Anything typed is injected into the transcript before the next round
-    begins so every member sees it in their next turn.  Pressing Enter with
-    no text continues without interruption.
+    Chains with any existing ``_on_round_end`` (e.g. the round separator
+    printed by ``_setup_streaming``) so both fire in order.
     """
-    max_rounds = orch.team.workflow.max_rounds
+    _prev = orch._on_round_end
 
     def on_round_end(round_idx: int) -> None:
-        console.print(
-            f"\n[bold yellow]── round {round_idx + 1}/{max_rounds} complete ──[/bold yellow]"
-        )
-        console.print(
+        if _prev:
+            _prev(round_idx)
+        cons.print(
             "[dim]Enter a directive for the team (or press Enter to continue):[/dim] ",
             end="",
         )
         try:
             text = input()
         except (EOFError, KeyboardInterrupt):
-            # Non-interactive environment (piped stdin) or user pressed Ctrl-C —
-            # treat as "no directive" and let the run continue.
             return
         if text.strip():
             orch.inject_directive(text)
-            console.print("[bold yellow]↳ directive injected[/bold yellow]")
+            cons.print("[bold yellow]↳ directive injected[/bold yellow]")
 
     orch._on_round_end = on_round_end
 
@@ -448,11 +529,10 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
     if interactive:
         _setup_interactive(orch, console)
     if not no_up:
-        orch.up(prepare_deadline_seconds=prepare_timeout)
+        with console.status("[bold blue]starting containers and pulling models…[/bold blue]"):
+            orch.up(prepare_deadline_seconds=prepare_timeout)
+        console.print("[green]✓[/green] team is up\n")
     else:
-        # Re-attach to containers that were started by a previous `team up`
-        # without stopping and re-starting them.  We still need to build the
-        # Member objects and wait for Ollama to be ready.
         runtimes = orch.containers.start_all()
         from team.member import Member
         for rt in runtimes:
@@ -461,14 +541,17 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
             m.prepare(deadline_seconds=prepare_timeout)
         orch._kickoff()  # noqa: SLF001 — internal but safe
 
-    console.print(f"[bold]running workflow[/bold]: {cfg.workflow.type}")
+    _print_team_banner(cfg, console)
+    console.print(Rule(f"[dim]round 1 of {cfg.workflow.max_rounds}[/dim]", style="dim"))
+    console.print()
     try:
         orch.run()
     finally:
         if not keep_up:
             orch.down()
+    console.print()
     _print_token_summary(orch)
-    console.print(f"[green]done[/green] — transcript: {orch.transcript_path()}")
+    console.print(f"[green]✓ done[/green]  transcript → {orch.transcript_path()}")
 
 
 @cli.command()
@@ -669,10 +752,17 @@ def transcript(team_file: str) -> None:
         if not line.strip():
             continue
         t = json.loads(line)
-        console.rule(f"turn {t['index']} — @{t['speaker']} ({t['role']})")
-        console.print(t["content"])
+        name = t["speaker"]
+        color = _get_member_color(name, cfg.members)
+        title = (
+            f"[bold {color}]@{name}[/bold {color}]"
+            f" [dim]· {t['role']}  ·  turn {t['index']}[/dim]"
+        )
+        body = Text(t["content"])
         if t.get("files_written"):
-            console.print(f"[dim]wrote: {', '.join(t['files_written'])}[/dim]")
+            body.append(f"\n\n📄 wrote: {', '.join(t['files_written'])}", style="dim green")
+        console.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
+        console.print()
 
 
 # --------------------------------------------------------------------------- #
