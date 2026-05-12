@@ -105,8 +105,13 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [How it works](#how-it-works-1)
   - [Exposing a team as a bridge server](#exposing-a-team-as-a-bridge-server)
   - [Delegating work from another team](#delegating-work-from-another-team)
+  - [Named peer registry](#named-peer-registry)
+  - [Broadcasting to multiple teams](#broadcasting-to-multiple-teams)
+  - [Cancelling a remote task](#cancelling-a-remote-task)
+  - [Server HTTP API reference](#server-http-api-reference)
   - [Bridge config reference](#bridge-config-reference)
-  - [Security considerations](#security-considerations)
+  - [Security — HMAC-SHA256 shared secret](#security--hmac-sha256-shared-secret)
+  - [Additional security considerations](#additional-security-considerations)
 - [Per-agent persistent memory](#per-agent-persistent-memory)
   - [Enabling memory](#enabling-memory)
   - [Memory tools](#memory-tools)
@@ -1208,7 +1213,10 @@ transcript as usual.
 | `contest_belief` | Contest an existing belief (moves it to contested status). |
 | `accept_belief` | Cast an accept vote for an existing belief. |
 | `list_beliefs` | List the shared belief board (optionally filtered by status). |
-| `delegate_task` | Delegate a sub-task to a remote bridge server and wait for results. |
+| `delegate_task` | Delegate a sub-task to a remote bridge server and wait for results. Use `peer:` for named peers or `url:` for direct addressing. |
+| `list_peers` | List all configured peer teams and their live health status (pending/running counts). |
+| `broadcast_task` | Fan out the same goal to multiple peer teams concurrently and collect all results. |
+| `cancel_remote_task` | Cancel a queued or running task on a remote bridge server by task ID. |
 
 **`write_file` and `append_file` body format**
 
@@ -1657,7 +1665,8 @@ Lab A cluster (local)                       Lab B cluster (remote)
 
 1. **Lab B** exposes its cluster by running `team serve`.
 2. **Lab A's** agents use the `delegate_task` built-in tool, specifying Lab
-   B's URL, a goal, optional context, and optional workspace files to send.
+   B's URL (or its peer name — see below), a goal, optional context, and
+   optional workspace files to send.
 3. The bridge server receives the task, writes the sent files into a fresh
    sub-workspace, and runs Lab B's full team workflow with the delegated goal.
 4. When Lab B's workflow finishes, the server returns a summary and all
@@ -1693,7 +1702,7 @@ YAML like any other tool:
 
 ```yaml
 defaults:
-  tools: [delegate_task, read_file, write_file]
+  tools: [delegate_task, list_peers, broadcast_task, cancel_remote_task, read_file, write_file]
 ```
 
 Tool invocation syntax inside a member's reply:
@@ -1710,9 +1719,19 @@ timeout: 600
 ```
 ````
 
+Instead of a raw URL, you can use a **named peer** (see [Named peer registry](#named-peer-registry)):
+
+````
+```tool:delegate_task
+peer: lab-b
+goal: Perform survival analysis on the BRCA cohort.
+```
+````
+
 | field | required | description |
 | --- | --- | --- |
-| `url` | ✓ | Base URL of the remote `team serve` endpoint. |
+| `url` | ✓ (or `peer`) | Base URL of the remote `team serve` endpoint. |
+| `peer` | ✓ (or `url`) | Named peer from `bridge.peers` (resolved to URL at call time). |
 | `goal` | ✓ | What the remote team should accomplish.  Becomes their workflow goal. |
 | `context` | — | Free-text background that the remote team receives alongside the goal. |
 | `files` | — | Comma-separated local workspace paths to send with the task. |
@@ -1722,15 +1741,93 @@ When the tool returns, any files the remote team produced are written into
 Lab A's local workspace, ready for subsequent tool calls (`read_file`,
 `run_python`, etc.).
 
+### Named peer registry
+
+Instead of hard-coding URLs in every tool call, declare known peers in
+`bridge.peers`:
+
+```yaml
+# lab-a.yaml
+bridge:
+  secret: "shared-secret"
+  peers:
+    lab-b: http://lab-b.example.com:7001
+    ml-cluster: http://gpu01.example.com:7002
+```
+
+Members can now use `peer: lab-b` in `delegate_task`, `broadcast_task`, and
+`cancel_remote_task`.  The `list_peers` tool reports live health for all
+configured peers before you commit to a delegation:
+
+````
+```tool:list_peers
+```
+````
+
+```text
+Configured peers:
+  lab-b: http://lab-b.example.com:7001  [ok · pending=0 · running=1]
+  ml-cluster: http://gpu01.example.com:7002  [unreachable: connection refused]
+```
+
+### Broadcasting to multiple teams
+
+`broadcast_task` fans out the same goal to several peers concurrently and
+collects all results.  Ideal for ensemble processing (send to N specialist
+teams, compare answers) or embarrassingly parallel work:
+
+````
+```tool:broadcast_task
+peers: lab-b, lab-c, lab-d
+goal: Independently verify the survival analysis results.
+context: Our primary result is in analysis/survival_primary.csv
+files: analysis/survival_primary.csv
+timeout: 600
+```
+````
+
+Each peer's result is returned under a `<peer-name>/…` path in the local
+workspace so files from different peers never overwrite each other.
+
+### Cancelling a remote task
+
+If a delegated task is no longer needed (e.g. you found the answer from
+another peer), cancel it to free up the remote team's concurrency slot:
+
+````
+```tool:cancel_remote_task
+peer: lab-b
+task_id: <UUID returned by delegate_task>
+```
+````
+
+Returns `Cancelled: <task_id>` on success.  Returns an error if the task is
+not found or has already reached a terminal state.
+
+### Server HTTP API reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/tasks` | Submit a new task; returns `{"task_id": "…"}` |
+| `GET` | `/tasks` | List all tasks (add `?status=pending\|running\|complete\|error\|cancelled` to filter) |
+| `GET` | `/tasks/{id}` | Poll the status/result of a specific task |
+| `DELETE` | `/tasks/{id}` | Cancel a queued or running task |
+| `GET` | `/capabilities` | Advertise team name, models, personas, skills, and version |
+| `GET` | `/health` | Quick health check with pending/running counts |
+
 ### Bridge config reference
 
 Add a `bridge:` section to your YAML to configure the server behaviour:
 
 ```yaml
 bridge:
-  listen_port: 7001          # default port for `team serve` (default: 7000)
-  max_concurrent_tasks: 2   # allow up to 2 simultaneous remote tasks (default: 1)
-  secret: "change-me"       # shared secret for HMAC-SHA256 authentication (see below)
+  listen_port: 7001           # default port for `team serve` (default: 7000)
+  max_concurrent_tasks: 2    # allow up to 2 simultaneous remote tasks (default: 1)
+  secret: "change-me"        # shared secret for HMAC-SHA256 authentication
+  task_ttl_seconds: 3600     # evict completed/errored tasks after this many seconds (default: 3600)
+  peers:                     # named peers this team can delegate to
+    lab-b: http://lab-b.example.com:7001
+    ml-cluster: http://gpu01.example.com:7002
 ```
 
 The `--port` flag on `team serve` overrides `listen_port` at runtime.

@@ -179,6 +179,8 @@ class BridgeConfig:
     listen_port: int = 7000
     max_concurrent_tasks: int = 1
     secret: str | None = None
+    peers: dict[str, str] = field(default_factory=dict)
+    task_ttl_seconds: float = 3600.0
 
 
 @dataclass
@@ -254,6 +256,12 @@ def _parse_bridge(data: dict) -> BridgeConfig:
     secret = data.get("secret")
     if secret is not None:
         b.secret = str(secret)
+    peers = data.get("peers")
+    if isinstance(peers, dict):
+        b.peers = {str(k): str(v) for k, v in peers.items()}
+    ttl = data.get("task_ttl_seconds")
+    if ttl is not None:
+        b.task_ttl_seconds = float(ttl)
     return b
 
 

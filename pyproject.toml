@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "team-core"
-version = "0.14.5"
+version = "0.14.6"
 description = "Orchestrate a cluster of containerized local LLMs (via Ollama), each with a specific persona and role, that collaborate to solve a goal."
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -20,10 +20,25 @@ HTTP API
     Body: JSON-serialised :class:`~team.bridge.BridgeTask`.
     Response 202: ``{"task_id": "<id>"}``
 
+``GET /tasks``
+    Response 200: ``{"tasks": [{task_id, status, sender, goal, created_at}, …]}``
+    Optional query parameter ``?status=pending|running|complete|error|cancelled``
+    to filter by task status.
+
 ``GET /tasks/<task_id>``
     Response 200: JSON-serialised :class:`~team.bridge.BridgeResult`.
     ``status`` is one of ``"pending"``, ``"running"``, ``"complete"``,
-    ``"error"``.
+    ``"error"``, ``"cancelled"``.
+
+``DELETE /tasks/<task_id>``
+    Cancel a queued or running task.
+    Response 200: ``{"task_id": "<id>", "status": "cancelled"}``
+    Response 404: task not found.
+    Response 409: task already in terminal state.
+
+``GET /capabilities``
+    Response 200: ``{"name": str, "models": [...], "personas": [...],
+    "skills": [...], "version": str}``
 
 ``GET /health``
     Response 200: ``{"status": "ok", "pending": N, "running": N}``
@@ -45,6 +60,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Callable
+from urllib.parse import parse_qs, urlparse
 
 from team.bridge import BridgeResult, BridgeTask, TaskStore, verify_signature
 
@@ -122,6 +138,30 @@ def _make_default_runner(cfg_path: Path) -> WorkflowRunner:
     return _run
 
 
+def _capabilities_from_cfg(cfg_path: Path) -> dict:
+    """Build a capabilities dict from the team config at *cfg_path*.
+
+    Returns a best-effort snapshot; failures produce an empty dict rather
+    than crashing the server startup.
+    """
+    try:
+        from team.config import load_team
+        cfg = load_team(cfg_path)
+        skills: list[str] = []
+        for m in cfg.members:
+            for s in m.skills or []:
+                if s not in skills:
+                    skills.append(s)
+        return {
+            "name": cfg.name,
+            "models": list({m.model for m in cfg.members}),
+            "personas": [m.name for m in cfg.members],
+            "skills": skills,
+        }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 # --------------------------------------------------------------------------- #
 # HTTP request handler
 # --------------------------------------------------------------------------- #
@@ -174,6 +214,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/health":
             self._handle_health()
+        elif self.path == "/capabilities":
+            self._handle_capabilities()
+        elif self.path == "/tasks" or self.path.startswith("/tasks?"):
+            self._handle_list_tasks()
         elif self.path.startswith("/tasks/"):
             task_id = self.path[len("/tasks/"):]
             self._handle_get_task(task_id)
@@ -190,6 +234,16 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"error": "not found"})
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        if not self._check_auth(b""):
+            self._send_json(401, {"error": "unauthorized"})
+            return
+        if self.path.startswith("/tasks/"):
+            task_id = self.path[len("/tasks/"):]
+            self._handle_cancel_task(task_id)
+        else:
+            self._send_json(404, {"error": "not found"})
+
     def _handle_health(self) -> None:
         store = self.server.store
         ids = store.list_task_ids()
@@ -203,12 +257,40 @@ class _Handler(BaseHTTPRequestHandler):
         )
         self._send_json(200, {"status": "ok", "pending": pending, "running": running})
 
+    def _handle_capabilities(self) -> None:
+        from team._version import __version__
+        caps = dict(self.server.bridge_server._capabilities)  # noqa: SLF001
+        caps["version"] = __version__
+        self._send_json(200, caps)
+
+    def _handle_list_tasks(self) -> None:
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        status_filter = (qs.get("status") or [None])[0]
+        summaries = self.server.store.task_summaries(status_filter)
+        self._send_json(200, {"tasks": summaries})
+
     def _handle_get_task(self, task_id: str) -> None:
         result = self.server.store.get_result(task_id)
         if result is None:
             self._send_json(404, {"error": f"task {task_id!r} not found"})
             return
         self._send_json(200, result.to_dict())
+
+    def _handle_cancel_task(self, task_id: str) -> None:
+        ok = self.server.store.mark_cancelled(task_id)
+        if ok:
+            self._send_json(200, {"task_id": task_id, "status": "cancelled"})
+            log.info("bridge: task %s cancelled via HTTP", task_id)
+            return
+        result = self.server.store.get_result(task_id)
+        if result is None:
+            self._send_json(404, {"error": f"task {task_id!r} not found"})
+        else:
+            self._send_json(
+                409,
+                {"error": f"task is already in terminal state: {result.status!r}"},
+            )
 
     def _handle_post_task(self, body: bytes) -> None:
         data = self._parse_json(body)
@@ -263,6 +345,8 @@ class BridgeServer:
         max_concurrent_tasks: int = 1,
         workspace_root: Path | None = None,
         secret: str | None = None,
+        capabilities: dict | None = None,
+        task_ttl_seconds: float = 3600.0,
     ) -> None:
         if runner is None:
             if cfg_path is None:
@@ -270,14 +354,17 @@ class BridgeServer:
             runner = _make_default_runner(cfg_path)
             if workspace_root is None:
                 workspace_root = cfg_path.parent / "bridge_workspaces"
+            if capabilities is None:
+                capabilities = _capabilities_from_cfg(cfg_path)
 
         self._runner = runner
         self._port = port
         self._secret = secret
+        self._capabilities: dict = capabilities or {}
         self._semaphore = threading.Semaphore(max_concurrent_tasks)
         self._workspace_root: Path = Path(workspace_root or "./bridge_workspaces").resolve()
 
-        self.store = TaskStore()
+        self.store = TaskStore(ttl_seconds=task_ttl_seconds)
         self._http: HTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -344,6 +431,12 @@ class BridgeServer:
         """Worker: acquire a slot, run the workflow, release the slot."""
         self._semaphore.acquire()
         try:
+            # The task may have been cancelled while waiting for a semaphore slot.
+            current = self.store.get_result(task.task_id)
+            if current and current.status == "cancelled":
+                log.info("bridge: task %s was cancelled before execution", task.task_id)
+                return
+
             self.store.mark_running(task.task_id)
             sub_ws = self._workspace_root / task.task_id
             sub_ws.mkdir(parents=True, exist_ok=True)

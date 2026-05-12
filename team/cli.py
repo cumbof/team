@@ -797,6 +797,7 @@ def serve(team_file: str, port: int | None) -> None:
         max_concurrent_tasks=max_conc,
         workspace_root=cfg.workspace / "bridge_workspaces",
         secret=cfg.bridge.secret,
+        task_ttl_seconds=cfg.bridge.task_ttl_seconds,
     )
     server.start()
     console.print(

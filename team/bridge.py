@@ -100,7 +100,7 @@ def verify_signature(
 # Protocol dataclasses
 # --------------------------------------------------------------------------- #
 
-TaskStatus = Literal["pending", "running", "complete", "error"]
+TaskStatus = Literal["pending", "running", "complete", "error", "cancelled"]
 
 
 @dataclass
@@ -195,12 +195,26 @@ class TaskStore:
 
     The HTTP server layer submits tasks here and workers update them.
     Clients poll through the same store.
+
+    Parameters
+    ----------
+    ttl_seconds:
+        How long to keep completed, errored, or cancelled tasks in memory
+        before evicting them.  A background daemon thread runs the eviction
+        loop at ``ttl_seconds / 4`` intervals (capped at 5 minutes).
+        Pass ``0`` to disable eviction (tasks are kept forever — only
+        appropriate for short-lived servers or tests).
     """
 
-    def __init__(self) -> None:
+    _TERMINAL: frozenset[TaskStatus] = frozenset({"complete", "error", "cancelled"})
+
+    def __init__(self, ttl_seconds: float = 3600.0) -> None:
         self._lock = threading.Lock()
         self._tasks: dict[str, BridgeTask] = {}
         self._results: dict[str, BridgeResult] = {}
+        self._ttl = ttl_seconds
+        if ttl_seconds > 0:
+            self._start_eviction()
 
     # ------------------------------------------------------------------ #
     # Writing
@@ -241,6 +255,23 @@ class TaskStore:
                 r.error = error
                 r.completed_at = time.time()
 
+    def mark_cancelled(self, task_id: str) -> bool:
+        """Mark a queued or running task as cancelled.
+
+        Returns ``True`` if the task existed and was successfully cancelled.
+        Returns ``False`` if the task is not found or is already in a terminal
+        state (``complete``, ``error``, or ``cancelled``).
+        """
+        with self._lock:
+            r = self._results.get(task_id)
+            if r is None:
+                return False
+            if r.status in self._TERMINAL:
+                return False
+            r.status = "cancelled"
+            r.completed_at = time.time()
+            return True
+
     # ------------------------------------------------------------------ #
     # Reading
     # ------------------------------------------------------------------ #
@@ -256,3 +287,54 @@ class TaskStore:
     def list_task_ids(self) -> list[str]:
         with self._lock:
             return list(self._tasks.keys())
+
+    def task_summaries(self, status_filter: str | None = None) -> list[dict]:
+        """Return lightweight summaries of all known tasks.
+
+        Parameters
+        ----------
+        status_filter:
+            When supplied, only tasks whose current status matches this value
+            are returned.  Pass ``None`` to return all tasks.
+        """
+        with self._lock:
+            out: list[dict] = []
+            for tid, task in self._tasks.items():
+                result = self._results.get(tid)
+                status = result.status if result else "unknown"
+                if status_filter and status != status_filter:
+                    continue
+                out.append({
+                    "task_id": tid,
+                    "status": status,
+                    "sender": task.sender,
+                    "goal": task.goal[:120],
+                    "created_at": task.created_at,
+                })
+            return out
+
+    # ------------------------------------------------------------------ #
+    # TTL eviction
+    # ------------------------------------------------------------------ #
+
+    def _start_eviction(self) -> None:
+        """Start a daemon thread that purges old terminal tasks."""
+        interval = min(self._ttl / 4, 300.0)  # at most every 5 minutes
+
+        def _evict() -> None:
+            while True:
+                time.sleep(interval)
+                cutoff = time.time() - self._ttl
+                with self._lock:
+                    expired = [
+                        tid
+                        for tid, r in self._results.items()
+                        if r.status in self._TERMINAL
+                        and r.completed_at is not None
+                        and r.completed_at < cutoff
+                    ]
+                    for tid in expired:
+                        self._tasks.pop(tid, None)
+                        self._results.pop(tid, None)
+
+        threading.Thread(target=_evict, daemon=True, name="task-store-eviction").start()

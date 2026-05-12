@@ -86,6 +86,46 @@ class BridgeClient:
         """Return the server's health payload or raise :class:`BridgeClientError`."""
         return self._get("/health")
 
+    def get_capabilities(self) -> dict:
+        """Return the server's capability advertisement.
+
+        The response contains ``name``, ``models``, ``personas``, ``skills``,
+        and ``version`` fields (whatever the server is configured to return).
+        Raises :class:`BridgeClientError` on network or HTTP errors.
+        """
+        return self._get("/capabilities")
+
+    def list_tasks(self, status: str | None = None) -> list[dict]:
+        """Return summary dicts for all tasks known to the server.
+
+        Parameters
+        ----------
+        status:
+            Optional filter.  Pass ``"pending"``, ``"running"``,
+            ``"complete"``, ``"error"``, or ``"cancelled"`` to restrict
+            results to tasks in that state.  ``None`` returns all tasks.
+        """
+        path = "/tasks" if not status else f"/tasks?status={status}"
+        data = self._get(path)
+        return data.get("tasks", [])
+
+    def cancel_task(self, task_id: str) -> bool:
+        """Ask the server to cancel *task_id*.
+
+        Returns ``True`` if the server accepted the cancellation.
+        Raises :class:`BridgeClientError` on 404 (not found) or 409
+        (already in terminal state) as well as network errors.
+        """
+        url = self.base_url + f"/tasks/{task_id}"
+        try:
+            resp = requests.delete(
+                url, headers=self._auth_headers(), timeout=self._timeout
+            )
+            resp.raise_for_status()
+            return True
+        except requests.RequestException as exc:
+            raise BridgeClientError(f"DELETE {url} failed: {exc}") from exc
+
     def submit_task(self, task: BridgeTask) -> str:
         """Submit a task and return the assigned ``task_id``.
 

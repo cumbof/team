@@ -710,6 +710,7 @@ def _delegate_task(
     workspace_path: Path | None = None,
     timeout: int = 600,
     bridge_secret: str | None = None,
+    peers: dict[str, str] | None = None,
     **_: Any,
 ) -> str:
     """Delegate a sub-task to a remote team cluster and return its results.
@@ -727,7 +728,12 @@ def _delegate_task(
         files: data/preprocessed.csv, data/metadata.json
         timeout: 600
 
-    All fields except ``url`` and ``goal`` are optional.
+    Instead of a raw ``url``, you can use a named peer from the team config::
+
+        peer: lab-b
+        goal: Run the survival analysis on the preprocessed BRCA dataset.
+
+    All fields except ``url``/``peer`` and ``goal`` are optional.
 
     * ``context`` — free-text background passed to the remote team.
     * ``files``   — comma-separated relative paths of workspace files to
@@ -744,9 +750,21 @@ def _delegate_task(
     from team.bridge import BridgeTask
     from team.bridge_client import BridgeClient, BridgeClientError
 
+    # Resolve URL — accept either a raw url: or a named peer: from the registry.
     url = _parse_kv(body, "url")
     if not url:
-        return "ERROR: provide url: <remote bridge server URL>"
+        peer_name = _parse_kv(body, "peer")
+        if peer_name:
+            peer_registry = peers or {}
+            url = peer_registry.get(peer_name)
+            if not url:
+                return (
+                    f"ERROR: peer {peer_name!r} is not in the configured peers registry. "
+                    f"Add it under bridge.peers in your team YAML."
+                )
+        else:
+            return "ERROR: provide url: <remote bridge server URL> or peer: <peer name>"
+
     goal = _parse_kv(body, "goal")
     if not goal:
         return "ERROR: provide goal: <what the remote team should accomplish>"
@@ -809,8 +827,230 @@ def _delegate_task(
 
 
 # --------------------------------------------------------------------------- #
-# Decision log tools (shared team decision record)
+# Federation tools: peer registry, broadcast, cancel
 # --------------------------------------------------------------------------- #
+
+
+def _list_peers(
+    body: str,
+    *,
+    peers: dict[str, str] | None = None,
+    bridge_secret: str | None = None,
+    **_: Any,
+) -> str:
+    """List configured peer teams and check their health status.
+
+    Iterates over all peers in the team's ``bridge.peers`` registry, queries
+    each one's ``/health`` endpoint, and reports the result.
+
+    Body: (empty — no parameters required)
+
+    Returns a table of peer names, URLs, and live health data (``pending``
+    and ``running`` task counts).  Unreachable peers are flagged so you can
+    decide whether to delegate to them.
+    """
+    from team.bridge_client import BridgeClient, BridgeClientError
+
+    peer_registry = peers or {}
+    if not peer_registry:
+        return "No peers configured. Add a peers: section under bridge: in your team YAML."
+
+    lines = ["Configured peers:"]
+    for name, url in peer_registry.items():
+        try:
+            client = BridgeClient(url, secret=bridge_secret)
+            h = client.health()
+            lines.append(
+                f"  {name}: {url}"
+                f"  [ok · pending={h.get('pending', '?')}"
+                f" · running={h.get('running', '?')}]"
+            )
+        except BridgeClientError as exc:
+            lines.append(f"  {name}: {url}  [unreachable: {exc}]")
+    return "\n".join(lines)
+
+
+def _broadcast_task(
+    body: str,
+    *,
+    workspace_path: Path | None = None,
+    timeout: int = 600,
+    bridge_secret: str | None = None,
+    peers: dict[str, str] | None = None,
+    **_: Any,
+) -> str:
+    """Submit the same goal to multiple peer teams concurrently and collect all results.
+
+    Sends identical tasks to each listed peer in parallel, waits for all of
+    them to finish, and returns a combined summary.  Files returned by each
+    peer are written into the local workspace under a per-peer sub-directory
+    (``<peer-name>/<original-relative-path>``) to avoid name collisions.
+
+    Body format::
+
+        goal: Run the regression analysis on the preprocessed dataset.
+        peers: lab-b, lab-c, lab-d
+        context: Data is in data/preprocessed.csv (1 142 samples).
+        files: data/preprocessed.csv
+        timeout: 600
+
+    ``peers`` is a comma-separated list of peer names (from ``bridge.peers``
+    in the team YAML) or direct ``http://…`` URLs.  All other fields work
+    the same as in ``delegate_task``.
+
+    Useful for ensemble processing (send to N specialist teams, compare
+    results), redundancy (take the first successful answer), or
+    embarrassingly parallel sub-tasks.
+    """
+    import concurrent.futures
+
+    from team.bridge import BridgeTask
+    from team.bridge_client import BridgeClient, BridgeClientError
+
+    goal = _parse_kv(body, "goal")
+    if not goal:
+        return "ERROR: provide goal: <what all remote teams should accomplish>"
+    peers_str = _parse_kv(body, "peers")
+    if not peers_str:
+        return "ERROR: provide peers: <comma-separated peer names or URLs>"
+
+    context = _parse_kv(body, "context") or ""
+    files_str = _parse_kv(body, "files") or ""
+    task_timeout_str = _parse_kv(body, "timeout")
+    task_timeout = float(task_timeout_str) if task_timeout_str else float(timeout)
+
+    peer_registry = peers or {}
+    resolved: dict[str, str] = {}
+    for raw in [p.strip() for p in peers_str.split(",") if p.strip()]:
+        if raw in peer_registry:
+            resolved[raw] = peer_registry[raw]
+        elif raw.startswith("http"):
+            resolved[raw] = raw
+        else:
+            return (
+                f"ERROR: {raw!r} is not a known peer name and does not look like a URL. "
+                f"Known peers: {', '.join(peer_registry) or '(none)'}"
+            )
+
+    if not resolved:
+        return "ERROR: no valid peers to broadcast to"
+
+    input_files: dict[str, str] = {}
+    if files_str and workspace_path:
+        for rel in [f.strip() for f in files_str.split(",") if f.strip()]:
+            try:
+                target = (workspace_path / rel).resolve()
+                target.relative_to(workspace_path.resolve())
+                if target.is_file():
+                    input_files[rel] = target.read_text(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+    def _submit_one(
+        peer_name: str, url: str
+    ) -> tuple[str, str, dict[str, str] | None, str | None]:
+        try:
+            task = BridgeTask(
+                goal=goal, context=context, files=input_files, sender="local-team"
+            )
+            client = BridgeClient(url, secret=bridge_secret)
+            task_id = client.submit_task(task)
+            result = client.wait_for_result(task_id, timeout=task_timeout)
+            if result.status == "error":
+                return peer_name, "", None, result.error
+            return peer_name, result.summary, result.files, None
+        except BridgeClientError as exc:
+            return peer_name, "", None, str(exc)
+
+    result_parts: list[str] = [
+        f"Broadcast to {len(resolved)} peer(s) · goal: '{goal[:60]}'\n"
+    ]
+    all_files: dict[str, str] = {}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(resolved)) as pool:
+        futures = {
+            pool.submit(_submit_one, name, url): name
+            for name, url in resolved.items()
+        }
+        for future in concurrent.futures.as_completed(futures):
+            peer_name, summary, files, error = future.result()
+            if error:
+                result_parts.append(f"### {peer_name}: ERROR\n{error}\n")
+            else:
+                result_parts.append(f"### {peer_name}: complete\n{summary[:500]}\n")
+                if files:
+                    for rel, content in files.items():
+                        all_files[f"{peer_name}/{rel}"] = content
+
+    written: list[str] = []
+    if workspace_path and all_files:
+        for rel, content in all_files.items():
+            try:
+                target = (workspace_path / rel).resolve()
+                target.relative_to(workspace_path.resolve())
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                written.append(rel)
+            except (ValueError, OSError) as exc:
+                log.warning("broadcast_task: could not write %r: %s", rel, exc)
+
+    if written:
+        result_parts.append(f"\nFiles received ({len(written)} total, namespaced by peer):")
+        result_parts.extend(f"  - {p}" for p in written)
+
+    return _truncate("\n".join(result_parts))
+
+
+def _cancel_remote_task(
+    body: str,
+    *,
+    peers: dict[str, str] | None = None,
+    bridge_secret: str | None = None,
+    **_: Any,
+) -> str:
+    """Cancel a running or queued task on a remote bridge server.
+
+    Body format::
+
+        url: http://lab-b.example.com:7001
+        task_id: <task UUID returned by a previous delegate_task call>
+
+    As with ``delegate_task``, you can use a peer name instead of a raw URL::
+
+        peer: lab-b
+        task_id: <task UUID>
+
+    Returns ``"Cancelled: <task_id>"`` on success.  Returns an error string
+    if the task is not found, already finished, or the server is unreachable.
+    """
+    from team.bridge_client import BridgeClient, BridgeClientError
+
+    url = _parse_kv(body, "url")
+    if not url:
+        peer_name = _parse_kv(body, "peer")
+        if peer_name:
+            peer_registry = peers or {}
+            url = peer_registry.get(peer_name)
+            if not url:
+                return (
+                    f"ERROR: peer {peer_name!r} is not in the configured peers registry."
+                )
+        else:
+            return "ERROR: provide url: <remote bridge server URL> or peer: <peer name>"
+
+    task_id = _parse_kv(body, "task_id")
+    if not task_id:
+        return "ERROR: provide task_id: <task UUID to cancel>"
+
+    try:
+        client = BridgeClient(url, secret=bridge_secret)
+        client.cancel_task(task_id)
+        return f"Cancelled: {task_id}"
+    except BridgeClientError as exc:
+        return f"ERROR: {exc}"
+
+
+
 
 _DECISIONS_FILE = "decisions.md"
 
@@ -1047,13 +1287,42 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "delegate_task",
         "Delegate a sub-task to a remote team cluster (team serve) and wait for its results.",
         {
-            "url":     {"type": "string",  "description": "Remote bridge server URL."},
+            "url":     {"type": "string",  "description": "Remote bridge server URL (alternative to peer)."},
+            "peer":    {"type": "string",  "description": "Named peer from bridge.peers config (alternative to url)."},
             "goal":    {"type": "string",  "description": "What the remote team should accomplish."},
             "context": {"type": "string",  "description": "Optional background for the remote team."},
             "files":   {"type": "string",  "description": "Comma-separated relative paths of files to send."},
             "timeout": {"type": "integer", "description": "Seconds to wait for the remote team (default 600)."},
         },
-        ["url", "goal"],
+        ["goal"],
+    ),
+    "list_peers": _fn(
+        "list_peers",
+        "List all configured peer teams and their live health status.",
+        {},
+        [],
+    ),
+    "broadcast_task": _fn(
+        "broadcast_task",
+        "Submit the same goal to multiple peer teams concurrently and collect all results.",
+        {
+            "goal":    {"type": "string", "description": "What all remote teams should accomplish."},
+            "peers":   {"type": "string", "description": "Comma-separated peer names or URLs to broadcast to."},
+            "context": {"type": "string", "description": "Optional background for the remote teams."},
+            "files":   {"type": "string", "description": "Comma-separated relative paths of files to send."},
+            "timeout": {"type": "integer", "description": "Seconds to wait per peer (default 600)."},
+        },
+        ["goal", "peers"],
+    ),
+    "cancel_remote_task": _fn(
+        "cancel_remote_task",
+        "Cancel a queued or running task on a remote bridge server by task ID.",
+        {
+            "url":     {"type": "string", "description": "Remote bridge server URL (alternative to peer)."},
+            "peer":    {"type": "string", "description": "Named peer from bridge.peers config (alternative to url)."},
+            "task_id": {"type": "string", "description": "Task UUID to cancel (returned by delegate_task)."},
+        },
+        ["task_id"],
     ),
     "log_decision": _fn(
         "log_decision",
@@ -1157,13 +1426,37 @@ def args_to_body(tool_name: str, args: dict) -> str:
         return f"status: {status}" if status else ""
 
     if tool_name == "delegate_task":
-        lines = [f"url: {args.get('url', '')}", f"goal: {args.get('goal', '')}"]
+        lines = []
+        if args.get("peer"):
+            lines.append(f"peer: {args['peer']}")
+        else:
+            lines.append(f"url: {args.get('url', '')}")
+        lines.append(f"goal: {args.get('goal', '')}")
         if args.get("context"):
             lines.append(f"context: {args['context']}")
         if args.get("files"):
             lines.append(f"files: {args['files']}")
         if args.get("timeout"):
             lines.append(f"timeout: {args['timeout']}")
+        return "\n".join(lines)
+
+    if tool_name == "broadcast_task":
+        lines = [f"goal: {args.get('goal', '')}", f"peers: {args.get('peers', '')}"]
+        if args.get("context"):
+            lines.append(f"context: {args['context']}")
+        if args.get("files"):
+            lines.append(f"files: {args['files']}")
+        if args.get("timeout"):
+            lines.append(f"timeout: {args['timeout']}")
+        return "\n".join(lines)
+
+    if tool_name == "cancel_remote_task":
+        lines = []
+        if args.get("peer"):
+            lines.append(f"peer: {args['peer']}")
+        else:
+            lines.append(f"url: {args.get('url', '')}")
+        lines.append(f"task_id: {args.get('task_id', '')}")
         return "\n".join(lines)
 
     if tool_name == "log_decision":
@@ -1188,25 +1481,28 @@ def args_to_body(tool_name: str, args: dict) -> str:
 
 #: All built-in tools, keyed by name.  Members opt-in via ``tools:`` config.
 TOOLS: dict[str, Any] = {
-    "run_python":     _run_python,
-    "run_bash":       _run_bash,
-    "web_search":     _web_search,
-    "read_url":       _read_url,
-    "read_file":      _read_file,
-    "write_file":     _write_file,
-    "append_file":    _append_file,
-    "list_files":     _list_files,
-    "remember":       _remember,
-    "recall":         _recall,
-    "forget":         _forget,
-    "list_memories":  _list_memories,
-    "assert_belief":  _assert_belief,
-    "contest_belief": _contest_belief,
-    "accept_belief":  _accept_belief,
-    "list_beliefs":   _list_beliefs,
-    "delegate_task":  _delegate_task,
-    "log_decision":   _log_decision,
-    "read_decisions": _read_decisions,
+    "run_python":          _run_python,
+    "run_bash":            _run_bash,
+    "web_search":          _web_search,
+    "read_url":            _read_url,
+    "read_file":           _read_file,
+    "write_file":          _write_file,
+    "append_file":         _append_file,
+    "list_files":          _list_files,
+    "remember":            _remember,
+    "recall":              _recall,
+    "forget":              _forget,
+    "list_memories":       _list_memories,
+    "assert_belief":       _assert_belief,
+    "contest_belief":      _contest_belief,
+    "accept_belief":       _accept_belief,
+    "list_beliefs":        _list_beliefs,
+    "delegate_task":       _delegate_task,
+    "list_peers":          _list_peers,
+    "broadcast_task":      _broadcast_task,
+    "cancel_remote_task":  _cancel_remote_task,
+    "log_decision":        _log_decision,
+    "read_decisions":      _read_decisions,
 }
 
 #: Human-readable one-line description of each tool (used in system prompts).
@@ -1230,7 +1526,22 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "delegate_task":  (
         "Delegate a sub-task to a remote team cluster (team serve) and wait "
         "for its results; files produced by the remote team are written into "
-        "the local workspace automatically."
+        "the local workspace automatically. Use 'peer: <name>' for named peers "
+        "or 'url: <URL>' for direct addressing."
+    ),
+    "list_peers": (
+        "List all configured peer teams and their live health status "
+        "(pending/running task counts). Useful before delegating to confirm "
+        "peers are reachable."
+    ),
+    "broadcast_task": (
+        "Submit the same goal to multiple peer teams concurrently and collect "
+        "all their results. Ideal for ensemble processing, redundancy, or "
+        "embarrassingly parallel sub-tasks across the federation."
+    ),
+    "cancel_remote_task": (
+        "Cancel a queued or running task on a remote bridge server by task ID. "
+        "Use after a delegate_task call when you no longer need the result."
     ),
     "log_decision":   (
         "Append a timestamped decision entry to decisions.md in the shared workspace. "
@@ -1251,6 +1562,7 @@ def execute_tool(
     beliefs: Any = None,
     member_name: str = "unknown",
     bridge_secret: str | None = None,
+    peers: dict[str, str] | None = None,
 ) -> str:
     """Execute the named tool and return its string output.
 
@@ -1276,6 +1588,12 @@ def execute_tool(
         or ``None`` when the belief board is disabled.
     member_name:
         Name of the calling member (forwarded to belief tools for attribution).
+    bridge_secret:
+        Shared HMAC secret for bridge authentication.
+    peers:
+        Mapping of peer name → URL from the team's ``bridge.peers`` config.
+        Forwarded to federation tools (``delegate_task``, ``broadcast_task``,
+        etc.) so they can resolve named peers.
 
     Raises :class:`KeyError` if *name* is not in the registry.
     All exceptions from the tool implementation are caught and returned
@@ -1292,6 +1610,7 @@ def execute_tool(
         beliefs=beliefs,
         member_name=member_name,
         bridge_secret=bridge_secret,
+        peers=peers,
     )
     log.debug("tool:%s → %d chars", name, len(result))
     return result

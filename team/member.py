@@ -385,6 +385,7 @@ class Member:
                     beliefs=self.beliefs,
                     member_name=self.name,
                     bridge_secret=self.team.bridge.secret,
+                    peers=self.team.bridge.peers or None,
                 )
                 if on_tool_result:
                     on_tool_result(self.name, tool_name, result)
