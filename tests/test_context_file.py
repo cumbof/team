@@ -40,7 +40,7 @@ def _make_member(team: TeamConfig) -> Member:
 
     with patch("team.member.OllamaClient"), \
          patch("team.member.OpenAICompatClient"), \
-         patch("team.member.load_skills", return_value=({}, {})), \
+         patch("team.member.load_skills", return_value=({}, {}, [])), \
          patch("team.member.render_system_prompt", return_value="system"):
         m = Member(team, cfg, runtime)
     return m

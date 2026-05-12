@@ -1,6 +1,9 @@
 """Skill loader — extend the agent toolbox with custom tools (F4 extension).
 
-A *skill* is a plain Python file that exports one or more tool callables.
+A *skill* is either a Python file that exports one or more tool callables,
+or a Markdown file whose content is injected verbatim into the member's
+system prompt as background knowledge.
+
 Skills can be loaded from:
 
 * **Local files** — any path on the host filesystem (trusted by default).
@@ -13,7 +16,17 @@ Skills can be loaded from:
 
 Skill file format
 -----------------
-A skill file must expose its tools in **one of two formats** (or both):
+**Markdown skills** (``.md`` extension) — context-injection skills::
+
+    # Review Checklist
+    ...any markdown content...
+
+The content is injected into the member's system prompt automatically.
+No tool call is required; the LLM receives it as background knowledge.
+This is useful for guidelines, checklists, templates, and domain rules
+that should always be visible rather than looked up on demand.
+
+**Python skills** — one of two callable formats (or both):
 
 **Single-tool format** — ``TOOL_NAME`` string + ``execute`` callable::
 
@@ -45,23 +58,41 @@ A skill file must expose its tools in **one of two formats** (or both):
 Both formats can coexist in the same file; ``TOOLS`` is read first, then
 any ``TOOL_NAME`` / ``execute`` pair is merged in.
 
+A Python skill may also set ``INJECT_INTO_CONTEXT`` to a non-empty string
+to have that text injected into the system prompt *in addition to* being
+a callable tool::
+
+    TOOL_NAME = "style_guide"
+    TOOL_DESCRIPTION = "Return the project style guide."
+    INJECT_INTO_CONTEXT = "## Style guide\\n- Use snake_case for variables.\\n..."
+
+    def execute(body, **kwargs):
+        return INJECT_INTO_CONTEXT
+
+Return values
+-------------
+:func:`load_skill` and :func:`load_skills` return a 3-tuple
+``(tools, descriptions, injected_context)`` where *injected_context* is
+a list of strings to be prepended to the member's system prompt.
+
 Config example
 --------------
 ::
 
     defaults:
       skills:
-        - path: ./skills/my_tool.py          # local file (relative to CWD)
-        - url: https://example.com/tool.py   # remote (loaded with a warning)
-          checksum: sha256:abc123...          # optional integrity check
-        - ./skills/another.py                # plain string = local path
+        - path: ./skills/review_checklist.md  # markdown → system-prompt injection
+        - path: ./skills/my_tool.py           # python  → callable tool
+        - url: https://example.com/tool.py    # remote (loaded with a warning)
+          checksum: sha256:abc123...           # optional integrity check
+        - ./skills/another.py                 # plain string = local path
         - https://raw.githubusercontent.com/org/repo/main/skill.py
 
     members:
       - name: researcher
-        tools: [web_search, my_tool]          # built-ins AND skill tools by name
+        tools: [web_search, my_tool]           # built-ins AND skill tools by name
         skills:
-          - ./skills/domain_search.py         # member-specific skill
+          - ./skills/domain_search.py          # member-specific skill
 
 Checksum verification
 ---------------------
@@ -103,10 +134,12 @@ class SkillLoadError(Exception):
 def _exec_skill_code(
     code: str,
     source_label: str,
-) -> tuple[dict[str, ToolFn], dict[str, str]]:
+) -> tuple[dict[str, ToolFn], dict[str, str], list[str]]:
     """Execute *code* in an isolated namespace and extract tool definitions.
 
-    Returns ``(tools_dict, descriptions_dict)``.
+    Returns ``(tools_dict, descriptions_dict, injected_context)``.
+    *injected_context* is a (possibly empty) list of strings to be injected
+    into the member's system prompt.
     Raises :class:`SkillLoadError` if the module does not export valid tools.
     """
     namespace: dict[str, Any] = {}
@@ -157,8 +190,14 @@ def _exec_skill_code(
             "both TOOL_NAME (str) and execute (callable)"
         )
 
+    # Optional context injection: INJECT_INTO_CONTEXT = "markdown text"
+    injected: list[str] = []
+    ctx = namespace.get("INJECT_INTO_CONTEXT")
+    if isinstance(ctx, str) and ctx.strip():
+        injected.append(ctx.strip())
+
     log.debug("loaded skill %r: tools=%s", source_label, list(tools))
-    return tools, descriptions
+    return tools, descriptions, injected
 
 
 # --------------------------------------------------------------------------- #
@@ -235,7 +274,7 @@ def _load_remote(url: str, checksum: str | None = None) -> str:
 
 def load_skill(
     source: str | dict,
-) -> tuple[dict[str, ToolFn], dict[str, str]]:
+) -> tuple[dict[str, ToolFn], dict[str, str], list[str]]:
     """Load a single skill from a local path or remote URL.
 
     *source* can be:
@@ -245,16 +284,26 @@ def load_skill(
     * A **dict** with either ``path`` or ``url`` key, and optional
       ``checksum`` key.
 
-    Returns ``(tools_dict, descriptions_dict)``.
+    Returns ``(tools_dict, descriptions_dict, injected_context)``.
+    *injected_context* is a (possibly empty) list of strings to be prepended
+    to the member's system prompt.  Markdown files (``.md``) produce only an
+    injected context entry (no callable tools); Python files may produce both.
+
     Raises :class:`SkillLoadError` on any error.
     """
     if isinstance(source, str):
         is_url = source.startswith("http://") or source.startswith("https://")
         if is_url:
             code = _load_remote(source)
+            label = source
+            return _exec_skill_code(code, label)
         else:
+            label = source
+            if Path(source).expanduser().suffix.lower() == ".md":
+                content = _load_local(source)
+                return {}, {}, ([content] if content.strip() else [])
             code = _load_local(source)
-        label = source
+            return _exec_skill_code(code, label)
     elif isinstance(source, dict):
         if "path" in source and "url" in source:
             raise SkillLoadError(
@@ -264,33 +313,39 @@ def load_skill(
         if "url" in source:
             code = _load_remote(source["url"], checksum=checksum)
             label = source["url"]
+            return _exec_skill_code(code, label)
         elif "path" in source:
-            code = _load_local(source["path"], checksum=checksum)
             label = source["path"]
+            path = source["path"]
+            if Path(path).expanduser().suffix.lower() == ".md":
+                content = _load_local(path, checksum=checksum)
+                return {}, {}, ([content] if content.strip() else [])
+            code = _load_local(path, checksum=checksum)
+            return _exec_skill_code(code, label)
         else:
             raise SkillLoadError("skill entry dict must have 'path' or 'url'")
     else:
         raise SkillLoadError(
             f"skill source must be a string or dict, got {type(source).__name__!r}"
         )
-    return _exec_skill_code(code, label)
 
 
 def load_skills(
     sources: list[str | dict],
-) -> tuple[dict[str, ToolFn], dict[str, str]]:
+) -> tuple[dict[str, ToolFn], dict[str, str], list[str]]:
     """Load multiple skills and merge their tools into a single registry.
 
-    Returns ``(merged_tools, merged_descriptions)``.
+    Returns ``(merged_tools, merged_descriptions, merged_injected_context)``.
     Later entries override earlier ones on name collision (a warning is logged).
     Errors for individual skills are logged and skipped rather than aborting
     the whole load, so one bad skill does not prevent the others from loading.
     """
     merged_tools: dict[str, ToolFn] = {}
     merged_descs: dict[str, str] = {}
+    merged_context: list[str] = []
     for source in sources:
         try:
-            tools, descs = load_skill(source)
+            tools, descs, injected = load_skill(source)
         except SkillLoadError as exc:
             log.error("skipping skill %r: %s", source, exc)
             continue
@@ -301,4 +356,5 @@ def load_skills(
                 )
         merged_tools.update(tools)
         merged_descs.update(descs)
-    return merged_tools, merged_descs
+        merged_context.extend(injected)
+    return merged_tools, merged_descs, merged_context

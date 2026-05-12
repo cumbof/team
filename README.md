@@ -1419,19 +1419,61 @@ Supported algorithms: any name accepted by Python's `hashlib` (e.g.
 `sha256`, `sha512`, `md5`).  `team` raises an error and refuses to load
 the skill if the digest does not match.
 
-#### Security
+#### Markdown skills — context injection
 
-> **Remote skills execute arbitrary Python code on the host machine with
-> the privileges of the `team` process.**  Treat a remote skill URL with
-> the same caution as `curl URL | python`.  Always use `checksum:` for
-> remote skills in production.
+Skills do not have to be executable code.  A Markdown file (`.md`) loaded
+as a skill has its content injected verbatim into the member's **system
+prompt** at startup — no tool call required.  Use this for guidelines,
+checklists, templates, and domain rules that should always be visible.
 
-Local skills (from your own filesystem) are as trustworthy as any other
-code you run; they are loaded in the same security context as `run_python`.
+```yaml
+defaults:
+  skills:
+    - path: ./skills/review_checklist.md    # injected into system prompt
+    - path: ./skills/task_board.py          # callable tool as usual
+```
 
----
+A Python skill can also inject context by setting the `INJECT_INTO_CONTEXT`
+variable to a non-empty string — the text is injected *and* the tool
+remains callable:
 
-## Token usage tracking
+```python
+TOOL_NAME = "style_guide"
+INJECT_INTO_CONTEXT = "## Style guide\n- Use snake_case for all variables.\n..."
+
+def execute(body, **kwargs):
+    return INJECT_INTO_CONTEXT   # also callable on demand
+```
+
+#### Bundled team-specific skills
+
+The `skills/` directory in this repository contains a set of skills designed
+for multi-agent collaboration — things that have no use outside a team run
+and would never appear in a general-purpose skill library.
+
+| File | Type | Description |
+|---|---|---|
+| `review_checklist.md` | Markdown | Structured peer-review checklist injected into reviewer personas. |
+| `escalation_rules.md` | Markdown | When to proceed, flag a risk, or escalate to the manager. |
+| `decision_record_format.md` | Markdown | ADR-style template for writing `log_decision` entries. |
+| `task_board.py` | Python | `task_add` / `task_done` / `task_list` — shared TASKS.md board. |
+| `search_transcript.py` | Python | `search_transcript` — keyword search over the run transcript. |
+| `critique_request.py` | Python | `request_critique` / `pick_critique` / `list_critiques` — async peer-review queue. |
+| `progress_snapshot.py` | Python | `progress_snapshot` — write (or read) PROGRESS.md in the workspace. |
+
+Reference them by path in your team YAML:
+
+```yaml
+defaults:
+  skills:
+    - path: ./skills/review_checklist.md
+    - path: ./skills/escalation_rules.md
+    - path: ./skills/task_board.py
+    - path: ./skills/search_transcript.py
+  tools: [task_add, task_done, task_list, search_transcript]
+```
+
+
 
 After every `team run` a token usage summary is printed:
 

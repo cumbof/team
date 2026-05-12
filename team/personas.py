@@ -122,6 +122,7 @@ def render_system_prompt(
     member: MemberConfig,
     enabled_tools: list[str] | None = None,
     tool_descriptions: dict[str, str] | None = None,
+    injected_context: list[str] | None = None,
 ) -> str:
     """Render the complete system prompt for *member*.
 
@@ -138,6 +139,11 @@ def render_system_prompt(
     tool_descriptions:
         Merged tool descriptions dict (built-ins + skill tools).  Defaults
         to the built-in :data:`~team.tools.TOOL_DESCRIPTIONS` dict.
+    injected_context:
+        List of strings loaded from Markdown skills or ``INJECT_INTO_CONTEXT``
+        in Python skills.  Each entry is appended verbatim after the
+        collaboration protocol so the member has this background knowledge
+        in every turn without needing to call a tool.
     """
     # Build the teammate list excluding the member itself.
     teammates = [
@@ -161,6 +167,12 @@ def render_system_prompt(
         "",
         PROTOCOL.strip(),
     ]
+    # Inject skill context (Markdown skills or INJECT_INTO_CONTEXT) after the
+    # collaboration protocol so the LLM has background knowledge in every turn.
+    if injected_context:
+        for ctx in injected_context:
+            if ctx.strip():
+                parts.extend(["", ctx.strip()])
     # Append extra instructions last so they can override or extend the
     # boilerplate sections above without modifying the shared PROTOCOL constant.
     if member.extra_system:

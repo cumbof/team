@@ -36,7 +36,7 @@ def test_single_tool_format(tmp_path):
         def execute(body, **kwargs):
             return str(eval(body.strip()))
     """)
-    tools, descs = load_skill(path)
+    tools, descs, _ = load_skill(path)
     assert "calc" in tools
     assert "Evaluate arithmetic" in descs["calc"]
     result = tools["calc"]("2 + 2")
@@ -49,7 +49,7 @@ def test_single_tool_default_description(tmp_path):
         def execute(body, **kwargs):
             return "ok"
     """)
-    tools, descs = load_skill(path)
+    tools, descs, _ = load_skill(path)
     assert "my_tool" in descs
     assert "my_tool" in descs["my_tool"]
 
@@ -67,7 +67,7 @@ def test_multi_tool_format(tmp_path):
         TOOLS = {"tool_a": _a, "tool_b": _b}
         TOOL_DESCRIPTIONS = {"tool_a": "does A", "tool_b": "does B"}
     """)
-    tools, descs = load_skill(path)
+    tools, descs, _ = load_skill(path)
     assert set(tools) == {"tool_a", "tool_b"}
     assert tools["tool_a"]("x") == "A:x"
     assert descs["tool_b"] == "does B"
@@ -85,7 +85,7 @@ def test_multi_and_single_coexist(tmp_path):
         TOOL_DESCRIPTION = "extra desc"
         def execute(body, **kw): return "extra"
     """)
-    tools, descs = load_skill(path)
+    tools, _, _ = load_skill(path)
     assert "shared_tool" in tools
     assert "extra" in tools
 
@@ -158,7 +158,7 @@ def test_dict_path_form(tmp_path):
         TOOL_NAME = "d"
         def execute(body, **kw): return "d"
     """)
-    tools, _ = load_skill({"path": path})
+    tools, _ , _ = load_skill({"path": path})
     assert "d" in tools
 
 
@@ -183,14 +183,14 @@ _SKILL_CODE = textwrap.dedent("""
 
 def test_remote_url_string(tmp_path):
     with patch("requests.get", return_value=_make_mock_response(_SKILL_CODE)):
-        tools, descs = load_skill("https://example.com/skill.py")
+        tools, descs, _ = load_skill("https://example.com/skill.py")
     assert "remote_tool" in tools
     assert tools["remote_tool"]("hi") == "remote:hi"
 
 
 def test_remote_url_dict(tmp_path):
     with patch("requests.get", return_value=_make_mock_response(_SKILL_CODE)):
-        tools, _ = load_skill({"url": "https://example.com/skill.py"})
+        tools, *_ = load_skill({"url": "https://example.com/skill.py"})
     assert "remote_tool" in tools
 
 
@@ -211,7 +211,7 @@ def test_checksum_ok_local(tmp_path):
     digest = hashlib.sha256(code.encode()).hexdigest()
     path = tmp_path / "ck.py"
     path.write_text(code, encoding="utf-8")
-    tools, _ = load_skill({"path": str(path), "checksum": f"sha256:{digest}"})
+    tools, *_ = load_skill({"path": str(path), "checksum": f"sha256:{digest}"})
     assert "ck" in tools
 
 
@@ -254,7 +254,7 @@ def test_load_skills_merges(tmp_path):
         TOOL_NAME = "t2"
         def execute(body, **kw): return "2"
     """)
-    tools, _ = load_skills([p1, p2])
+    tools, *_ = load_skills([p1, p2])
     assert "t1" in tools and "t2" in tools
 
 
@@ -267,12 +267,151 @@ def test_load_skills_skips_bad(tmp_path, caplog):
     bad = "/nonexistent/skill.py"
     import logging
     with caplog.at_level(logging.ERROR, logger="team.skills"):
-        tools, _ = load_skills([p1, bad])
+        tools, *_ = load_skills([p1, bad])
     assert "good" in tools
     assert any("skipping" in r.message for r in caplog.records)
 
 
 def test_load_skills_empty():
-    tools, descs = load_skills([])
+    tools, descs, ctx = load_skills([])
     assert tools == {}
     assert descs == {}
+    assert ctx == []
+
+
+# --------------------------------------------------------------------------- #
+# Markdown skill (context injection)
+# --------------------------------------------------------------------------- #
+
+
+def test_markdown_skill_returns_no_tools(tmp_path):
+    p = tmp_path / "guide.md"
+    p.write_text("# Style Guide\n- Use snake_case.\n", encoding="utf-8")
+    tools, descs, ctx = load_skill(str(p))
+    assert tools == {}
+    assert descs == {}
+    assert len(ctx) == 1
+    assert "snake_case" in ctx[0]
+
+
+def test_markdown_skill_dict_form(tmp_path):
+    p = tmp_path / "rules.md"
+    p.write_text("# Rules\nBe concise.\n", encoding="utf-8")
+    tools, descs, ctx = load_skill({"path": str(p)})
+    assert tools == {}
+    assert "Be concise" in ctx[0]
+
+
+def test_markdown_skill_merged_by_load_skills(tmp_path):
+    md = tmp_path / "knowledge.md"
+    md.write_text("# Knowledge\nFact: sky is blue.\n", encoding="utf-8")
+    py = _write_skill(tmp_path, "t.py", """
+        TOOL_NAME = "t"
+        def execute(body, **kw): return "ok"
+    """)
+    tools, descs, ctx = load_skills([str(md), py])
+    assert "t" in tools
+    assert len(ctx) == 1
+    assert "sky is blue" in ctx[0]
+
+
+def test_markdown_skill_empty_file_produces_no_context(tmp_path):
+    p = tmp_path / "empty.md"
+    p.write_text("", encoding="utf-8")
+    tools, _, ctx = load_skill(str(p))
+    assert tools == {}
+    assert ctx == []
+
+
+# --------------------------------------------------------------------------- #
+# INJECT_INTO_CONTEXT in Python skill
+# --------------------------------------------------------------------------- #
+
+
+def test_inject_into_context_string(tmp_path):
+    path = _write_skill(tmp_path, "ctx.py", """
+        TOOL_NAME = "ctx_tool"
+        INJECT_INTO_CONTEXT = "## Background\\nImportant fact."
+
+        def execute(body, **kw):
+            return "ok"
+    """)
+    tools, _, ctx = load_skill(path)
+    assert "ctx_tool" in tools
+    assert len(ctx) == 1
+    assert "Important fact" in ctx[0]
+
+
+def test_inject_into_context_empty_string_ignored(tmp_path):
+    path = _write_skill(tmp_path, "noct.py", """
+        TOOL_NAME = "noct"
+        INJECT_INTO_CONTEXT = "   "
+
+        def execute(body, **kw):
+            return "ok"
+    """)
+    _, _, ctx = load_skill(path)
+    assert ctx == []
+
+
+def test_inject_into_context_non_string_ignored(tmp_path):
+    path = _write_skill(tmp_path, "nonstr.py", """
+        TOOL_NAME = "nonstr"
+        INJECT_INTO_CONTEXT = 42  # not a string — should be silently ignored
+
+        def execute(body, **kw):
+            return "ok"
+    """)
+    _, _, ctx = load_skill(path)
+    assert ctx == []
+
+
+# --------------------------------------------------------------------------- #
+# render_system_prompt injection
+# --------------------------------------------------------------------------- #
+
+
+def test_render_system_prompt_includes_injected_context():
+    """Injected context strings appear in the rendered system prompt."""
+    from team.personas import render_system_prompt
+    from team.config import TeamConfig, MemberConfig, WorkflowConfig, Defaults
+    from pathlib import Path
+
+    team = TeamConfig(
+        name="test",
+        goal="Do something.",
+        workspace=Path("/tmp/test-ws"),
+        workflow=WorkflowConfig(),
+        defaults=Defaults(),
+        members=[
+            MemberConfig(name="alpha", role="Worker", model="m", persona="Be helpful.")
+        ],
+    )
+    prompt = render_system_prompt(
+        team,
+        team.members[0],
+        injected_context=["## My Checklist\n- Item 1\n- Item 2"],
+    )
+    assert "My Checklist" in prompt
+    assert "Item 1" in prompt
+
+
+def test_render_system_prompt_no_context_unchanged():
+    """Omitting injected_context keeps the prompt unchanged vs None."""
+    from team.personas import render_system_prompt
+    from team.config import TeamConfig, MemberConfig, WorkflowConfig, Defaults
+    from pathlib import Path
+
+    team = TeamConfig(
+        name="test",
+        goal="Do something.",
+        workspace=Path("/tmp/test-ws"),
+        workflow=WorkflowConfig(),
+        defaults=Defaults(),
+        members=[
+            MemberConfig(name="alpha", role="Worker", model="m", persona="Be helpful.")
+        ],
+    )
+    p_none = render_system_prompt(team, team.members[0], injected_context=None)
+    p_empty = render_system_prompt(team, team.members[0], injected_context=[])
+    assert p_none == p_empty

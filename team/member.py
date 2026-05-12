@@ -128,7 +128,7 @@ class Member:
         member_skill_sources = (
             config.skills if config.skills is not None else team.defaults.skills
         )
-        skill_tools, skill_descs = load_skills(member_skill_sources or [])
+        skill_tools, skill_descs, skill_context = load_skills(member_skill_sources or [])
 
         # Build the complete per-member tool registry (built-ins + skills).
         self._member_tools: dict = {**TOOLS, **skill_tools}
@@ -148,6 +148,7 @@ class Member:
             config,
             enabled_tools=self._enabled_tools,
             tool_descriptions=self._member_tool_descs,
+            injected_context=skill_context or None,
         )
         self._ready = False
 

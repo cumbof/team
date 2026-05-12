@@ -470,7 +470,7 @@ def _make_member(tmp_path: Path, tools: list[str], tool_mode: str = "native"):
 
     with patch("team.member.OllamaClient"), \
          patch("team.member.OpenAICompatClient"), \
-         patch("team.member.load_skills", return_value=({}, {})), \
+         patch("team.member.load_skills", return_value=({}, {}, [])), \
          patch("team.member.render_system_prompt", return_value="system"):
         member = Member(team, cfg, runtime)
     member._ready = True
@@ -564,7 +564,7 @@ def test_native_turn_exhausted_rounds(tmp_path: Path):
     runtime.base_url = "http://localhost:11434"
     with patch("team.member.OllamaClient"), \
          patch("team.member.OpenAICompatClient"), \
-         patch("team.member.load_skills", return_value=({}, {})), \
+         patch("team.member.load_skills", return_value=({}, {}, [])), \
          patch("team.member.render_system_prompt", return_value="system"):
         member = Member(team, cfg, runtime)
     member._ready = True
