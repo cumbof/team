@@ -65,7 +65,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Context window management** | `sliding_window`, `truncate`, or `summarize` strategies keep long runs within token budgets. |
 | **Workspace checkpoints** | Automatic snapshots before every member turn; `team restore` rolls back to any point. |
 | **Run statistics & reports** | Per-member token usage, turn counts, elapsed time — exportable as a Markdown report. |
-| **Interactive wizard** | `team new` walks you through YAML creation; `team visualize` renders the workflow graph. |
+| **Interactive wizard** | `team new` walks you through YAML creation. |
 | **Structured JSON output** | Force a member to reply with valid JSON; optionally validate against a JSON Schema with automatic retry. |
 | **Per-turn timeout** | Hard wall-clock deadline per member turn; raises `TurnTimeoutError` if the LLM doesn't respond in time. |
 | **`team test`** | Define assertions in the YAML and run them automatically after a team workflow to verify outputs in CI. |
@@ -132,7 +132,6 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [Using a persona in YAML](#using-a-persona-in-yaml)
   - [Adding your own personas](#adding-your-own-personas)
 - [Interactive wizard](#interactive-wizard)
-- [Workflow visualization](#workflow-visualization)
 - [Custom Ollama image](#custom-ollama-image)
 - [Streaming output](#streaming-output)
 - [Retry and back-off](#retry-and-back-off)
@@ -736,8 +735,6 @@ team init        [PATH]               Write a starter team YAML.
 team new         [PATH]               Interactive wizard to create a new team YAML.
 team validate    <team.yaml>          Parse and validate the YAML.
 team check       <team.yaml>          Run preflight checks (no Docker started).
-team visualize   <team.yaml>          Print an ASCII or Mermaid diagram of the workflow.
-                 [--format ascii|mermaid]
 team up          <team.yaml>          Start containers, pull models.
                  [--no-gpu] [--host-ollama URL]
 team status      <team.yaml>          Show container status per member.
@@ -2295,36 +2292,6 @@ The output is a fully-formed, validated YAML ready to use with `team run`.
 
 ---
 
-## Workflow visualization
-
-`team visualize` renders an ASCII or Mermaid flowchart of a team's
-workflow.  Useful for documentation, code review, and reasoning about
-large team configs:
-
-```bash
-team visualize my-team.yaml               # ASCII (default)
-team visualize my-team.yaml --format mermaid
-```
-
-ASCII example for a `review_loop` team:
-
-```
-  ┌───────────────────────────────────────────────────┐
-  │         review_loop (max 4 rounds)                │
-  │                                                   │
-  │  @postdoc  ──draft──►  @reviewer                  │
-  │     ▲                       │                     │
-  │     └───── revise ──────────┘                     │
-  │                             │                     │
-  │                         APPROVED ──► [[DONE]]     │
-  └───────────────────────────────────────────────────┘
-```
-
-Mermaid output can be pasted directly into GitHub Markdown or rendered
-with any Mermaid-compatible tool.
-
----
-
 ## Custom Ollama image
 
 `docker/Dockerfile.ollama` is an optional, slightly-augmented image that
@@ -2403,7 +2370,6 @@ team/
 ├── bridge.py        # bridge protocol: BridgeTask, BridgeResult, TaskStore
 ├── bridge_server.py # HTTP bridge server (team serve): accept tasks, run workflows
 ├── bridge_client.py # HTTP bridge client: submit_task, poll_result, wait_for_result
-├── visualize.py     # ASCII and Mermaid diagram renderer
 ├── wizard.py        # interactive `team new` wizard
 └── cli.py           # `team` command (Click + Rich)
 ```

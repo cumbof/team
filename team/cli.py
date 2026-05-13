@@ -166,27 +166,6 @@ def validate(team_file: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# visualize
-# --------------------------------------------------------------------------- #
-
-
-@cli.command()
-@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
-@click.option(
-    "--format", "fmt",
-    type=click.Choice(["ascii", "mermaid"], case_sensitive=False),
-    default="ascii",
-    show_default=True,
-    help="Output format.",
-)
-def visualize(team_file: str, fmt: str) -> None:
-    """Print an ASCII or Mermaid diagram of the team workflow."""
-    from team.visualize import render_diagram
-    cfg = _load(team_file)
-    console.print(render_diagram(cfg, fmt=fmt))
-
-
-# --------------------------------------------------------------------------- #
 # check
 # --------------------------------------------------------------------------- #
 

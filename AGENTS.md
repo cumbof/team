@@ -42,7 +42,6 @@ team/                  # main package
   export.py            # Run statistics and Markdown report export
   replay.py            # Interactive transcript viewer
   wizard.py            # `team new` interactive YAML wizard
-  visualize.py         # `team visualize` workflow graph renderer
 
 personas/              # Ready-made persona YAML files (@pi, @engineer, …)
 skills/                # Built-in skill files (.py tools + .md context injections)

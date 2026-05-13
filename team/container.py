@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import docker
-from docker.errors import APIError, ImageNotFound, NotFound
+from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from docker.models.containers import Container
 from docker.models.networks import Network
 
@@ -114,7 +114,23 @@ class ContainerManager:
 
     def __init__(self, team: TeamConfig, client: docker.DockerClient | None = None):
         self.team = team
-        self.client = client or docker.from_env()
+        if client is not None:
+            self.client: docker.DockerClient | None = client
+        else:
+            try:
+                self.client = docker.from_env()
+            except DockerException:
+                log.debug("Docker daemon is not reachable; container operations will be skipped.")
+                self.client = None
+
+    def _require_docker(self) -> docker.DockerClient:
+        """Return the Docker client, raising a clear error if unavailable."""
+        if self.client is None:
+            raise RuntimeError(
+                "Docker daemon is not running or not reachable. "
+                "Start Docker and try again."
+            )
+        return self.client
 
     def _effective_ollama_url(self, member: MemberConfig) -> str | None:
         """Return the Ollama base URL for a member, checking per-member then defaults."""
@@ -123,12 +139,13 @@ class ContainerManager:
     # --- network -------------------------------------------------------- #
 
     def ensure_network(self) -> Network:
+        client = self._require_docker()
         name = _network_name(self.team.name)
         try:
-            return self.client.networks.get(name)
+            return client.networks.get(name)
         except NotFound:
             log.info("creating network %s", name)
-            return self.client.networks.create(
+            return client.networks.create(
                 name,
                 driver="bridge",
                 labels={CONTAINER_LABEL: self.team.name},
@@ -137,23 +154,27 @@ class ContainerManager:
     # --- image / volume ------------------------------------------------- #
 
     def ensure_image(self, image: str) -> None:
+        client = self._require_docker()
         try:
-            self.client.images.get(image)
+            client.images.get(image)
         except ImageNotFound:
             log.info("pulling image %s", image)
-            self.client.images.pull(image)
+            client.images.pull(image)
 
     def ensure_volume(self, name: str) -> None:
+        client = self._require_docker()
         try:
-            self.client.volumes.get(name)
+            client.volumes.get(name)
         except NotFound:
-            self.client.volumes.create(
+            client.volumes.create(
                 name=name, labels={CONTAINER_LABEL: self.team.name}
             )
 
     # --- per-member container ------------------------------------------ #
 
     def _existing(self, member: MemberConfig) -> Container | None:
+        if self.client is None:
+            return None
         try:
             return self.client.containers.get(_container_name(self.team.name, member.name))
         except NotFound:
@@ -323,6 +344,9 @@ class ContainerManager:
         ):
             log.debug("member %s has no container, skipping teardown", member_name)
             return
+        if self.client is None:
+            log.debug("Docker unavailable; skipping teardown for %s", member_name)
+            return
         name = _container_name(self.team.name, member_name)
         try:
             c = self.client.containers.get(name)
@@ -343,6 +367,8 @@ class ContainerManager:
     def stop_all(self, *, remove_volumes: bool = False) -> None:
         for m in self.team.members:
             self.stop_member(m.name, remove_volume=remove_volumes)
+        if self.client is None:
+            return
         try:
             self.client.networks.get(_network_name(self.team.name)).remove()
         except (NotFound, APIError):
@@ -371,7 +397,7 @@ class ContainerManager:
                     "status": "external",
                 })
                 continue
-            c = self._existing(m)
+            c = self._existing(m)  # returns None when Docker is unavailable
             out.append(
                 {
                     "member": m.name,
