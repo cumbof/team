@@ -109,6 +109,10 @@ class Defaults:
     # models are not evicted between turns).  Accepts any Ollama duration
     # string (e.g. "5m", "1h") or "-1" / "0".
     keep_alive: str = "-1"
+    # unload_on_exit: when True, each member's model is evicted from the
+    # local Ollama server's memory at the end of the run (after the workflow
+    # completes).  Has no effect for Docker-managed or openai_compat members.
+    unload_on_exit: bool = False
 
 
 @dataclass
@@ -166,6 +170,8 @@ class MemberConfig:
     # keep_alive: per-member override for Ollama model retention (e.g. "5m", "-1").
     # None = inherit from defaults.keep_alive.
     keep_alive: str | None = None
+    # unload_on_exit: per-member override; None = inherit from defaults.
+    unload_on_exit: bool | None = None
     # Retry settings — override defaults.max_retries / defaults.retry_backoff per member
     max_retries: int | None = None      # None = inherit from defaults
     retry_backoff: float | None = None  # None = inherit from defaults
@@ -436,6 +442,7 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         max_retries=data.get("max_retries"),
         retry_backoff=data.get("retry_backoff"),
         keep_alive=data.get("keep_alive"),
+        unload_on_exit=data.get("unload_on_exit"),
         routes=_parse_routes(data.get("routes", []), ctx),
     )
 

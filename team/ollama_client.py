@@ -181,6 +181,28 @@ class OllamaClient:
         if model not in self.list_models():
             raise OllamaError(f"failed to pull model {model!r}")
 
+    def unload_model(self, model: str) -> None:
+        """Evict *model* from Ollama's memory immediately.
+
+        Ollama keeps a loaded model resident between requests until the
+        ``keep_alive`` duration expires (the team default is ``"-1"``, meaning
+        forever).  Call this after a run to reclaim GPU/RAM without waiting
+        for the timeout or restarting the Ollama daemon.
+
+        Implements the Ollama-documented pattern of sending a
+        ``/api/generate`` request with ``keep_alive: 0`` and no prompt.
+        """
+        try:
+            r = self._session.post(
+                self._url("/api/generate"),
+                json={"model": model, "keep_alive": 0},
+                timeout=10,
+            )
+            r.raise_for_status()
+            log.info("unloaded model %s from Ollama at %s", model, self.base_url)
+        except requests.RequestException as exc:
+            raise OllamaError(f"failed to unload model {model!r}: {exc}") from exc
+
     # ----- chat --------------------------------------------------------- #
 
     def chat(

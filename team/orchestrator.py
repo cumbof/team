@@ -119,6 +119,26 @@ class Orchestrator:
         )
 
     def down(self, *, remove_volumes: bool = False) -> None:
+        # For local-Ollama members (no Docker container), optionally evict the
+        # loaded model from memory so it doesn't linger after the run.
+        for member in self.members.values():
+            should_unload = resolve_member_setting(
+                member.config, self.team.defaults, "unload_on_exit"
+            )
+            if not should_unload:
+                continue
+            # Only applies to local Ollama — Docker containers are torn down
+            # below anyway, and openai_compat has no model to evict.
+            from team.ollama_client import OllamaClient  # avoid circular at module level
+            if member.runtime.container is not None or not isinstance(member.client, OllamaClient):
+                continue
+            try:
+                member.client.unload_model(member.config.model)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "could not unload model %s for @%s: %s",
+                    member.config.model, member.name, exc,
+                )
         self.containers.stop_all(remove_volumes=remove_volumes)
 
     # ------------------------------------------------------------------ #
