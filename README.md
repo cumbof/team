@@ -92,19 +92,55 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [`workflow`](#workflow)
   - [`members`](#members)
 - [The collaboration protocol](#the-collaboration-protocol)
+- [Predefined persona library](#predefined-persona-library)
+  - [How personas are stored](#how-personas-are-stored)
+  - [Available personas](#available-personas)
+  - [Using a persona in YAML](#using-a-persona-in-yaml)
+  - [Adding your own personas](#adding-your-own-personas)
 - [Workflows](#workflows)
 - [Workspaces and artifacts](#workspaces-and-artifacts)
 - [Containers, isolation, and root](#containers-isolation-and-root)
 - [GPU support](#gpu-support)
-- [CLI reference](#cli-reference)
+  - [Apple Silicon / no-Docker Ollama](#apple-silicon--no-docker-ollama)
 - [OpenAI-compatible backends](#openai-compatible-backends)
 - [Remote / no-Docker Ollama](#remote--no-docker-ollama)
+- [Custom Ollama image](#custom-ollama-image)
 - [Context window management](#context-window-management)
+- [Model retention (`keep_alive`)](#model-retention-keep_alive)
+- [CLI reference](#cli-reference)
+- [Interactive wizard](#interactive-wizard)
+- [Pre-flight checks](#pre-flight-checks)
+- [Streaming output](#streaming-output)
+- [Per-turn timeout](#per-turn-timeout)
+- [LLM retry with backoff](#llm-retry-with-backoff)
+- [Resuming an interrupted run](#resuming-an-interrupted-run)
+- [Human-in-the-loop intervention](#human-in-the-loop-intervention)
 - [Agent mode and tool use](#agent-mode-and-tool-use)
-  - [Built-in tools](#built-in-tools)
+  - [Available built-in tools](#available-built-in-tools)
   - [Custom skill plugins](#custom-skill-plugins)
+- [Shared institutional context](#shared-institutional-context)
+- [Decision log](#decision-log)
+- [Structured JSON output](#structured-json-output)
+- [Conditional routing](#conditional-routing)
+- [Token budget](#token-budget)
+- [Per-agent persistent memory](#per-agent-persistent-memory)
+  - [Enabling memory](#enabling-memory)
+  - [Memory tools](#memory-tools)
+  - [Memory config reference](#memory-config-reference)
+- [Shared team belief board](#shared-team-belief-board)
+  - [Enabling the belief board](#enabling-the-belief-board)
+  - [Belief tools](#belief-tools)
+  - [Inspecting beliefs with team beliefs](#inspecting-beliefs-with-team-beliefs)
+  - [Belief config reference](#belief-config-reference)
+- [Workspace checkpoints](#workspace-checkpoints)
+- [Workspace time-travel (`team rollback`)](#workspace-time-travel-team-rollback)
 - [Token usage tracking](#token-usage-tracking)
+- [Cost estimation](#cost-estimation)
 - [Run statistics](#run-statistics)
+- [Exporting a run report](#exporting-a-run-report)
+- [`team replay` — interactive transcript browser](#team-replay--interactive-transcript-browser)
+- [Automated testing with `team test`](#automated-testing-with-team-test)
+- [Multi-team pipelines](#multi-team-pipelines)
 - [Cross-team collaboration (bridge)](#cross-team-collaboration-bridge)
   - [How it works](#how-it-works-1)
   - [Exposing a team as a bridge server](#exposing-a-team-as-a-bridge-server)
@@ -116,32 +152,6 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [Bridge config reference](#bridge-config-reference)
   - [Security — HMAC-SHA256 shared secret](#security--hmac-sha256-shared-secret)
   - [Additional security considerations](#additional-security-considerations)
-- [Per-agent persistent memory](#per-agent-persistent-memory)
-  - [Enabling memory](#enabling-memory)
-  - [Memory tools](#memory-tools)
-  - [Memory config reference](#memory-config-reference)
-- [Shared team belief board](#shared-team-belief-board)
-  - [Enabling the belief board](#enabling-the-belief-board)
-  - [Belief tools](#belief-tools)
-  - [Inspecting beliefs with team beliefs](#inspecting-beliefs-with-team-beliefs)
-  - [Belief config reference](#belief-config-reference)
-- [Workspace time-travel (`team rollback`)](#workspace-time-travel-team-rollback)
-- [Predefined persona library](#predefined-persona-library)
-  - [How personas are stored](#how-personas-are-stored)
-  - [Available personas](#available-personas)
-  - [Using a persona in YAML](#using-a-persona-in-yaml)
-  - [Adding your own personas](#adding-your-own-personas)
-- [Interactive wizard](#interactive-wizard)
-- [Custom Ollama image](#custom-ollama-image)
-- [Streaming output](#streaming-output)
-- [Retry and back-off](#retry-and-back-off)
-- [Model retention (`keep_alive`)](#model-retention-keep_alive)
-- [Pre-flight checks](#pre-flight-checks)
-- [Exporting a run report](#exporting-a-run-report)
-- [Resuming an interrupted run](#resuming-an-interrupted-run)
-- [Workspace checkpoints](#workspace-checkpoints)
-- [Human-in-the-loop intervention](#human-in-the-loop-intervention)
-- [Multi-team pipelines](#multi-team-pipelines)
 - [Examples](#examples)
 - [Architecture overview](#architecture-overview)
 - [Development](#development)
@@ -168,6 +178,7 @@ converge.  `team` makes it easy to assemble such a group locally:
   own in a few lines of Python.
 
 ---
+
 
 ## How it works
 
@@ -210,6 +221,7 @@ for control tokens (`[[TEAM_DONE]]`, `NEXT: @<member>`, `APPROVED`, …).
 
 ---
 
+
 ## Requirements
 
 * **Linux** host (tested) — macOS works if Docker Desktop has enough
@@ -222,6 +234,7 @@ for control tokens (`[[TEAM_DONE]]`, `NEXT: @<member>`, `APPROVED`, …).
   small but model weights aren't.
 
 ---
+
 
 ## Installation
 
@@ -256,6 +269,7 @@ pytest -q
 ```
 
 ---
+
 
 ## Quick start
 
@@ -294,6 +308,7 @@ pytest -q
    ```
 
 ---
+
 
 ## Defining a team
 
@@ -420,6 +435,7 @@ workflow:
 
 ---
 
+
 ## The collaboration protocol
 
 Every member receives a system prompt that includes a small,
@@ -451,6 +467,156 @@ deterministic protocol so the orchestrator can parse replies reliably:
   when the deliverable is ready.
 
 ---
+
+
+## Predefined persona library
+
+Writing a good persona from scratch takes time.  `team` ships with
+**16 ready-made personas** spanning academic research, software engineering,
+and general-purpose roles.  Each persona lives in its own YAML file under
+`personas/` at the root of this repository — making them easy to read,
+edit, and contribute back to the project.
+
+### How personas are stored
+
+```
+personas/
+├── pi.yaml            # Principal Investigator
+├── postdoc.yaml       # Postdoctoral Researcher
+├── phd.yaml           # PhD Student
+├── reviewer.yaml      # Critical Reviewer
+├── statistician.yaml  # Statistician
+├── bioinformatician.yaml
+├── ml_researcher.yaml
+├── architect.yaml
+├── engineer.yaml
+├── qa.yaml
+├── devops.yaml
+├── tech_writer.yaml
+├── analyst.yaml
+├── writer.yaml
+├── manager.yaml
+└── ethicist.yaml
+```
+
+Each file follows the same simple format:
+
+```yaml
+role: Principal Investigator
+description: Lab director — sets research direction, evaluates results, writes grants.
+persona: |
+  You are a tenured Principal Investigator at a research university.
+  Your role is to set and guard the scientific direction of the project.
+  ...
+```
+
+The filename stem (e.g. `pi` from `pi.yaml`) becomes the `@`-key used in team
+YAML files.
+
+### Available personas
+
+| Key | Role | Description |
+| --- | --- | --- |
+| `@pi` | Principal Investigator | Lab director — sets research direction, evaluates results, writes grants. |
+| `@postdoc` | Postdoctoral Researcher | Senior researcher — deep expertise, drives experiments and analysis. |
+| `@phd` | PhD Student | Junior researcher — literature review, baseline experiments, drafting. |
+| `@reviewer` | Critical Reviewer | Peer-review skeptic — challenges assumptions, finds weaknesses. |
+| `@statistician` | Statistician | Statistical methodologist — study design, power, inference correctness. |
+| `@bioinformatician` | Bioinformatician | Omics data specialist — pipelines, databases, variant/sequence analysis. |
+| `@ml_researcher` | Machine Learning Researcher | ML specialist — model design, training, evaluation, ablations. |
+| `@architect` | Software Architect | System designer — API contracts, scalability, tech decisions. |
+| `@engineer` | Software Engineer | Implementer — writes production-quality code, debugs, reviews PRs. |
+| `@qa` | QA Engineer | Quality assurance — test strategy, edge cases, regression detection. |
+| `@devops` | DevOps / SRE | Infrastructure and reliability — CI/CD, monitoring, deployment. |
+| `@tech_writer` | Technical Writer | Documentation specialist — clarity, structure, audience-appropriate prose. |
+| `@analyst` | Data Analyst | Data explorer — EDA, visualisation, dashboards, business insights. |
+| `@writer` | Science Writer | Communicator — translates technical findings into compelling narratives. |
+| `@manager` | Project Manager | Coordinator — milestones, blockers, stakeholder communication. |
+| `@ethicist` | AI / Research Ethicist | Ethics and compliance — bias, fairness, privacy, responsible use. |
+
+Browse the library from the terminal:
+
+```bash
+team personas              # list all personas with key, role, description
+team personas pi           # print the full persona text for @pi
+team personas engineer     # print the full persona text for @engineer
+```
+
+### Using a persona in YAML
+
+Set `persona` to `@<key>` instead of writing a persona block:
+
+```yaml
+members:
+  - name: alice
+    model: llama3.1:70b
+    persona: "@pi"              # role is set to "Principal Investigator" automatically
+  - name: bob
+    model: llama3.1:8b
+    persona: "@phd"             # role is "PhD Student"
+  - name: carol
+    model: qwen2.5:7b
+    persona: "@reviewer"        # role is "Critical Reviewer"
+```
+
+You can override the default role while keeping the library persona text:
+
+```yaml
+  - name: alice
+    model: llama3.1:70b
+    persona: "@pi"
+    role: "Lab Director"        # custom title; persona text stays the same
+```
+
+You can also mix library personas with fully custom ones in the same team:
+
+```yaml
+members:
+  - name: alice
+    model: llama3.1:70b
+    persona: "@pi"
+  - name: custom
+    role: Domain Expert
+    model: llama3.1:8b
+    persona: |
+      You are a specialist in protein crystallography with 20 years of
+      experimental experience. You validate all structural claims against
+      PDB data.
+```
+
+### Adding your own personas
+
+**Option 1 — contribute to the built-in library** (share with everyone):
+
+Drop a `.yaml` file into the `personas/` directory at the repo root and submit
+a pull request.  The file name becomes the `@`-key.
+
+**Option 2 — project-local personas** (private to your setup):
+
+Point `TEAM_PERSONA_DIR` at any directory; files there are loaded *in addition
+to* the built-in library and take precedence over built-in keys with the same
+name:
+
+```bash
+export TEAM_PERSONA_DIR=~/.team/personas
+```
+
+Then add files like `~/.team/personas/clinician.yaml`:
+
+```yaml
+role: Clinical Research Collaborator
+description: Translates findings into clinical context and regulatory language.
+persona: |
+  You are a physician-scientist with expertise in clinical trial design.
+  You translate pre-clinical findings into clinical hypotheses, identify
+  regulatory hurdles (FDA, EMA) early, and ensure the team's outputs are
+  framed for a clinical audience.
+```
+
+Any team YAML can now use `persona: "@clinician"` once the env var is set.
+
+---
+
 
 ## Workflows
 
@@ -601,6 +767,7 @@ parallel window.
 
 ---
 
+
 ## Workspaces and artifacts
 
 For team `<name>` with `workspace: ./runs/<name>` you get:
@@ -635,6 +802,7 @@ runs/<name>/
 
 ---
 
+
 ## Containers, isolation, and root
 
 Each member runs in **its own container** with the following properties:
@@ -655,6 +823,7 @@ device access by default; root is confined to the container's mount and
 PID namespaces.  You can pass GPUs explicitly via `gpus` (see below).
 
 ---
+
 
 ## GPU support
 
@@ -728,6 +897,158 @@ Per-member `ollama_url` overrides the default for individual members.
 
 ---
 
+
+## OpenAI-compatible backends
+
+By default every member runs Ollama in a Docker container.  You can instead
+point any member at any **OpenAI-compatible API** — LM Studio, vLLM, llama.cpp
+server, the real OpenAI API, Anthropic (via a LiteLLM proxy), etc. — without
+Docker.
+
+```yaml
+defaults:
+  backend: openai_compat
+  api_base: http://localhost:1234/v1   # LM Studio
+  api_key: env:OPENAI_API_KEY          # or a literal key
+
+members:
+  - name: lead
+    role: Tech Lead
+    model: gpt-4o                      # model name sent to the API
+    persona: ...
+  - name: worker
+    role: Engineer
+    model: llama-3.1-8b-instruct
+    backend: ollama                    # this member still uses Docker
+    persona: ...
+```
+
+The `backend` and `api_base` fields can be set globally in `defaults` or
+overridden per-member.
+
+| field | meaning |
+| --- | --- |
+| `backend` | `"ollama"` (default) or `"openai_compat"` |
+| `api_base` | Base URL of the OpenAI-compat API (e.g. `https://api.openai.com/v1`) |
+| `api_key` | API key; use `"env:VAR"` to read from environment at runtime |
+
+When `backend: openai_compat` is set, no Docker container is started for
+that member — the orchestrator calls the remote API directly.  The `model`
+field is passed as-is to the API.
+
+---
+
+
+## Remote / no-Docker Ollama
+
+If you already have an Ollama server running (locally or on a remote
+machine), you can skip Docker for individual members by setting `ollama_url`:
+
+```yaml
+members:
+  - name: researcher
+    role: Researcher
+    model: llama3.1:70b
+    ollama_url: http://192.168.1.10:11434  # existing Ollama instance
+    persona: ...
+```
+
+To route **all** members to the same Ollama instance, set it in `defaults`
+or pass `--host-ollama` on the command line (see
+[Apple Silicon / no-Docker](#apple-silicon--no-docker-ollama)):
+
+```yaml
+defaults:
+  ollama_url: http://localhost:11434
+```
+
+No container is started for any member that has an effective `ollama_url`
+(per-member or from `defaults`); the orchestrator connects directly to the
+given URL.  The model must already be pulled on that server (or Ollama's
+automatic pull will fetch it on first use).
+
+---
+
+
+## Custom Ollama image
+
+`docker/Dockerfile.ollama` is an optional, slightly-augmented image that
+adds `python3`, `git`, `jq`, `curl`, and friends on top of
+`ollama/ollama:latest` for members that want richer in-container
+tooling.  Build it once and reference it from any team:
+
+```bash
+docker build -f docker/Dockerfile.ollama -t team/ollama:latest docker/
+```
+
+```yaml
+defaults:
+  ollama_image: team/ollama:latest
+```
+
+The default `ollama/ollama:latest` is fine for most uses.
+
+---
+
+
+## Context window management
+
+By default the orchestrator passes the full transcript to every member
+every turn.  For long-running teams this can exceed a model's context
+window, causing silent truncation or errors.  Configure a strategy to
+keep the context manageable:
+
+```yaml
+defaults:
+  context_strategy: sliding_window   # none | sliding_window | truncate | summarize
+  context_budget: 20                 # max turns (sliding_window) or ~token budget (truncate/summarize)
+```
+
+| strategy | behaviour |
+| --- | --- |
+| `none` (default) | Full transcript always sent. |
+| `sliding_window` | Only the last `context_budget` turns are sent. |
+| `truncate` | Oldest turns are dropped until the estimated token count fits within `context_budget`. A note is prepended explaining that earlier turns were omitted. |
+| `summarize` | Same as `truncate` (future: will use a lightweight model to summarise omitted turns). |
+
+Override per member:
+
+```yaml
+members:
+  - name: reviewer
+    context_strategy: sliding_window
+    context_budget: 10    # this member sees only the last 10 turns
+```
+
+---
+
+
+## Model retention (`keep_alive`)
+
+By default, `team` sets Ollama's `keep_alive` to `"-1"` on every chat request, which tells Ollama to keep the model loaded in RAM indefinitely.  Without this, Ollama's built-in default evicts a model after 5 minutes of inactivity — a problem for large models (tens of gigabytes) that must repeatedly load and unload between turns.
+
+```yaml
+defaults:
+  keep_alive: "-1"   # keep every model loaded for the duration of the run (default)
+
+members:
+  - name: summarizer
+    model: llama3.2:3b
+    keep_alive: "5m"   # lightweight model — OK to evict after 5 minutes of idle
+    ...
+```
+
+| Value | Behaviour |
+| --- | --- |
+| `"-1"` | Keep the model loaded until Ollama stops or another model claim evicts it. **Recommended for team runs.** |
+| `"5m"`, `"1h"`, … | Evict after the given idle period (Ollama duration string). |
+| `"0"` | Unload immediately after each request (maximises GPU headroom at the cost of reload latency). |
+
+`keep_alive` is an Ollama-only parameter.  When the `openai_compat` backend is used it is silently ignored.
+
+---
+
+
 ## CLI reference
 
 ```text
@@ -761,46 +1082,27 @@ Common flags:
 
 ---
 
-## Streaming output
 
-By default `team run` streams each member's reply **token-by-token** to the
-terminal as it is generated.  You see a header like `@alice (Lead)` followed
-by the reply appearing live — no waiting for the full response.
+## Interactive wizard
 
-To disable streaming (e.g. for CI or when redirecting output to a file):
+`team new` launches a guided wizard that asks you a series of questions
+and writes a validated YAML:
 
 ```bash
-team run my-team.yaml --no-stream
+team new my-team.yaml
 ```
 
-With `--no-stream` the full reply is printed at once after each turn
-completes.
+The wizard prompts for:
+
+* Team name and goal
+* Number of members, and for each: name, role, model, persona
+* Workflow type and max rounds
+* Workspace path
+
+The output is a fully-formed, validated YAML ready to use with `team run`.
 
 ---
 
-## Retry and back-off
-
-When an Ollama request fails due to a transient network problem or a 5xx
-server error, `team` retries automatically with exponential back-off before
-giving up.  Configure it in `defaults`:
-
-```yaml
-defaults:
-  max_retries: 3        # total extra attempts after the first (default: 3)
-  retry_backoff: 2.0    # wait = backoff ** attempt → 1 s, 2 s, 4 s … (default: 2.0)
-```
-
-| Condition | Retried? |
-|---|---|
-| `requests.ConnectionError` / `Timeout` | ✓ yes |
-| HTTP 5xx (server error) | ✓ yes |
-| HTTP 4xx (client error, bad model name, …) | ✗ no — fails immediately |
-| Empty response body | ✗ no — fails immediately |
-
-For streaming turns, retries only happen if no tokens have been yielded yet
-(a partial stream cannot be safely replayed).
-
----
 
 ## Pre-flight checks
 
@@ -825,36 +1127,87 @@ check fails.  Failures are shown with a red ✗ and warnings with a yellow ⚠.
 
 ---
 
-## Exporting a run report
 
-After a run you can bundle the full transcript and every produced artifact
-into a single shareable document:
+## Streaming output
+
+By default `team run` streams each member's reply **token-by-token** to the
+terminal as it is generated.  You see a header like `@alice (Lead)` followed
+by the reply appearing live — no waiting for the full response.
+
+To disable streaming (e.g. for CI or when redirecting output to a file):
 
 ```bash
-team export my-team.yaml                          # Markdown (default)
-team export my-team.yaml --format html            # self-contained HTML (dark-mode aware)
-team export my-team.yaml --format json            # machine-readable JSON
-team export my-team.yaml --output ~/Desktop/run.md
-team export my-team.yaml --no-artifacts           # omit workspace files (faster, smaller)
+team run my-team.yaml --no-stream
 ```
 
-The report includes:
-* Team name, goal, members, and workflow settings.
-* Every member turn with speaker, role, content, and files written.
-* **Token usage & estimated cost table** — per member and totals.
-* Full contents of all files produced in the shared workspace (omit with `--no-artifacts`).
-
-Output path defaults to `<workspace>/report.md` / `.html` / `.json`.
-
-**Format details:**
-
-| Format | Description |
-| --- | --- |
-| `markdown` | Single `.md` file with transcript, token table, and fenced artifact blocks. |
-| `html` | Self-contained `.html` — embedded CSS, no external deps, respects `prefers-color-scheme: dark`. |
-| `json` | Structured JSON (`format_version: 1`) with `team`, `stats`, `token_usage`, `turns`, and `artifacts` keys — suitable for post-processing. |
+With `--no-stream` the full reply is printed at once after each turn
+completes.
 
 ---
+
+
+## Per-turn timeout
+
+Set a hard wall-clock deadline (seconds) on how long any single member turn
+may take.  If the LLM doesn't finish within the limit, a `TurnTimeoutError`
+is raised and the workflow stops.
+
+```yaml
+defaults:
+  turn_timeout: 120     # 2 minutes for every member by default
+
+members:
+  - name: fast_reviewer
+    role: Reviewer
+    model: qwen2.5:3b
+    persona: You review code quickly.
+    turn_timeout: 30    # override — this member gets only 30 s
+```
+
+Set `turn_timeout: 0` (or leave it absent) to disable timeouts entirely.
+
+**Implementation details**
+
+The member's `take_turn()` is executed in a `ThreadPoolExecutor` thread and
+`future.result(timeout=…)` enforces the deadline.  If the timeout fires the
+thread is abandoned (it will eventually finish and be garbage-collected), but
+the calling workflow raises `TurnTimeoutError` immediately.
+
+---
+
+
+## LLM retry with backoff
+
+`team` automatically retries LLM calls that fail due to transient infrastructure errors — connection refused, timeouts, and HTTP 5xx responses from the server — using **exponential backoff**.
+
+```yaml
+defaults:
+  max_retries: 3       # attempts per call (default: 3; 0 = no retries)
+  retry_backoff: 2.0   # backoff base in seconds (wait = backoff ** attempt)
+
+members:
+  - name: alice
+    max_retries: 5     # per-member override
+    retry_backoff: 1.5
+```
+
+### How it works
+
+| Scenario | Behaviour |
+| --- | --- |
+| Connection refused / timeout | Retried up to `max_retries` times. |
+| HTTP 5xx (server error) | Retried — the server never processed the request. |
+| HTTP 4xx (client error) | **Not retried** — a bad model name or malformed request won't self-heal. |
+| Partial streaming response | **Not retried** — the caller already received tokens; replaying would produce duplicates. |
+
+The wait between attempts is `retry_backoff ** attempt` seconds (attempt 0 → 1 s, attempt 1 → 2 s, attempt 2 → 4 s for the default `retry_backoff=2.0`).
+
+### When all retries are exhausted
+
+`LLMRetryExhaustedError` (a subclass of `OllamaError`) is raised.  The CLI catches it and prints a red error panel instead of crashing, preserving any transcript written so far.
+
+---
+
 
 ## Resuming an interrupted run
 
@@ -880,65 +1233,6 @@ live from the first missing turn.
 
 ---
 
-## Workspace checkpoints
-
-Every time a live member turn is about to execute, the orchestrator
-automatically snapshots the current state of the **shared workspace** before
-any files are written.  Snapshots are stored under
-`<workspace>/checkpoints/` with names that encode the turn index, the
-member about to speak, and the timestamp:
-
-```
-checkpoints/
-├── 0001_alice_20240501T120000/   # state before alice's 1st turn
-├── 0003_bob_20240501T120145/     # state before bob's 2nd turn
-└── ...
-```
-
-If the shared workspace is empty (no files have been produced yet), the
-snapshot is silently skipped — there is nothing to back up.
-
-### Listing checkpoints
-
-```bash
-team checkpoints my-team.yaml
-```
-
-```
-┌──────────────────────────────┬──────┬──────────────────────┬─────────────────────┬───────┐
-│ ID                           │ Turn │ Before member's turn │ Timestamp           │ Files │
-├──────────────────────────────┼──────┼──────────────────────┼─────────────────────┼───────┤
-│ 0001_alice_20240501T120000   │    1 │ @alice               │ 2024-05-01 12:00:00 │     3 │
-│ 0003_bob_20240501T120145     │    3 │ @bob                 │ 2024-05-01 12:01:45 │     5 │
-└──────────────────────────────┴──────┴──────────────────────┴─────────────────────┴───────┘
-```
-
-### Restoring a checkpoint
-
-Copy the checkpoint ID from the table and pass it to `team restore`:
-
-```bash
-team restore my-team.yaml 0001_alice_20240501T120000
-```
-
-```
-restored checkpoint 0001_alice_20240501T120000 — 3 file(s) now in the shared workspace.
-```
-
-The current contents of `shared/` are replaced with the snapshot.
-**This cannot be undone** unless a later checkpoint already captured the
-state you are overwriting, so check `team checkpoints` before restoring.
-
-### Use cases
-
-* **Undo a bad turn** — a member produced unwanted file changes; restore the
-  checkpoint taken just before that turn.
-* **Branch from a known-good state** — restore an earlier checkpoint, edit
-  `team.yaml` (e.g. change the goal or persona), and re-run from there.
-* **Audit the evolution of the workspace** — inspect any checkpoint
-  directory directly; it is a plain copy of `shared/` at that point in time.
-
----
 
 ## Human-in-the-loop intervention
 
@@ -993,106 +1287,6 @@ any other speaker's turn.
 
 ---
 
-## OpenAI-compatible backends
-
-By default every member runs Ollama in a Docker container.  You can instead
-point any member at any **OpenAI-compatible API** — LM Studio, vLLM, llama.cpp
-server, the real OpenAI API, Anthropic (via a LiteLLM proxy), etc. — without
-Docker.
-
-```yaml
-defaults:
-  backend: openai_compat
-  api_base: http://localhost:1234/v1   # LM Studio
-  api_key: env:OPENAI_API_KEY          # or a literal key
-
-members:
-  - name: lead
-    role: Tech Lead
-    model: gpt-4o                      # model name sent to the API
-    persona: ...
-  - name: worker
-    role: Engineer
-    model: llama-3.1-8b-instruct
-    backend: ollama                    # this member still uses Docker
-    persona: ...
-```
-
-The `backend` and `api_base` fields can be set globally in `defaults` or
-overridden per-member.
-
-| field | meaning |
-| --- | --- |
-| `backend` | `"ollama"` (default) or `"openai_compat"` |
-| `api_base` | Base URL of the OpenAI-compat API (e.g. `https://api.openai.com/v1`) |
-| `api_key` | API key; use `"env:VAR"` to read from environment at runtime |
-
-When `backend: openai_compat` is set, no Docker container is started for
-that member — the orchestrator calls the remote API directly.  The `model`
-field is passed as-is to the API.
-
----
-
-## Remote / no-Docker Ollama
-
-If you already have an Ollama server running (locally or on a remote
-machine), you can skip Docker for individual members by setting `ollama_url`:
-
-```yaml
-members:
-  - name: researcher
-    role: Researcher
-    model: llama3.1:70b
-    ollama_url: http://192.168.1.10:11434  # existing Ollama instance
-    persona: ...
-```
-
-To route **all** members to the same Ollama instance, set it in `defaults`
-or pass `--host-ollama` on the command line (see
-[Apple Silicon / no-Docker](#apple-silicon--no-docker-ollama)):
-
-```yaml
-defaults:
-  ollama_url: http://localhost:11434
-```
-
-No container is started for any member that has an effective `ollama_url`
-(per-member or from `defaults`); the orchestrator connects directly to the
-given URL.  The model must already be pulled on that server (or Ollama's
-automatic pull will fetch it on first use).
-
----
-
-## Context window management
-
-By default the orchestrator passes the full transcript to every member
-every turn.  For long-running teams this can exceed a model's context
-window, causing silent truncation or errors.  Configure a strategy to
-keep the context manageable:
-
-```yaml
-defaults:
-  context_strategy: sliding_window   # none | sliding_window | truncate | summarize
-  context_budget: 20                 # max turns (sliding_window) or ~token budget (truncate/summarize)
-```
-
-| strategy | behaviour |
-| --- | --- |
-| `none` (default) | Full transcript always sent. |
-| `sliding_window` | Only the last `context_budget` turns are sent. |
-| `truncate` | Oldest turns are dropped until the estimated token count fits within `context_budget`. A note is prepended explaining that earlier turns were omitted. |
-| `summarize` | Same as `truncate` (future: will use a lightweight model to summarise omitted turns). |
-
-Override per member:
-
-```yaml
-members:
-  - name: reviewer
-    context_strategy: sliding_window
-    context_budget: 10    # this member sees only the last 10 turns
-```
-
----
 
 ## Agent mode and tool use
 
@@ -1482,74 +1676,6 @@ defaults:
   tools: [task_add, task_done, task_list, search_transcript]
 ```
 
-
-
-After every `team run` a token usage summary is printed:
-
-```text
-┌────────────────────────────────────────────────────┐
-│              Token usage (live turns)              │
-├──────────┬─────────┬───────────┬───────────────────┤
-│ member   │  prompt │ completion│  total            │
-├──────────┼─────────┼───────────┼───────────────────┤
-│ @lead    │  12 450 │     3 210 │  15 660           │
-│ @worker  │   8 120 │     5 890 │  14 010           │
-├──────────┼─────────┼───────────┼───────────────────┤
-│ total    │  20 570 │     9 100 │  29 670           │
-└──────────┴─────────┴───────────┴───────────────────┘
-```
-
-Token counts come from the Ollama `/api/chat` `eval_count` /
-`prompt_eval_count` fields (for the `ollama` backend) or the OpenAI
-`usage` object (for `openai_compat`).  The summary is omitted when all
-counts are zero (e.g. pure replay runs or backends that don't report
-token usage).
-
----
-
-## Run statistics
-
-`team stats` shows a detailed breakdown of a completed run — turn counts,
-token usage per speaker, total duration, and files written — without
-needing to start any containers:
-
-```bash
-team stats my-team.yaml
-```
-
-Example output:
-
-```text
-Team: my-team  18 turns · 29 670 tokens · duration 142.3s · 5 file(s) written
-
-┌─────────────────────────────────────────────────────────────────────┐
-│               Turns & token usage by speaker                        │
-├──────────────┬───────┬───────────────┬──────────────────┬───────────┤
-│ Speaker      │ Turns │ Prompt tokens │ Completion tokens│    Total  │
-├──────────────┼───────┼───────────────┼──────────────────┼───────────┤
-│ @lead        │     5 │        12 450 │            3 210 │    15 660 │
-│ @orchestrator│     1 │             0 │                0 │         0 │
-│ @worker      │    12 │         8 120 │            5 890 │    14 010 │
-├──────────────┼───────┼───────────────┼──────────────────┼───────────┤
-│ total        │    18 │        20 570 │            9 100 │    29 670 │
-└──────────────┴───────┴───────────────┴──────────────────┴───────────┘
-```
-
-The `Transcript.stats()` method in `team/bus.py` is also part of the
-public Python API:
-
-```python
-from team.bus import Transcript
-from team.config import load_team
-
-cfg = load_team("my-team.yaml")
-t = Transcript(persist_path=cfg.workspace / "transcript.jsonl", resume=True)
-s = t.stats()
-print(s["total_turns"], s["duration_seconds"])
-```
-
----
-
 ## Shared institutional context
 
 When a workspace contains a `context.md` file at its root, `team` injects its
@@ -1585,6 +1711,7 @@ If the file is absent, the section is silently omitted.
 The content is truncated at 8 192 characters if the file is very large.
 
 ---
+
 
 ## Decision log
 
@@ -1635,6 +1762,768 @@ Returns the full `decisions.md` content so members can consult previous
 decisions when facing related choices.
 
 ---
+
+
+## Structured JSON output
+
+By default members reply in free-form text.  When you need machine-readable
+output — e.g. an extractor member whose results are consumed by downstream
+code — set `output_format: json` on that member.
+
+```yaml
+members:
+  - name: extractor
+    role: Data extractor
+    model: llama3.1:8b
+    persona: You extract structured data from documents.
+    output_format: json
+    output_schema:                     # optional — validates the reply
+      type: object
+      required: [entities, summary]
+      properties:
+        entities:
+          type: array
+          items: {type: string}
+        summary:
+          type: string
+```
+
+**What happens**
+
+1. The system prompt gains an `## Output format` section instructing the model
+   to reply with valid JSON only.
+2. After the LLM replies, `team` calls `json.loads()` on the content.
+3. If parsing fails (or schema validation fails when `output_schema` is set),
+   the orchestrator sends a correction prompt and retries up to **3 times**.
+4. The parsed object is stored in `TurnResult.json_output` and is accessible
+   from custom workflows or post-run code.
+5. Schema validation requires `pip install jsonschema`; without it the schema
+   check is skipped silently.
+
+> **Note:** `output_format` is per-member only — it is not available as a
+> team-wide `defaults` key.
+
+---
+
+
+## Conditional routing
+
+Enable dynamic, branching conversations where each member's output determines who speaks next — building state-machine-like workflows without any code.
+
+```yaml
+workflow:
+  type: conditional
+  start: writer       # optional; defaults to the first listed member
+  max_rounds: 20
+
+members:
+  - name: writer
+    model: llama3
+    persona: You are a technical writer.
+    role: Writer
+    routes:
+      - if_contains: "NEEDS_REVISION"
+        next: editor
+      - if_match: "APPROVED|LGTM"
+        next: publisher
+      - default: reviewer    # fallback when nothing else matches
+
+  - name: editor
+    model: llama3
+    persona: You are an editor.
+    role: Editor
+    routes:
+      - if_contains: "DONE"
+        next: publisher
+      - default: writer      # loop back for another draft
+
+  - name: reviewer
+    model: llama3
+    persona: You are a reviewer.
+    role: Reviewer
+    routes:
+      - default: writer
+
+  - name: publisher          # terminal node — no routes needed
+    model: llama3
+    persona: You are a publisher.
+    role: Publisher
+```
+
+### Route rules
+
+Rules are evaluated **top-to-bottom**; the first match wins.
+
+| Key | Behaviour |
+| --- | --- |
+| `if_contains: "TEXT"` | Case-insensitive substring search in the member's last reply. |
+| `if_match: "REGEX"` | Case-insensitive `re.search` against the member's last reply. |
+| `default: member` | Unconditional fallback; fires when no other rule matches. |
+
+A member with **no `routes`** falls back to the standard round-robin next-speaker logic.
+
+### Workflow end conditions
+
+The workflow stops when:
+* any member outputs `[[TEAM_DONE]]`, or
+* the total turn count reaches `max_rounds`.
+
+---
+
+
+## Token budget
+
+Prevent runaway costs by capping how many tokens a member may consume across all turns in a single run.
+
+```yaml
+defaults:
+  token_budget: 5000   # max prompt+completion tokens per member per run
+
+members:
+  - name: alice
+    token_budget: 10000  # per-member override
+```
+
+When a member's cumulative token usage reaches the budget before their next turn, `TokenBudgetError` is raised and the run stops gracefully. The transcript and any workspace files written so far are preserved, and `team run --resume` with a higher budget can continue from where it left off.
+
+> **Note:** Replayed turns (from `--resume`) do **not** count toward the budget.
+
+### Budget resolution
+
+| Setting | Effective budget |
+| --- | --- |
+| `token_budget` in `defaults` only | Applied to every member. |
+| `token_budget` in a specific member | Overrides the `defaults` value for that member only. |
+| Neither set | No limit — member runs until the workflow ends. |
+
+---
+
+
+## Per-agent persistent memory
+
+In a real research lab, scientists remember what worked and what failed —
+across months of experiments.  `team` gives each agent a **private,
+persistent memory store** backed by SQLite that survives between completely
+separate `team run` invocations.
+
+```
+Session 1 (January): alice uses remember to store "AlphaFold3 RMSD 1.2 Å"
+Session 2 (February): alice uses recall to surface that result and build on it
+```
+
+This is what separates `team` from all other orchestration frameworks: your
+agents actually **accumulate knowledge over time**.
+
+### Enabling memory
+
+Add a `memory:` section to your team YAML:
+
+```yaml
+memory:
+  enabled: true
+  inject_recent: 5    # memories injected into each turn's context (default: 5)
+  store: ~/.team/memory   # optional; defaults to <workspace>/memory/
+```
+
+Enable memory tools for each member:
+
+```yaml
+members:
+  - name: alice
+    tools: [run_python, remember, recall, forget, list_memories]
+```
+
+### Memory tools
+
+All memory tools use a `key:` / header + `---` / value body format:
+
+**`remember`** — store a cross-session memory:
+
+````
+```tool:remember
+key: protein_folding_baseline_2025
+tags: results, methods
+importance: 0.9
+---
+AlphaFold3 outperforms RoseTTAFold on monomers (RMSD 1.2 vs 2.1 Å, n=1 000).
+Dataset: PDB validation set, tested January 2025.
+```
+````
+
+**`recall`** — full-text search across all memories:
+
+````
+```tool:recall
+query: protein folding
+limit: 5
+```
+````
+
+Returns a ranked list of matching memories (by importance then recency).
+
+**`forget`** — delete a memory by key:
+
+````
+```tool:forget
+key: protein_folding_baseline_2025
+```
+````
+
+**`list_memories`** — browse all memories (optionally by tag):
+
+````
+```tool:list_memories
+tag: results
+limit: 20
+```
+````
+
+At the start of every turn, the *n* most recent memories are automatically
+injected into the member's context under `## Your persistent memories`.
+
+### Memory config reference
+
+| key | type | default | description |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Enable persistent memory for all members. |
+| `inject_recent` | int | `5` | Number of recent memories to inject into each turn's context. |
+| `store` | path | `<workspace>/memory` | Directory that holds the per-member SQLite databases. |
+
+---
+
+
+## Shared team belief board
+
+In collaborative science, a team's most important output is not files — it is
+**what the team collectively knows**.  The `team` belief board formalises this
+as a living, structured record of claims with provenance, confidence scores,
+and consensus voting.
+
+```
+alice asserts: "RNA Pol II is rate-limiting in elongation" (confidence: 85%)
+bob accepts → 2/3 votes ≥ threshold → status: ACCEPTED
+carol contests with reason: "only tested in HEK293" → status: CONTESTED
+```
+
+After a run: `team beliefs myteam.yaml` shows everything the team concluded.
+
+### Enabling the belief board
+
+```yaml
+beliefs:
+  enabled: true
+  consensus_threshold: 0.5   # fraction of members required for acceptance
+  inject_limit: 10            # beliefs shown in each member's turn context
+```
+
+Enable belief tools for each member:
+
+```yaml
+members:
+  - name: alice
+    tools: [run_python, assert_belief, contest_belief, accept_belief, list_beliefs]
+```
+
+### Belief tools
+
+**`assert_belief`** — propose a claim with optional evidence:
+
+````
+```tool:assert_belief
+confidence: 0.85
+evidence: RMSD analysis, PDB validation set, n=1 000, January 2025
+---
+AlphaFold3 is the best available method for monomer structure prediction.
+```
+````
+
+The member who asserts a belief automatically casts an *accept* vote.  The
+returned belief ID (e.g. `a3f2b1c9`) is used in subsequent votes.
+
+**`accept_belief`** — vote to accept:
+
+````
+```tool:accept_belief
+id: a3f2b1c9
+```
+````
+
+**`contest_belief`** — move a belief to `contested` status:
+
+````
+```tool:contest_belief
+id: a3f2b1c9
+reason: Dataset is limited to well-studied proteins; may not generalise.
+```
+````
+
+**`list_beliefs`** — browse the board:
+
+````
+```tool:list_beliefs
+status: contested
+```
+````
+
+Valid status values: `pending`, `accepted`, `contested`, `rejected`.  Omit to
+list all beliefs.
+
+Beliefs are injected into every member's turn context under
+`## Shared team belief board` so the whole team sees the current state before
+each turn.
+
+### Inspecting beliefs with team beliefs
+
+```bash
+team beliefs myteam.yaml                    # all beliefs
+team beliefs myteam.yaml --status accepted  # accepted only
+team beliefs myteam.yaml --status contested # contested — needs attention
+```
+
+Output example:
+
+```
+                  Belief board — team 'my-team'
+┏━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━━━━┓
+┃ ID     ┃ Status      ┃ Claim                                                   ┃ Confidence ┃ By    ┃ For ┃ Against ┃
+┡━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━━━━┩
+│ a3f2b1 │ ✓ accepted  │ AlphaFold3 is best for monomer structure prediction.    │       85%  │ @alice│   2 │       0 │
+│ 9c1d33 │ ⚡ contested│ The dataset generalises to all protein families.        │       60%  │ @bob  │   1 │       1 │
+└────────┴─────────────┴─────────────────────────────────────────────────────────┴────────────┴───────┴─────┴─────────┘
+⚡ Some beliefs are contested — review and resolve via accept_belief / contest_belief tools.
+```
+
+### Belief config reference
+
+| key | type | default | description |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Enable the shared belief board. |
+| `consensus_threshold` | float | `0.5` | Fraction of members who must accept a belief for it to become `accepted`. |
+| `inject_limit` | int | `10` | Maximum number of beliefs injected into each member's turn context. |
+
+---
+
+
+## Workspace checkpoints
+
+Every time a live member turn is about to execute, the orchestrator
+automatically snapshots the current state of the **shared workspace** before
+any files are written.  Snapshots are stored under
+`<workspace>/checkpoints/` with names that encode the turn index, the
+member about to speak, and the timestamp:
+
+```
+checkpoints/
+├── 0001_alice_20240501T120000/   # state before alice's 1st turn
+├── 0003_bob_20240501T120145/     # state before bob's 2nd turn
+└── ...
+```
+
+If the shared workspace is empty (no files have been produced yet), the
+snapshot is silently skipped — there is nothing to back up.
+
+### Listing checkpoints
+
+```bash
+team checkpoints my-team.yaml
+```
+
+```
+┌──────────────────────────────┬──────┬──────────────────────┬─────────────────────┬───────┐
+│ ID                           │ Turn │ Before member's turn │ Timestamp           │ Files │
+├──────────────────────────────┼──────┼──────────────────────┼─────────────────────┼───────┤
+│ 0001_alice_20240501T120000   │    1 │ @alice               │ 2024-05-01 12:00:00 │     3 │
+│ 0003_bob_20240501T120145     │    3 │ @bob                 │ 2024-05-01 12:01:45 │     5 │
+└──────────────────────────────┴──────┴──────────────────────┴─────────────────────┴───────┘
+```
+
+### Restoring a checkpoint
+
+Copy the checkpoint ID from the table and pass it to `team restore`:
+
+```bash
+team restore my-team.yaml 0001_alice_20240501T120000
+```
+
+```
+restored checkpoint 0001_alice_20240501T120000 — 3 file(s) now in the shared workspace.
+```
+
+The current contents of `shared/` are replaced with the snapshot.
+**This cannot be undone** unless a later checkpoint already captured the
+state you are overwriting, so check `team checkpoints` before restoring.
+
+### Use cases
+
+* **Undo a bad turn** — a member produced unwanted file changes; restore the
+  checkpoint taken just before that turn.
+* **Branch from a known-good state** — restore an earlier checkpoint, edit
+  `team.yaml` (e.g. change the goal or persona), and re-run from there.
+* **Audit the evolution of the workspace** — inspect any checkpoint
+  directory directly; it is a plain copy of `shared/` at that point in time.
+
+---
+
+
+## Workspace time-travel (`team rollback`)
+
+Every live member turn is preceded by an automatic workspace snapshot (see
+[Workspace checkpoints](#workspace-checkpoints)).  When things go wrong you
+can roll back the shared workspace to *any prior point in time* and resume
+from there — effectively forking the timeline:
+
+```bash
+# 1. List all available snapshots
+team rollback myteam.yaml
+
+# 2. Restore to a specific checkpoint (with confirmation prompt)
+team rollback myteam.yaml --to 0005_alice_20250510T183000
+
+# 3. Skip the confirmation prompt (useful in scripts)
+team rollback myteam.yaml --to 0005_alice_20250510T183000 --yes
+```
+
+After rolling back, resume the run from the restored state:
+
+```bash
+team run myteam.yaml --resume
+```
+
+Because the transcript also persists, `--resume` skips all turns already
+recorded in it.  To *re-run* from turn 5 with a different approach, truncate
+the transcript manually (or delete it and rely entirely on the restored
+workspace files).
+
+> `team rollback` is a thin wrapper around the existing
+> `CheckpointManager.restore()` logic.  The underlying `team restore`
+> command (which requires an exact checkpoint ID argument) remains available
+> for scripting.
+
+---
+
+
+## Token usage tracking
+
+After every `team run` a token usage summary is printed:
+
+```text
+┌────────────────────────────────────────────────────┐
+│              Token usage (live turns)              │
+├──────────┬─────────┬───────────┬───────────────────┤
+│ member   │  prompt │ completion│  total            │
+├──────────┼─────────┼───────────┼───────────────────┤
+│ @lead    │  12 450 │     3 210 │  15 660           │
+│ @worker  │   8 120 │     5 890 │  14 010           │
+├──────────┼─────────┼───────────┼───────────────────┤
+│ total    │  20 570 │     9 100 │  29 670           │
+└──────────┴─────────┴───────────┴───────────────────┘
+```
+
+Token counts come from the Ollama `/api/chat` `eval_count` /
+`prompt_eval_count` fields (for the `ollama` backend) or the OpenAI
+`usage` object (for `openai_compat`).  The summary is omitted when all
+counts are zero (e.g. pure replay runs or backends that don't report
+token usage).
+
+---
+
+
+## Cost estimation
+
+After every `team run` and `team stats` command, the token-usage table includes an **Est. cost** column with a USD estimate based on the model used by each member.
+
+Local Ollama models always show **$0.00 (local)** since they run on your hardware.  Cloud models (`backend: openai_compat`) are looked up in the built-in pricing table.
+
+### Built-in pricing table
+
+| Provider | Models |
+| --- | --- |
+| **OpenAI** | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo`, `o1`, `o1-mini`, `o3`, `o3-mini` |
+| **Anthropic** | `claude-opus-4`, `claude-sonnet-4`, `claude-3-5-sonnet`, `claude-3-5-haiku`, `claude-3-opus`, `claude-3-sonnet`, `claude-3-haiku` |
+| **Google** | `gemini-2.0-flash`, `gemini-1.5-pro`, `gemini-1.5-flash` |
+| **Mistral** | `mistral-large`, `mistral-medium`, `mistral-small`, `codestral` |
+| **Meta (cloud-hosted)** | `llama-3.1-405b`, `llama-3.1-70b`, `llama-3.1-8b`, `llama-3-70b`, `llama-3-8b` |
+
+Model names are matched by prefix/substring so versioned names like `gpt-4o-2024-08-06` automatically map to `gpt-4o` pricing.  If a model is not recognised, the cost column shows **?**.
+
+> **Prices are estimates only.** Provider pricing changes over time — update `team/pricing.py` with the latest figures from your provider's pricing page.
+
+---
+
+
+## Run statistics
+
+`team stats` shows a detailed breakdown of a completed run — turn counts,
+token usage per speaker, total duration, and files written — without
+needing to start any containers:
+
+```bash
+team stats my-team.yaml
+```
+
+Example output:
+
+```text
+Team: my-team  18 turns · 29 670 tokens · duration 142.3s · 5 file(s) written
+
+┌─────────────────────────────────────────────────────────────────────┐
+│               Turns & token usage by speaker                        │
+├──────────────┬───────┬───────────────┬──────────────────┬───────────┤
+│ Speaker      │ Turns │ Prompt tokens │ Completion tokens│    Total  │
+├──────────────┼───────┼───────────────┼──────────────────┼───────────┤
+│ @lead        │     5 │        12 450 │            3 210 │    15 660 │
+│ @orchestrator│     1 │             0 │                0 │         0 │
+│ @worker      │    12 │         8 120 │            5 890 │    14 010 │
+├──────────────┼───────┼───────────────┼──────────────────┼───────────┤
+│ total        │    18 │        20 570 │            9 100 │    29 670 │
+└──────────────┴───────┴───────────────┴──────────────────┴───────────┘
+```
+
+The `Transcript.stats()` method in `team/bus.py` is also part of the
+public Python API:
+
+```python
+from team.bus import Transcript
+from team.config import load_team
+
+cfg = load_team("my-team.yaml")
+t = Transcript(persist_path=cfg.workspace / "transcript.jsonl", resume=True)
+s = t.stats()
+print(s["total_turns"], s["duration_seconds"])
+```
+
+---
+
+
+## Exporting a run report
+
+After a run you can bundle the full transcript and every produced artifact
+into a single shareable document:
+
+```bash
+team export my-team.yaml                          # Markdown (default)
+team export my-team.yaml --format html            # self-contained HTML (dark-mode aware)
+team export my-team.yaml --format json            # machine-readable JSON
+team export my-team.yaml --output ~/Desktop/run.md
+team export my-team.yaml --no-artifacts           # omit workspace files (faster, smaller)
+```
+
+The report includes:
+* Team name, goal, members, and workflow settings.
+* Every member turn with speaker, role, content, and files written.
+* **Token usage & estimated cost table** — per member and totals.
+* Full contents of all files produced in the shared workspace (omit with `--no-artifacts`).
+
+Output path defaults to `<workspace>/report.md` / `.html` / `.json`.
+
+**Format details:**
+
+| Format | Description |
+| --- | --- |
+| `markdown` | Single `.md` file with transcript, token table, and fenced artifact blocks. |
+| `html` | Self-contained `.html` — embedded CSS, no external deps, respects `prefers-color-scheme: dark`. |
+| `json` | Structured JSON (`format_version: 1`) with `team`, `stats`, `token_usage`, `turns`, and `artifacts` keys — suitable for post-processing. |
+
+---
+
+
+## `team replay` — interactive transcript browser
+
+After a run completes, `team replay` lets you step through the saved
+transcript turn-by-turn in an interactive terminal viewer — like a
+debugger for a past run.  No LLM calls, no Docker, no network — it
+works entirely from the persisted `transcript.jsonl` file.
+
+```
+team replay myteam.yaml                     # start at turn 0
+team replay myteam.yaml --from 5            # start at turn 5
+team replay myteam.yaml --speaker alice     # jump to alice's first turn
+```
+
+### Navigation keybindings
+
+| Key | Action |
+| --- | --- |
+| `→` / `n` / Space / Enter | Advance to the next turn |
+| `←` / `p` / `b` | Go back one turn |
+| `g` | Prompt for a turn number and jump directly to it |
+| `f` | Prompt for a speaker name and jump to their next turn |
+| `s` | Toggle the stats summary panel (token totals, turn counts) |
+| `q` / Esc | Quit |
+
+### Non-interactive mode
+
+When stdin is not a TTY (e.g. a CI pipeline or a pipe), `team replay`
+prints all turns sequentially — the same rich panel rendering used by
+`team transcript` — and exits immediately.  This makes it safe to use
+in scripts:
+
+```bash
+team replay myteam.yaml | head -100
+```
+
+### Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--from N` | `0` | Start at turn N (0-based). |
+| `--speaker NAME` | — | Jump to the first turn by NAME at startup. |
+
+---
+
+
+## Automated testing with `team test`
+
+`team test` runs the team and then validates a set of assertions defined in the
+`tests:` section of the team YAML.  This makes it easy to build a repeatable
+test suite for your team in CI.
+
+```yaml
+tests:
+  - name: creates hello.py
+    type: file_exists
+    path: hello.py
+
+  - name: script contains print
+    type: file_contains
+    path: hello.py
+    text: "print"
+
+  - name: no error messages
+    type: file_not_contains
+    path: report.txt
+    text: "ERROR"
+
+  - name: results is valid JSON
+    type: json_valid
+    path: results.json
+
+  - name: results matches schema
+    type: json_schema
+    path: results.json
+    schema:
+      type: object
+      required: [entities, summary]
+
+  - name: any member mentioned Python
+    type: transcript_contains
+    text: "Python"
+
+  - name: developer specifically mentioned Python
+    type: transcript_contains
+    speaker: developer
+    text: "Python"
+
+  - name: exactly 4 member turns
+    type: transcript_count
+    count: 4
+```
+
+```
+team test myteam.yaml               # run the team, then assert
+team test myteam.yaml --no-run      # assert against an existing run
+team test myteam.yaml --max-rounds 2 --goal "quick smoke test"
+```
+
+Exits with code **0** if all assertions pass, **1** if any fail (suitable for
+CI gates).
+
+### Assertion reference
+
+| Type | Required fields | Description |
+| --- | --- | --- |
+| `file_exists` | `path` | File must exist in the shared workspace. |
+| `file_not_exists` | `path` | File must *not* exist. |
+| `file_contains` | `path`, `text` | File content must contain the substring. |
+| `file_not_contains` | `path`, `text` | File content must *not* contain the substring. |
+| `json_valid` | `path` | File must be parseable JSON. |
+| `json_schema` | `path`, `schema` | File must be valid JSON matching the JSON Schema. |
+| `transcript_contains` | `text` | At least one turn must contain the text. Add `speaker` to restrict to one member. |
+| `transcript_count` | `count` | Exact number of member turns (excludes `orchestrator`/`human`). |
+
+All `path` values are relative to the **shared workspace** directory
+(`<workspace>/shared/`).
+
+---
+
+
+## Multi-team pipelines
+
+A *pipeline* lets you chain multiple team runs together so that the output of one team — its shared workspace files and a transcript summary — is automatically injected into the next team's context.
+
+### Pipeline YAML
+
+Create a `pipeline.yaml` alongside your team files:
+
+```yaml
+name: research-and-write
+description: Research a topic, then write a publication-ready paper.
+workspace: ./runs/research-and-write   # optional; default is ./runs/<name>
+
+stages:
+  - id: research
+    team: ./teams/researcher.yaml
+
+  - id: writing
+    team: ./teams/writer.yaml
+    depends_on: [research]          # wait for research to complete
+    inject_files: true              # copy research's shared/ files here
+    inject_context: true            # write context.md from research output
+    goal_override: |                # {stage_id.summary} templates available
+      Write a publication-ready paper based on the research below.
+
+      {research.summary}
+```
+
+### Running a pipeline
+
+```bash
+team pipeline pipeline.yaml
+```
+
+Preview the execution plan without running anything:
+
+```bash
+team pipeline pipeline.yaml --dry-run
+```
+
+### Stage fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | string | *(required)* | Unique stage identifier used in `depends_on` and goal templates. |
+| `team` | path | *(required)* | Path to the team YAML file (relative to the pipeline file). |
+| `depends_on` | list of IDs | `[]` | Stages that must complete before this stage runs. |
+| `inject_files` | bool | `false` | Copy every file from upstream stages' `shared/` directories into this stage's `shared/` directory before the team starts. |
+| `inject_context` | bool | `false` | Write a `context.md` file into this stage's workspace summarising upstream stages' output. Members pick it up automatically. |
+| `goal_override` | string | — | Replace the team YAML's `goal` for this pipeline run. Supports `{stage_id.summary}` template substitution. |
+
+### How data flows
+
+Each stage runs inside its own sub-workspace: `<pipeline.workspace>/<stage.id>/`. At the end of every stage the runner extracts:
+
+- **Summary** — the last five member turns from the transcript, concatenated.
+- **Artifacts** — all files in `shared/`, keyed by relative path.
+
+When the next stage has `inject_files: true`, artifact files are copied verbatim into the destination stage's `shared/` directory before its team starts. When `inject_context: true`, a `context.md` is written at the stage workspace root with the summaries and file lists from all upstream stages.
+
+### Goal templates
+
+`goal_override` is a Python `str.format()` template. Each upstream stage result is available as `{stage_id.summary}`:
+
+```yaml
+goal_override: |
+  Review the following research and identify gaps.
+
+  Research output:
+  {research.summary}
+
+  Initial draft:
+  {writing.summary}
+```
+
+---
+
 
 ## Cross-team collaboration (bridge)
 
@@ -1885,432 +2774,6 @@ Practical recommendations:
 
 ---
 
-## Per-agent persistent memory
-
-In a real research lab, scientists remember what worked and what failed —
-across months of experiments.  `team` gives each agent a **private,
-persistent memory store** backed by SQLite that survives between completely
-separate `team run` invocations.
-
-```
-Session 1 (January): alice uses remember to store "AlphaFold3 RMSD 1.2 Å"
-Session 2 (February): alice uses recall to surface that result and build on it
-```
-
-This is what separates `team` from all other orchestration frameworks: your
-agents actually **accumulate knowledge over time**.
-
-### Enabling memory
-
-Add a `memory:` section to your team YAML:
-
-```yaml
-memory:
-  enabled: true
-  inject_recent: 5    # memories injected into each turn's context (default: 5)
-  store: ~/.team/memory   # optional; defaults to <workspace>/memory/
-```
-
-Enable memory tools for each member:
-
-```yaml
-members:
-  - name: alice
-    tools: [run_python, remember, recall, forget, list_memories]
-```
-
-### Memory tools
-
-All memory tools use a `key:` / header + `---` / value body format:
-
-**`remember`** — store a cross-session memory:
-
-````
-```tool:remember
-key: protein_folding_baseline_2025
-tags: results, methods
-importance: 0.9
----
-AlphaFold3 outperforms RoseTTAFold on monomers (RMSD 1.2 vs 2.1 Å, n=1 000).
-Dataset: PDB validation set, tested January 2025.
-```
-````
-
-**`recall`** — full-text search across all memories:
-
-````
-```tool:recall
-query: protein folding
-limit: 5
-```
-````
-
-Returns a ranked list of matching memories (by importance then recency).
-
-**`forget`** — delete a memory by key:
-
-````
-```tool:forget
-key: protein_folding_baseline_2025
-```
-````
-
-**`list_memories`** — browse all memories (optionally by tag):
-
-````
-```tool:list_memories
-tag: results
-limit: 20
-```
-````
-
-At the start of every turn, the *n* most recent memories are automatically
-injected into the member's context under `## Your persistent memories`.
-
-### Memory config reference
-
-| key | type | default | description |
-| --- | --- | --- | --- |
-| `enabled` | bool | `false` | Enable persistent memory for all members. |
-| `inject_recent` | int | `5` | Number of recent memories to inject into each turn's context. |
-| `store` | path | `<workspace>/memory` | Directory that holds the per-member SQLite databases. |
-
----
-
-## Shared team belief board
-
-In collaborative science, a team's most important output is not files — it is
-**what the team collectively knows**.  The `team` belief board formalises this
-as a living, structured record of claims with provenance, confidence scores,
-and consensus voting.
-
-```
-alice asserts: "RNA Pol II is rate-limiting in elongation" (confidence: 85%)
-bob accepts → 2/3 votes ≥ threshold → status: ACCEPTED
-carol contests with reason: "only tested in HEK293" → status: CONTESTED
-```
-
-After a run: `team beliefs myteam.yaml` shows everything the team concluded.
-
-### Enabling the belief board
-
-```yaml
-beliefs:
-  enabled: true
-  consensus_threshold: 0.5   # fraction of members required for acceptance
-  inject_limit: 10            # beliefs shown in each member's turn context
-```
-
-Enable belief tools for each member:
-
-```yaml
-members:
-  - name: alice
-    tools: [run_python, assert_belief, contest_belief, accept_belief, list_beliefs]
-```
-
-### Belief tools
-
-**`assert_belief`** — propose a claim with optional evidence:
-
-````
-```tool:assert_belief
-confidence: 0.85
-evidence: RMSD analysis, PDB validation set, n=1 000, January 2025
----
-AlphaFold3 is the best available method for monomer structure prediction.
-```
-````
-
-The member who asserts a belief automatically casts an *accept* vote.  The
-returned belief ID (e.g. `a3f2b1c9`) is used in subsequent votes.
-
-**`accept_belief`** — vote to accept:
-
-````
-```tool:accept_belief
-id: a3f2b1c9
-```
-````
-
-**`contest_belief`** — move a belief to `contested` status:
-
-````
-```tool:contest_belief
-id: a3f2b1c9
-reason: Dataset is limited to well-studied proteins; may not generalise.
-```
-````
-
-**`list_beliefs`** — browse the board:
-
-````
-```tool:list_beliefs
-status: contested
-```
-````
-
-Valid status values: `pending`, `accepted`, `contested`, `rejected`.  Omit to
-list all beliefs.
-
-Beliefs are injected into every member's turn context under
-`## Shared team belief board` so the whole team sees the current state before
-each turn.
-
-### Inspecting beliefs with team beliefs
-
-```bash
-team beliefs myteam.yaml                    # all beliefs
-team beliefs myteam.yaml --status accepted  # accepted only
-team beliefs myteam.yaml --status contested # contested — needs attention
-```
-
-Output example:
-
-```
-                  Belief board — team 'my-team'
-┏━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━━━━┓
-┃ ID     ┃ Status      ┃ Claim                                                   ┃ Confidence ┃ By    ┃ For ┃ Against ┃
-┡━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━━━━┩
-│ a3f2b1 │ ✓ accepted  │ AlphaFold3 is best for monomer structure prediction.    │       85%  │ @alice│   2 │       0 │
-│ 9c1d33 │ ⚡ contested│ The dataset generalises to all protein families.        │       60%  │ @bob  │   1 │       1 │
-└────────┴─────────────┴─────────────────────────────────────────────────────────┴────────────┴───────┴─────┴─────────┘
-⚡ Some beliefs are contested — review and resolve via accept_belief / contest_belief tools.
-```
-
-### Belief config reference
-
-| key | type | default | description |
-| --- | --- | --- | --- |
-| `enabled` | bool | `false` | Enable the shared belief board. |
-| `consensus_threshold` | float | `0.5` | Fraction of members who must accept a belief for it to become `accepted`. |
-| `inject_limit` | int | `10` | Maximum number of beliefs injected into each member's turn context. |
-
----
-
-## Workspace time-travel (`team rollback`)
-
-Every live member turn is preceded by an automatic workspace snapshot (see
-[Workspace checkpoints](#workspace-checkpoints)).  When things go wrong you
-can roll back the shared workspace to *any prior point in time* and resume
-from there — effectively forking the timeline:
-
-```bash
-# 1. List all available snapshots
-team rollback myteam.yaml
-
-# 2. Restore to a specific checkpoint (with confirmation prompt)
-team rollback myteam.yaml --to 0005_alice_20250510T183000
-
-# 3. Skip the confirmation prompt (useful in scripts)
-team rollback myteam.yaml --to 0005_alice_20250510T183000 --yes
-```
-
-After rolling back, resume the run from the restored state:
-
-```bash
-team run myteam.yaml --resume
-```
-
-Because the transcript also persists, `--resume` skips all turns already
-recorded in it.  To *re-run* from turn 5 with a different approach, truncate
-the transcript manually (or delete it and rely entirely on the restored
-workspace files).
-
-> `team rollback` is a thin wrapper around the existing
-> `CheckpointManager.restore()` logic.  The underlying `team restore`
-> command (which requires an exact checkpoint ID argument) remains available
-> for scripting.
-
----
-
-## Predefined persona library
-
-Writing a good persona from scratch takes time.  `team` ships with
-**16 ready-made personas** spanning academic research, software engineering,
-and general-purpose roles.  Each persona lives in its own YAML file under
-`personas/` at the root of this repository — making them easy to read,
-edit, and contribute back to the project.
-
-### How personas are stored
-
-```
-personas/
-├── pi.yaml            # Principal Investigator
-├── postdoc.yaml       # Postdoctoral Researcher
-├── phd.yaml           # PhD Student
-├── reviewer.yaml      # Critical Reviewer
-├── statistician.yaml  # Statistician
-├── bioinformatician.yaml
-├── ml_researcher.yaml
-├── architect.yaml
-├── engineer.yaml
-├── qa.yaml
-├── devops.yaml
-├── tech_writer.yaml
-├── analyst.yaml
-├── writer.yaml
-├── manager.yaml
-└── ethicist.yaml
-```
-
-Each file follows the same simple format:
-
-```yaml
-role: Principal Investigator
-description: Lab director — sets research direction, evaluates results, writes grants.
-persona: |
-  You are a tenured Principal Investigator at a research university.
-  Your role is to set and guard the scientific direction of the project.
-  ...
-```
-
-The filename stem (e.g. `pi` from `pi.yaml`) becomes the `@`-key used in team
-YAML files.
-
-### Available personas
-
-| Key | Role | Description |
-| --- | --- | --- |
-| `@pi` | Principal Investigator | Lab director — sets research direction, evaluates results, writes grants. |
-| `@postdoc` | Postdoctoral Researcher | Senior researcher — deep expertise, drives experiments and analysis. |
-| `@phd` | PhD Student | Junior researcher — literature review, baseline experiments, drafting. |
-| `@reviewer` | Critical Reviewer | Peer-review skeptic — challenges assumptions, finds weaknesses. |
-| `@statistician` | Statistician | Statistical methodologist — study design, power, inference correctness. |
-| `@bioinformatician` | Bioinformatician | Omics data specialist — pipelines, databases, variant/sequence analysis. |
-| `@ml_researcher` | Machine Learning Researcher | ML specialist — model design, training, evaluation, ablations. |
-| `@architect` | Software Architect | System designer — API contracts, scalability, tech decisions. |
-| `@engineer` | Software Engineer | Implementer — writes production-quality code, debugs, reviews PRs. |
-| `@qa` | QA Engineer | Quality assurance — test strategy, edge cases, regression detection. |
-| `@devops` | DevOps / SRE | Infrastructure and reliability — CI/CD, monitoring, deployment. |
-| `@tech_writer` | Technical Writer | Documentation specialist — clarity, structure, audience-appropriate prose. |
-| `@analyst` | Data Analyst | Data explorer — EDA, visualisation, dashboards, business insights. |
-| `@writer` | Science Writer | Communicator — translates technical findings into compelling narratives. |
-| `@manager` | Project Manager | Coordinator — milestones, blockers, stakeholder communication. |
-| `@ethicist` | AI / Research Ethicist | Ethics and compliance — bias, fairness, privacy, responsible use. |
-
-Browse the library from the terminal:
-
-```bash
-team personas              # list all personas with key, role, description
-team personas pi           # print the full persona text for @pi
-team personas engineer     # print the full persona text for @engineer
-```
-
-### Using a persona in YAML
-
-Set `persona` to `@<key>` instead of writing a persona block:
-
-```yaml
-members:
-  - name: alice
-    model: llama3.1:70b
-    persona: "@pi"              # role is set to "Principal Investigator" automatically
-  - name: bob
-    model: llama3.1:8b
-    persona: "@phd"             # role is "PhD Student"
-  - name: carol
-    model: qwen2.5:7b
-    persona: "@reviewer"        # role is "Critical Reviewer"
-```
-
-You can override the default role while keeping the library persona text:
-
-```yaml
-  - name: alice
-    model: llama3.1:70b
-    persona: "@pi"
-    role: "Lab Director"        # custom title; persona text stays the same
-```
-
-You can also mix library personas with fully custom ones in the same team:
-
-```yaml
-members:
-  - name: alice
-    model: llama3.1:70b
-    persona: "@pi"
-  - name: custom
-    role: Domain Expert
-    model: llama3.1:8b
-    persona: |
-      You are a specialist in protein crystallography with 20 years of
-      experimental experience. You validate all structural claims against
-      PDB data.
-```
-
-### Adding your own personas
-
-**Option 1 — contribute to the built-in library** (share with everyone):
-
-Drop a `.yaml` file into the `personas/` directory at the repo root and submit
-a pull request.  The file name becomes the `@`-key.
-
-**Option 2 — project-local personas** (private to your setup):
-
-Point `TEAM_PERSONA_DIR` at any directory; files there are loaded *in addition
-to* the built-in library and take precedence over built-in keys with the same
-name:
-
-```bash
-export TEAM_PERSONA_DIR=~/.team/personas
-```
-
-Then add files like `~/.team/personas/clinician.yaml`:
-
-```yaml
-role: Clinical Research Collaborator
-description: Translates findings into clinical context and regulatory language.
-persona: |
-  You are a physician-scientist with expertise in clinical trial design.
-  You translate pre-clinical findings into clinical hypotheses, identify
-  regulatory hurdles (FDA, EMA) early, and ensure the team's outputs are
-  framed for a clinical audience.
-```
-
-Any team YAML can now use `persona: "@clinician"` once the env var is set.
-
----
-
-## Interactive wizard
-
-`team new` launches a guided wizard that asks you a series of questions
-and writes a validated YAML:
-
-```bash
-team new my-team.yaml
-```
-
-The wizard prompts for:
-
-* Team name and goal
-* Number of members, and for each: name, role, model, persona
-* Workflow type and max rounds
-* Workspace path
-
-The output is a fully-formed, validated YAML ready to use with `team run`.
-
----
-
-## Custom Ollama image
-
-`docker/Dockerfile.ollama` is an optional, slightly-augmented image that
-adds `python3`, `git`, `jq`, `curl`, and friends on top of
-`ollama/ollama:latest` for members that want richer in-container
-tooling.  Build it once and reference it from any team:
-
-```bash
-docker build -f docker/Dockerfile.ollama -t team/ollama:latest docker/
-```
-
-```yaml
-defaults:
-  ollama_image: team/ollama:latest
-```
-
-The default `ollama/ollama:latest` is fine for most uses.
-
----
 
 ## Examples
 
@@ -2348,6 +2811,7 @@ team run examples/software_team.yaml
 
 ---
 
+
 ## Architecture overview
 
 ```
@@ -2381,6 +2845,7 @@ and reading `result.declared_done` / `result.content`.
 
 ---
 
+
 ## Development
 
 ```bash
@@ -2403,6 +2868,7 @@ CI: `.github/workflows/tests.yml` runs `pytest` on Python 3.10–3.12.
 
 ---
 
+
 ## Troubleshooting
 
 * **`docker.errors.DockerException: ... permission denied`** — your user
@@ -2421,441 +2887,8 @@ CI: `.github/workflows/tests.yml` runs `pytest` on Python 3.10–3.12.
 
 ---
 
-## Structured JSON output
-
-By default members reply in free-form text.  When you need machine-readable
-output — e.g. an extractor member whose results are consumed by downstream
-code — set `output_format: json` on that member.
-
-```yaml
-members:
-  - name: extractor
-    role: Data extractor
-    model: llama3.1:8b
-    persona: You extract structured data from documents.
-    output_format: json
-    output_schema:                     # optional — validates the reply
-      type: object
-      required: [entities, summary]
-      properties:
-        entities:
-          type: array
-          items: {type: string}
-        summary:
-          type: string
-```
-
-**What happens**
-
-1. The system prompt gains an `## Output format` section instructing the model
-   to reply with valid JSON only.
-2. After the LLM replies, `team` calls `json.loads()` on the content.
-3. If parsing fails (or schema validation fails when `output_schema` is set),
-   the orchestrator sends a correction prompt and retries up to **3 times**.
-4. The parsed object is stored in `TurnResult.json_output` and is accessible
-   from custom workflows or post-run code.
-5. Schema validation requires `pip install jsonschema`; without it the schema
-   check is skipped silently.
-
-> **Note:** `output_format` is per-member only — it is not available as a
-> team-wide `defaults` key.
-
----
-
-## Per-turn timeout
-
-Set a hard wall-clock deadline (seconds) on how long any single member turn
-may take.  If the LLM doesn't finish within the limit, a `TurnTimeoutError`
-is raised and the workflow stops.
-
-```yaml
-defaults:
-  turn_timeout: 120     # 2 minutes for every member by default
-
-members:
-  - name: fast_reviewer
-    role: Reviewer
-    model: qwen2.5:3b
-    persona: You review code quickly.
-    turn_timeout: 30    # override — this member gets only 30 s
-```
-
-Set `turn_timeout: 0` (or leave it absent) to disable timeouts entirely.
-
-**Implementation details**
-
-The member's `take_turn()` is executed in a `ThreadPoolExecutor` thread and
-`future.result(timeout=…)` enforces the deadline.  If the timeout fires the
-thread is abandoned (it will eventually finish and be garbage-collected), but
-the calling workflow raises `TurnTimeoutError` immediately.
-
----
-
-## Automated testing with `team test`
-
-`team test` runs the team and then validates a set of assertions defined in the
-`tests:` section of the team YAML.  This makes it easy to build a repeatable
-test suite for your team in CI.
-
-```yaml
-tests:
-  - name: creates hello.py
-    type: file_exists
-    path: hello.py
-
-  - name: script contains print
-    type: file_contains
-    path: hello.py
-    text: "print"
-
-  - name: no error messages
-    type: file_not_contains
-    path: report.txt
-    text: "ERROR"
-
-  - name: results is valid JSON
-    type: json_valid
-    path: results.json
-
-  - name: results matches schema
-    type: json_schema
-    path: results.json
-    schema:
-      type: object
-      required: [entities, summary]
-
-  - name: any member mentioned Python
-    type: transcript_contains
-    text: "Python"
-
-  - name: developer specifically mentioned Python
-    type: transcript_contains
-    speaker: developer
-    text: "Python"
-
-  - name: exactly 4 member turns
-    type: transcript_count
-    count: 4
-```
-
-```
-team test myteam.yaml               # run the team, then assert
-team test myteam.yaml --no-run      # assert against an existing run
-team test myteam.yaml --max-rounds 2 --goal "quick smoke test"
-```
-
-Exits with code **0** if all assertions pass, **1** if any fail (suitable for
-CI gates).
-
-### Assertion reference
-
-| Type | Required fields | Description |
-| --- | --- | --- |
-| `file_exists` | `path` | File must exist in the shared workspace. |
-| `file_not_exists` | `path` | File must *not* exist. |
-| `file_contains` | `path`, `text` | File content must contain the substring. |
-| `file_not_contains` | `path`, `text` | File content must *not* contain the substring. |
-| `json_valid` | `path` | File must be parseable JSON. |
-| `json_schema` | `path`, `schema` | File must be valid JSON matching the JSON Schema. |
-| `transcript_contains` | `text` | At least one turn must contain the text. Add `speaker` to restrict to one member. |
-| `transcript_count` | `count` | Exact number of member turns (excludes `orchestrator`/`human`). |
-
-All `path` values are relative to the **shared workspace** directory
-(`<workspace>/shared/`).
-
----
-
-## `team replay` — interactive transcript browser
-
-After a run completes, `team replay` lets you step through the saved
-transcript turn-by-turn in an interactive terminal viewer — like a
-debugger for a past run.  No LLM calls, no Docker, no network — it
-works entirely from the persisted `transcript.jsonl` file.
-
-```
-team replay myteam.yaml                     # start at turn 0
-team replay myteam.yaml --from 5            # start at turn 5
-team replay myteam.yaml --speaker alice     # jump to alice's first turn
-```
-
-### Navigation keybindings
-
-| Key | Action |
-| --- | --- |
-| `→` / `n` / Space / Enter | Advance to the next turn |
-| `←` / `p` / `b` | Go back one turn |
-| `g` | Prompt for a turn number and jump directly to it |
-| `f` | Prompt for a speaker name and jump to their next turn |
-| `s` | Toggle the stats summary panel (token totals, turn counts) |
-| `q` / Esc | Quit |
-
-### Non-interactive mode
-
-When stdin is not a TTY (e.g. a CI pipeline or a pipe), `team replay`
-prints all turns sequentially — the same rich panel rendering used by
-`team transcript` — and exits immediately.  This makes it safe to use
-in scripts:
-
-```bash
-team replay myteam.yaml | head -100
-```
-
-### Options
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--from N` | `0` | Start at turn N (0-based). |
-| `--speaker NAME` | — | Jump to the first turn by NAME at startup. |
-
----
-
-## Cost estimation
-
-After every `team run` and `team stats` command, the token-usage table includes an **Est. cost** column with a USD estimate based on the model used by each member.
-
-Local Ollama models always show **$0.00 (local)** since they run on your hardware.  Cloud models (`backend: openai_compat`) are looked up in the built-in pricing table.
-
-### Built-in pricing table
-
-| Provider | Models |
-| --- | --- |
-| **OpenAI** | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo`, `o1`, `o1-mini`, `o3`, `o3-mini` |
-| **Anthropic** | `claude-opus-4`, `claude-sonnet-4`, `claude-3-5-sonnet`, `claude-3-5-haiku`, `claude-3-opus`, `claude-3-sonnet`, `claude-3-haiku` |
-| **Google** | `gemini-2.0-flash`, `gemini-1.5-pro`, `gemini-1.5-flash` |
-| **Mistral** | `mistral-large`, `mistral-medium`, `mistral-small`, `codestral` |
-| **Meta (cloud-hosted)** | `llama-3.1-405b`, `llama-3.1-70b`, `llama-3.1-8b`, `llama-3-70b`, `llama-3-8b` |
-
-Model names are matched by prefix/substring so versioned names like `gpt-4o-2024-08-06` automatically map to `gpt-4o` pricing.  If a model is not recognised, the cost column shows **?**.
-
-> **Prices are estimates only.** Provider pricing changes over time — update `team/pricing.py` with the latest figures from your provider's pricing page.
-
----
-
-## Model retention (`keep_alive`)
-
-By default, `team` sets Ollama's `keep_alive` to `"-1"` on every chat request, which tells Ollama to keep the model loaded in RAM indefinitely.  Without this, Ollama's built-in default evicts a model after 5 minutes of inactivity — a problem for large models (tens of gigabytes) that must repeatedly load and unload between turns.
-
-```yaml
-defaults:
-  keep_alive: "-1"   # keep every model loaded for the duration of the run (default)
-
-members:
-  - name: summarizer
-    model: llama3.2:3b
-    keep_alive: "5m"   # lightweight model — OK to evict after 5 minutes of idle
-    ...
-```
-
-| Value | Behaviour |
-| --- | --- |
-| `"-1"` | Keep the model loaded until Ollama stops or another model claim evicts it. **Recommended for team runs.** |
-| `"5m"`, `"1h"`, … | Evict after the given idle period (Ollama duration string). |
-| `"0"` | Unload immediately after each request (maximises GPU headroom at the cost of reload latency). |
-
-`keep_alive` is an Ollama-only parameter.  When the `openai_compat` backend is used it is silently ignored.
-
----
-
-## LLM retry with backoff
-
-`team` automatically retries LLM calls that fail due to transient infrastructure errors — connection refused, timeouts, and HTTP 5xx responses from the server — using **exponential backoff**.
-
-```yaml
-defaults:
-  max_retries: 3       # attempts per call (default: 3; 0 = no retries)
-  retry_backoff: 2.0   # backoff base in seconds (wait = backoff ** attempt)
-
-members:
-  - name: alice
-    max_retries: 5     # per-member override
-    retry_backoff: 1.5
-```
-
-### How it works
-
-| Scenario | Behaviour |
-| --- | --- |
-| Connection refused / timeout | Retried up to `max_retries` times. |
-| HTTP 5xx (server error) | Retried — the server never processed the request. |
-| HTTP 4xx (client error) | **Not retried** — a bad model name or malformed request won't self-heal. |
-| Partial streaming response | **Not retried** — the caller already received tokens; replaying would produce duplicates. |
-
-The wait between attempts is `retry_backoff ** attempt` seconds (attempt 0 → 1 s, attempt 1 → 2 s, attempt 2 → 4 s for the default `retry_backoff=2.0`).
-
-### When all retries are exhausted
-
-`LLMRetryExhaustedError` (a subclass of `OllamaError`) is raised.  The CLI catches it and prints a red error panel instead of crashing, preserving any transcript written so far.
-
----
-
-## Conditional routing
-
-Enable dynamic, branching conversations where each member's output determines who speaks next — building state-machine-like workflows without any code.
-
-```yaml
-workflow:
-  type: conditional
-  start: writer       # optional; defaults to the first listed member
-  max_rounds: 20
-
-members:
-  - name: writer
-    model: llama3
-    persona: You are a technical writer.
-    role: Writer
-    routes:
-      - if_contains: "NEEDS_REVISION"
-        next: editor
-      - if_match: "APPROVED|LGTM"
-        next: publisher
-      - default: reviewer    # fallback when nothing else matches
-
-  - name: editor
-    model: llama3
-    persona: You are an editor.
-    role: Editor
-    routes:
-      - if_contains: "DONE"
-        next: publisher
-      - default: writer      # loop back for another draft
-
-  - name: reviewer
-    model: llama3
-    persona: You are a reviewer.
-    role: Reviewer
-    routes:
-      - default: writer
-
-  - name: publisher          # terminal node — no routes needed
-    model: llama3
-    persona: You are a publisher.
-    role: Publisher
-```
-
-### Route rules
-
-Rules are evaluated **top-to-bottom**; the first match wins.
-
-| Key | Behaviour |
-| --- | --- |
-| `if_contains: "TEXT"` | Case-insensitive substring search in the member's last reply. |
-| `if_match: "REGEX"` | Case-insensitive `re.search` against the member's last reply. |
-| `default: member` | Unconditional fallback; fires when no other rule matches. |
-
-A member with **no `routes`** falls back to the standard round-robin next-speaker logic.
-
-### Workflow end conditions
-
-The workflow stops when:
-* any member outputs `[[TEAM_DONE]]`, or
-* the total turn count reaches `max_rounds`.
-
----
-
-## Token budget
-
-Prevent runaway costs by capping how many tokens a member may consume across all turns in a single run.
-
-```yaml
-defaults:
-  token_budget: 5000   # max prompt+completion tokens per member per run
-
-members:
-  - name: alice
-    token_budget: 10000  # per-member override
-```
-
-When a member's cumulative token usage reaches the budget before their next turn, `TokenBudgetError` is raised and the run stops gracefully. The transcript and any workspace files written so far are preserved, and `team run --resume` with a higher budget can continue from where it left off.
-
-> **Note:** Replayed turns (from `--resume`) do **not** count toward the budget.
-
-### Budget resolution
-
-| Setting | Effective budget |
-| --- | --- |
-| `token_budget` in `defaults` only | Applied to every member. |
-| `token_budget` in a specific member | Overrides the `defaults` value for that member only. |
-| Neither set | No limit — member runs until the workflow ends. |
-
----
-
-## Multi-team pipelines
-
-A *pipeline* lets you chain multiple team runs together so that the output of one team — its shared workspace files and a transcript summary — is automatically injected into the next team's context.
-
-### Pipeline YAML
-
-Create a `pipeline.yaml` alongside your team files:
-
-```yaml
-name: research-and-write
-description: Research a topic, then write a publication-ready paper.
-workspace: ./runs/research-and-write   # optional; default is ./runs/<name>
-
-stages:
-  - id: research
-    team: ./teams/researcher.yaml
-
-  - id: writing
-    team: ./teams/writer.yaml
-    depends_on: [research]          # wait for research to complete
-    inject_files: true              # copy research's shared/ files here
-    inject_context: true            # write context.md from research output
-    goal_override: |                # {stage_id.summary} templates available
-      Write a publication-ready paper based on the research below.
-
-      {research.summary}
-```
-
-### Running a pipeline
-
-```bash
-team pipeline pipeline.yaml
-```
-
-Preview the execution plan without running anything:
-
-```bash
-team pipeline pipeline.yaml --dry-run
-```
-
-### Stage fields
-
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `id` | string | *(required)* | Unique stage identifier used in `depends_on` and goal templates. |
-| `team` | path | *(required)* | Path to the team YAML file (relative to the pipeline file). |
-| `depends_on` | list of IDs | `[]` | Stages that must complete before this stage runs. |
-| `inject_files` | bool | `false` | Copy every file from upstream stages' `shared/` directories into this stage's `shared/` directory before the team starts. |
-| `inject_context` | bool | `false` | Write a `context.md` file into this stage's workspace summarising upstream stages' output. Members pick it up automatically. |
-| `goal_override` | string | — | Replace the team YAML's `goal` for this pipeline run. Supports `{stage_id.summary}` template substitution. |
-
-### How data flows
-
-Each stage runs inside its own sub-workspace: `<pipeline.workspace>/<stage.id>/`. At the end of every stage the runner extracts:
-
-- **Summary** — the last five member turns from the transcript, concatenated.
-- **Artifacts** — all files in `shared/`, keyed by relative path.
-
-When the next stage has `inject_files: true`, artifact files are copied verbatim into the destination stage's `shared/` directory before its team starts. When `inject_context: true`, a `context.md` is written at the stage workspace root with the summaries and file lists from all upstream stages.
-
-### Goal templates
-
-`goal_override` is a Python `str.format()` template. Each upstream stage result is available as `{stage_id.summary}`:
-
-```yaml
-goal_override: |
-  Review the following research and identify gaps.
-
-  Research output:
-  {research.summary}
-
-  Initial draft:
-  {writing.summary}
-```
-
----
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
