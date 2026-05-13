@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import click
+from rich import box as _rich_box
 from rich.console import Console, Group
 from rich.live import Live
 from rich.logging import RichHandler
@@ -34,22 +35,74 @@ def _get_member_color(name: str, members: list) -> str:
 
 
 def _print_team_banner(cfg, cons: Console) -> None:
-    """Render a rich overview panel before the run starts."""
-    body = Text()
-    body.append(cfg.goal.strip(), style="italic")
-    body.append("\n\n")
-    body.append("Workflow  ", style="dim")
-    body.append(cfg.workflow.type, style="bold")
-    body.append(f"  ·  max {cfg.workflow.max_rounds} rounds"
-                f"  ·  {len(cfg.members)} member(s)\n", style="dim")
+    """Render a compact overview panel before the run starts."""
+    header = Text()
+    header.append(f"  🤖  {cfg.name}", style="bold white")
+    header.append(f"  ·  {cfg.workflow.type}", style="bold bright_blue")
+    header.append(
+        f"  ·  max {cfg.workflow.max_rounds} rounds"
+        f"  ·  {len(cfg.members)} member(s)",
+        style="dim",
+    )
+
+    goal = Text(f"  {cfg.goal.strip()}", style="italic dim")
+
+    chips = Text("  ")
     for i, m in enumerate(cfg.members):
         color = _MEMBER_COLORS[i % len(_MEMBER_COLORS)]
-        body.append(f"\n  ● @{m.name}", style=f"bold {color}")
-        body.append(f"  {m.role}", style="default")
-        body.append(f"  [{m.model}]", style="dim italic")
-    cons.print(Panel(body, title=f"[bold]🤖  {cfg.name}[/bold]",
-                     border_style="blue", padding=(1, 2)))
+        chips.append(f" @{m.name} ", style=f"bold {color} on grey11")
+        chips.append(f" {m.role} ", style="dim on grey11")
+        chips.append(f" {m.model} ", style="dim italic on grey11")
+        chips.append("  ")
+
+    body = Group(header, Text(""), goal, Text(""), chips)
+    cons.print(Panel(body, border_style="bright_blue", padding=(0, 1), box=_rich_box.ROUNDED))
     cons.print()
+
+
+def _render_turn_block(
+    name: str,
+    role: str,
+    color: str,
+    content: str,
+    *,
+    model: str = "",
+    turn_index: int | None = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    files_written: list | None = None,
+) -> Group:
+    """Return a Group renderable for a completed turn in the new left-bar style."""
+    lines: list = []
+
+    hdr = Text()
+    hdr.append(f"  @{name} ", style=f"bold {color} on grey11")
+    hdr.append(f" {role} ", style="dim on grey11")
+    if model:
+        hdr.append(f" {model} ", style="dim italic on grey11")
+    if turn_index is not None:
+        hdr.append(f"  turn {turn_index}", style="dim on grey11")
+    if prompt_tokens or completion_tokens:
+        hdr.append(
+            f"  ↑{prompt_tokens:,} ↓{completion_tokens:,} tok",
+            style="dim on grey11",
+        )
+    lines.append(hdr)
+
+    for line in (content.split("\n") if content.strip() else [""]):
+        t = Text()
+        t.append("  │ ", style=color)
+        t.append(line)
+        lines.append(t)
+
+    if files_written:
+        t = Text()
+        t.append("  │ ", style=color)
+        t.append(f"📄 wrote: {', '.join(files_written)}", style="dim green")
+        lines.append(t)
+
+    lines.append(Text(f"  └{'─' * 58}", style=f"{color} dim"))
+    return Group(*lines)
 
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
