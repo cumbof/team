@@ -78,6 +78,59 @@ def test_round_robin_early_done() -> None:
     assert [c[0] for c in orch.calls] == ["a", "b"]
 
 
+def test_round_robin_kickoff_prompt_on_first_turn_only() -> None:
+    """kickoff_prompt is passed to the first turn and never again."""
+    team = _team(
+        WorkflowConfig(
+            type="round_robin",
+            max_rounds=2,
+            options={"kickoff_prompt": "go!"},
+        ),
+        ["a", "b"],
+    )
+    scripts = {n: (lambda i: FakeResult(content="ok")) for n in ["a", "b"]}
+    orch = FakeOrch(team, scripts)
+    round_robin(orch)
+    prompts = [p for _, p in orch.calls]
+    assert prompts[0] == "go!", "first turn must receive the kickoff prompt"
+    assert all(p is None for p in prompts[1:]), "subsequent turns must not get the kickoff prompt"
+
+
+def test_round_robin_first_speaker_reorders_members() -> None:
+    """first_speaker moves the named member to the front of the speaking order."""
+    team = _team(
+        WorkflowConfig(
+            type="round_robin",
+            max_rounds=1,
+            options={"first_speaker": "b"},
+        ),
+        ["a", "b", "c"],
+    )
+    scripts = {n: (lambda i: FakeResult(content="ok")) for n in ["a", "b", "c"]}
+    orch = FakeOrch(team, scripts)
+    round_robin(orch)
+    assert [c[0] for c in orch.calls] == ["b", "a", "c"]
+
+
+def test_round_robin_first_speaker_unknown_falls_back(caplog) -> None:
+    """An unknown first_speaker emits a warning and preserves declaration order."""
+    import logging
+    team = _team(
+        WorkflowConfig(
+            type="round_robin",
+            max_rounds=1,
+            options={"first_speaker": "nobody"},
+        ),
+        ["a", "b"],
+    )
+    scripts = {n: (lambda i: FakeResult(content="ok")) for n in ["a", "b"]}
+    orch = FakeOrch(team, scripts)
+    with caplog.at_level(logging.WARNING, logger="team.workflows"):
+        round_robin(orch)
+    assert [c[0] for c in orch.calls] == ["a", "b"]
+    assert "nobody" in caplog.text
+
+
 # --------------------------------------------------------------------------- #
 # manager
 # --------------------------------------------------------------------------- #

@@ -8,7 +8,8 @@ declares ``[[TEAM_DONE]]``).
 We expose three reference workflows:
 
 * :func:`round_robin` — every member speaks in declaration order, repeated
-  ``max_rounds`` times.
+  ``max_rounds`` times.  Supports ``first_speaker`` and ``kickoff_prompt``
+  options (see function docstring).
 * :func:`manager_driven` — a designated *manager* member is asked, before
   every turn, to nominate the next speaker (or to declare done).
 * :func:`review_loop` — a *producer* / *reviewer* pair iterate; the loop
@@ -38,12 +39,56 @@ log = logging.getLogger(__name__)
 
 
 def round_robin(orch: "Orchestrator") -> None:
+    """Drive the team in round-robin order for up to ``max_rounds`` rounds.
+
+    Supported ``workflow.options``:
+
+    * ``kickoff_prompt`` — explicit prompt sent on the **very first turn only**.
+      Use this to give the first speaker a concrete directive (e.g.
+      ``"@engineer, produce fibonacci.py now."``) so small models don't have to
+      infer what to do from the goal alone.
+    * ``first_speaker`` — name of the member who should speak first.  When
+      omitted, members speak in their YAML declaration order.  Unknown names
+      are ignored with a warning and the declaration order is preserved.
+
+    Example YAML::
+
+        workflow:
+          type: round_robin
+          max_rounds: 5
+          options:
+            first_speaker: engineer
+            kickoff_prompt: "@engineer, produce fibonacci.py now."
+    """
+    opts = getattr(orch.team.workflow, "options", None) or {}
+    kickoff_prompt: str | None = opts.get("kickoff_prompt")
+    first_speaker: str | None = opts.get("first_speaker")
+
     members = list(orch.members.values())
+
+    if first_speaker:
+        if first_speaker not in orch.members:
+            log.warning(
+                "round_robin: first_speaker %r not found in members %s; "
+                "falling back to declaration order",
+                first_speaker,
+                list(orch.members),
+            )
+        else:
+            # Place first_speaker at index 0; keep everyone else in declaration order.
+            members = [orch.members[first_speaker]] + [
+                m for m in members if m.name != first_speaker
+            ]
+
     max_rounds = orch.team.workflow.max_rounds
+    is_first_turn = True
+
     for round_idx in range(max_rounds):
         log.info("round %d/%d", round_idx + 1, max_rounds)
         for m in members:
-            res = orch.run_turn(m.name)
+            prompt = kickoff_prompt if is_first_turn else None
+            is_first_turn = False
+            res = orch.run_turn(m.name, prompt=prompt)
             if res.declared_done:
                 log.info("member %s declared TEAM_DONE", m.name)
                 return

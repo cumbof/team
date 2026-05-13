@@ -227,6 +227,22 @@ class Orchestrator:
             result = member.take_turn(**_take_turn_kwargs)
         if self._on_turn_end:
             self._on_turn_end(member_name)
+
+        # Warn when the member's context window is near-full.  A saturated
+        # context causes Ollama to silently truncate early turns, which makes
+        # small models lose track of the conversation and produce garbage output.
+        eff_ctx = resolve_member_setting(member.config, self.team.defaults, "context_window")
+        if eff_ctx and result.prompt_tokens >= int(eff_ctx * 0.9):
+            log.warning(
+                "@%s context window near-full: %d / %d prompt tokens used (%.0f%%). "
+                "Consider raising context_window or setting "
+                "context_strategy: sliding_window in the team config.",
+                member_name,
+                result.prompt_tokens,
+                eff_ctx,
+                100.0 * result.prompt_tokens / eff_ctx,
+            )
+
         self.transcript.append(
             speaker=member.name,
             role=member.config.role,
@@ -399,6 +415,41 @@ class Orchestrator:
     def run(self) -> None:
         wf = get_workflow(self.team.workflow.type)
         wf(self)
+        self._check_run_outcome()
+
+    def _check_run_outcome(self) -> None:
+        """Warn when the workflow finishes without clear evidence of success.
+
+        Two conditions trigger a warning:
+
+        * The workflow exhausted all rounds without any member emitting
+          ``[[TEAM_DONE]]``.
+        * Additionally, no workspace files were written during the run — the
+          strongest signal that the team produced no tangible deliverable.
+        """
+        live_turns = [
+            t for t in self.transcript.turns
+            if t.speaker not in ("orchestrator", "human")
+        ]
+        if not live_turns:
+            return
+
+        declared_done = any(DONE_TOKEN in t.content for t in live_turns)
+        files_produced = any(t.files_written for t in live_turns)
+
+        if not declared_done and not files_produced:
+            log.warning(
+                "Run ended without [[TEAM_DONE]] and without any workspace "
+                "files being written — the team goal may not have been achieved. "
+                "Check the transcript and consider adjusting personas, "
+                "model size, or context_window.",
+            )
+        elif not declared_done:
+            log.warning(
+                "Run ended without [[TEAM_DONE]]: the workflow exhausted all "
+                "rounds before any member signalled completion. "
+                "Consider increasing max_rounds or tightening member instructions.",
+            )
 
     # ------------------------------------------------------------------ #
     # Inspection helpers
