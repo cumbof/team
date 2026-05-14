@@ -9,6 +9,10 @@ persona, role, and goal — that collaborate until the work is done.
 
 ![team](assets/logo.png)
 
+<p align="center"><b>⭐ Star this repository to stay updated with new releases ⭐</b></p>
+<br>
+<br>
+
 `team` lets you describe a small "organisation" of LLMs in a single YAML
 file and then bring it to life: every member runs in **its own isolated
 Docker container** with its own [Ollama](https://ollama.com/) daemon and
