@@ -1013,7 +1013,7 @@ defaults:
 | `none` (default) | Full transcript always sent. |
 | `sliding_window` | Only the last `context_budget` turns are sent. |
 | `truncate` | Oldest turns are dropped until the estimated token count fits within `context_budget`. A note is prepended explaining that earlier turns were omitted. |
-| `summarize` | Same as `truncate` (future: will use a lightweight model to summarise omitted turns). |
+| `summarize` | The oldest turns are compressed into a concise bullet-point digest by calling the member's own LLM (at temperature 0.2). The digest is prepended under a *"Summary of N earlier turn(s)"* heading; the most-recent turns are kept verbatim. 80 % of `context_budget` is reserved for recent turns, 20 % for the digest. Falls back to a plain omission notice if the summarization call fails. |
 
 Override per member:
 
