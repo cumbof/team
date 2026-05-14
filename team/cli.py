@@ -352,27 +352,32 @@ def _print_status(orch: Orchestrator) -> None:
 
 
 def _print_token_summary(orch: Orchestrator) -> None:
-    """Print a token usage summary table after a workflow completes."""
+    """Print a token-usage summary in the compact bar-chart style."""
     from team.config import resolve_member_setting
     from team.pricing import estimate_cost, format_cost
 
     totals = orch._token_totals
     if not any(v["prompt"] + v["completion"] for v in totals.values()):
         return
-    table = Table(title="[bold]Token usage[/bold]",
-                  border_style="dim", header_style="bold dim")
-    table.add_column("member")
-    table.add_column("prompt", justify="right")
-    table.add_column("completion", justify="right")
-    table.add_column("total", justify="right")
-    table.add_column("est. cost", justify="right")
-    grand_p = grand_c = 0
+
+    grand_p = sum(v["prompt"] for v in totals.values())
+    grand_c = sum(v["completion"] for v in totals.values())
+    grand_t = grand_p + grand_c
+
+    hdr = Text()
+    hdr.append("  📊  Token usage", style="bold")
+    hdr.append(f"   {grand_t:,} total  ·  {len(totals)} members", style="dim")
+    console.print(hdr)
+    console.print()
+
+    bar_width = 28
     grand_cost: float | None = 0.0
-    for i, (name, counts) in enumerate(totals.items()):
+    for name, counts in totals.items():
         color = _get_member_color(name, orch.team.members)
         p, c = counts["prompt"], counts["completion"]
-        grand_p += p
-        grand_c += c
+        t = p + c
+        filled = round(t / grand_t * bar_width) if grand_t else 0
+        bar = "█" * filled + "░" * (bar_width - filled)
         try:
             mc = orch.team.member(name)
             backend = resolve_member_setting(mc, orch.team.defaults, "backend") or "ollama"
@@ -380,144 +385,174 @@ def _print_token_summary(orch: Orchestrator) -> None:
             cost = estimate_cost(mc.model, p, c, is_local=is_local)
         except (KeyError, AttributeError):
             cost = None
+            is_local = True
         if cost is None:
-            grand_cost = None  # if any member cost is unknown, total is unknown
+            grand_cost = None
         elif grand_cost is not None:
             grand_cost += cost
-        table.add_row(
-            f"[bold {color}]@{name}[/bold {color}]",
-            str(p), str(c), str(p + c),
-            format_cost(cost),
-        )
-    table.add_section()
-    table.add_row(
-        "[bold]total[/bold]",
-        str(grand_p), str(grand_c), str(grand_p + grand_c),
-        format_cost(grand_cost),
-    )
-    console.print(table)
+        row = Text()
+        row.append(f"  @{name:<10}", style=f"bold {color}")
+        row.append(f" [{bar}] ", style=color)
+        row.append(f"{t:>6,} tok", style="bold")
+        row.append(f"    ↑{p:,} prompt  ↓{c:,} completion", style="dim")
+        if cost is not None and not is_local:
+            row.append(f"  {format_cost(cost)}", style="dim")
+        console.print(row)
+
+    if grand_cost is not None and grand_cost > 0:
+        console.print()
+        cost_line = Text()
+        cost_line.append("  est. total cost: ", style="dim")
+        cost_line.append(format_cost(grand_cost), style="dim bold")
+        console.print(cost_line)
 
 
 def _setup_streaming(orch: Orchestrator, cons: Console) -> None:
-    """Wire live panel rendering for each member turn.
+    """Wire live left-bar rendering for each member turn.
 
-    Each member turn is rendered inside a colour-coded Rich Panel that updates
-    token-by-token as the LLM streams its reply.  Tool invocations and their
-    results are appended to the same panel so the user sees a single coherent
-    view per turn.  A dim Rule separates rounds.
+    Each turn is rendered with a colour-coded header bar and a left gutter
+    (│) that grows token-by-token.  Tool calls and results are inlined below
+    the content.  A compact round-complete footer separates rounds.
     """
-    # Mutable closure state — avoids global variables.
     state: dict = {
         "live": None,
         "text": Text(),
-        "tools": [],
+        "tools": [],   # Text lines for tool calls and results
         "name": "",
         "role": "",
+        "model": "",
         "color": "cyan",
+        "pending_round_header": False,
+        "pending_round": 2,
     }
 
-    def _panel() -> Panel:
-        parts: list = []
-        if len(state["text"]) > 0:
-            parts.append(state["text"])
-        parts.extend(state["tools"])
-        body = Group(*parts) if parts else Text("thinking…", style="dim italic")
-        title = (
-            f"[bold {state['color']}]@{state['name']}[/bold {state['color']}]"
-            f" [dim]· {state['role']}[/dim]"
-        )
-        return Panel(body, title=title, border_style=state["color"], padding=(0, 1))
+    def _live_group() -> Group:
+        lines: list = []
+        hdr = Text()
+        hdr.append(f"  @{state['name']} ", style=f"bold {state['color']} on grey11")
+        hdr.append(f" {state['role']} ", style="dim on grey11")
+        if state["model"]:
+            hdr.append(f" {state['model']} ", style="dim italic on grey11")
+        lines.append(hdr)
+        text_str = str(state["text"])
+        if text_str.strip():
+            for line in text_str.split("\n"):
+                t = Text()
+                t.append("  │ ", style=state["color"])
+                t.append(line)
+                lines.append(t)
+        else:
+            t = Text()
+            t.append("  │ ", style=state["color"])
+            t.append("thinking…", style="dim italic")
+            lines.append(t)
+        lines.extend(state["tools"])
+        lines.append(Text(f"  └{'─' * 58}", style=f"{state['color']} dim"))
+        return Group(*lines)
 
     def on_turn_start(name: str) -> None:
+        if state["pending_round_header"]:
+            max_rounds = orch.team.workflow.max_rounds
+            rh = Text()
+            rh.append(f"  ▶  Round {state['pending_round']} / {max_rounds}", style="bold bright_blue")
+            rh.append(f"   {len(orch.team.members)} members active", style="dim")
+            cons.print(rh)
+            cons.print(Text("  " + "─" * 60, style="bright_blue dim"))
+            cons.print()
+            state["pending_round_header"] = False
         state["name"] = name
         state["text"] = Text()
         state["tools"] = []
         try:
-            state["role"] = orch.team.member(name).role
+            member = orch.team.member(name)
+            state["role"] = member.role
+            state["model"] = member.model
         except KeyError:
             state["role"] = ""
+            state["model"] = ""
         state["color"] = _get_member_color(name, orch.team.members)
-        live = Live(_panel(), console=cons, refresh_per_second=12, transient=False)
+        live = Live(_live_group(), console=cons, refresh_per_second=12, transient=False)
         live.start()
         state["live"] = live
 
     def on_token(token: str) -> None:
         state["text"].append(token)
         if state["live"]:
-            state["live"].update(_panel())
+            state["live"].update(_live_group())
 
     def on_turn_end(_name: str) -> None:
         live = state["live"]
         if live:
-            live.update(_panel())
+            live.update(_live_group())
             live.stop()
             state["live"] = None
+        cons.print()
 
     def on_tool_call(_member: str, tool_name: str, body: str) -> None:
-        preview = body[:70].replace("\n", " ").strip()
-        if len(body) > 70:
+        preview = body[:65].replace("\n", " ").strip()
+        if len(body) > 65:
             preview += "…"
-        row = Text()
-        row.append("\n  🔧 ", style="bold magenta")
-        row.append(tool_name, style="bold magenta")
-        row.append(f"  {preview}", style="dim")
-        state["tools"].append(row)
+        tool_line = Text()
+        tool_line.append("  │  ", style=state["color"])
+        tool_line.append(" 🔧 ", style="magenta")
+        tool_line.append(tool_name, style="bold magenta")
+        tool_line.append(f"  {preview}", style="dim")
+        state["tools"].append(tool_line)
         if state["live"]:
-            state["live"].update(_panel())
+            state["live"].update(_live_group())
 
     def on_tool_result(_member: str, _tool: str, result: str) -> None:
         preview = result[:120].replace("\n", " ").strip()
         if len(result) > 120:
             preview += "…"
-        row = Text()
-        row.append("     ↳ ", style="dim green")
-        row.append(preview, style="dim")
-        state["tools"].append(row)
+        res_line = Text()
+        res_line.append("  │     ", style=state["color"])
+        res_line.append("↳ ", style="green")
+        res_line.append(preview, style="dim green")
+        state["tools"].append(res_line)
         if state["live"]:
-            state["live"].update(_panel())
+            state["live"].update(_live_group())
 
     def on_round_end(round_idx: int) -> None:
         max_rounds = orch.team.workflow.max_rounds
+        rf = Text()
+        rf.append(f"  ✓  Round {round_idx + 1} complete", style="bold green")
+        cons.print(rf)
         cons.print()
-        cons.print(Rule(
-            f"[dim]round {round_idx + 1} of {max_rounds} complete[/dim]",
-            style="dim",
-        ))
-        cons.print()
+        if round_idx + 1 < max_rounds:
+            state["pending_round_header"] = True
+            state["pending_round"] = round_idx + 2
 
     def on_parallel_round_start(names: list) -> None:
-        """Show a brief notice while parallel LLM calls are in flight."""
-        member_list = "  ".join(
+        color_list = "  ".join(
             f"[bold {_get_member_color(n, orch.team.members)}]@{n}[/bold {_get_member_color(n, orch.team.members)}]"
             for n in names
         )
-        cons.print(
-            Rule(
-                f"[bold blue]⚡ parallel[/bold blue] [dim]{member_list}[/dim]",
-                style="blue dim",
-            )
-        )
+        ph = Text()
+        ph.append("  ⚡  parallel  ", style="bold bright_blue")
+        ph.append(color_list)
+        cons.print(ph)
+        cons.print(Text("  " + "─" * 60, style="bright_blue dim"))
         cons.print()
 
     def on_parallel_round_end(results: list) -> None:
-        """Render all parallel-turn panels as completed static panels."""
         for name, result in results:
             color = _get_member_color(name, orch.team.members)
             try:
-                role = orch.team.member(name).role
+                member = orch.team.member(name)
+                role = member.role
+                model = member.model
             except KeyError:
                 role = ""
-            title = (
-                f"[bold {color}]@{name}[/bold {color}]"
-                f" [dim]· {role}[/dim]"
-            )
-            body = Text(result.content.strip() if result.content else "")
-            if result.files_written:
-                body.append(
-                    f"\n\n📄 wrote: {', '.join(result.files_written)}",
-                    style="dim green",
+                model = ""
+            cons.print(
+                _render_turn_block(
+                    name, role, color,
+                    result.content.strip() if result.content else "",
+                    model=model,
+                    files_written=result.files_written or [],
                 )
-            cons.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
+            )
             cons.print()
 
     orch._on_turn_start = on_turn_start
@@ -541,17 +576,16 @@ def _setup_interactive(orch: Orchestrator, cons: Console) -> None:
     def on_round_end(round_idx: int) -> None:
         if _prev:
             _prev(round_idx)
-        cons.print(
-            "[dim]Enter a directive for the team (or press Enter to continue):[/dim] ",
-            end="",
-        )
+        cons.print("  [dim]─ enter a directive, or press Enter to continue:[/dim] ", end="")
         try:
             text = input()
         except (EOFError, KeyboardInterrupt):
             return
         if text.strip():
             orch.inject_directive(text)
-            cons.print("[bold yellow]↳ directive injected[/bold yellow]")
+            inj = Text()
+            inj.append("  ↳ directive injected", style="bold yellow")
+            cons.print(inj)
 
     orch._on_round_end = on_round_end
 
@@ -631,7 +665,11 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
         orch._kickoff()  # noqa: SLF001 — internal but safe
 
     _print_team_banner(cfg, console)
-    console.print(Rule(f"[dim]round 1 of {cfg.workflow.max_rounds}[/dim]", style="dim"))
+    _rh = Text()
+    _rh.append(f"  ▶  Round 1 / {cfg.workflow.max_rounds}", style="bold bright_blue")
+    _rh.append(f"   {len(cfg.members)} members active", style="dim")
+    console.print(_rh)
+    console.print(Text("  " + "─" * 60, style="bright_blue dim"))
     console.print()
     _budget_hit = False
     _retry_exhausted = False
@@ -676,12 +714,21 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
     console.print()
     _print_token_summary(orch)
     if _retry_exhausted:
-        status_icon = "[red]✗ failed[/red]"
+        _done = Text()
+        _done.append("  ✗  Run failed", style="bold red")
+        _done.append("   transcript → ", style="dim")
+        _done.append(str(orch.transcript_path()), style="dim underline cyan")
     elif _budget_hit:
-        status_icon = "[yellow]⚠ stopped[/yellow]"
+        _done = Text()
+        _done.append("  ⚠  Budget exhausted", style="bold yellow")
+        _done.append("   transcript → ", style="dim")
+        _done.append(str(orch.transcript_path()), style="dim underline cyan")
     else:
-        status_icon = "[green]✓ done[/green]"
-    console.print(f"{status_icon}  transcript → {orch.transcript_path()}")
+        _done = Text()
+        _done.append("  ✅  Done", style="bold green")
+        _done.append("   transcript → ", style="dim")
+        _done.append(str(orch.transcript_path()), style="dim underline cyan")
+    console.print(_done)
 
 
 @cli.command()
@@ -902,14 +949,18 @@ def transcript(team_file: str) -> None:
         t = json.loads(line)
         name = t["speaker"]
         color = _get_member_color(name, cfg.members)
-        title = (
-            f"[bold {color}]@{name}[/bold {color}]"
-            f" [dim]· {t['role']}  ·  turn {t['index']}[/dim]"
+        role = t.get("role", "")
+        model = t.get("model", "")
+        content = t.get("content", "")
+        files = t.get("files_written") or []
+        console.print(
+            _render_turn_block(
+                name, role, color, content,
+                model=model,
+                turn_index=t.get("index"),
+                files_written=files,
+            )
         )
-        body = Text(t["content"])
-        if t.get("files_written"):
-            body.append(f"\n\n📄 wrote: {', '.join(t['files_written'])}", style="dim green")
-        console.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
         console.print()
 
 
@@ -1377,7 +1428,11 @@ def test_cmd(
         orch = Orchestrator(cfg)
         _setup_streaming(orch, console)
         _print_team_banner(cfg, console)
-        console.print(Rule(f"[dim]round 1 of {cfg.workflow.max_rounds}[/dim]", style="dim"))
+        _rh = Text()
+        _rh.append(f"  ▶  Round 1 / {cfg.workflow.max_rounds}", style="bold bright_blue")
+        _rh.append(f"   {len(cfg.members)} members active", style="dim")
+        console.print(_rh)
+        console.print(Text("  " + "─" * 60, style="bright_blue dim"))
         console.print()
         with console.status("[bold blue]starting containers and pulling models…[/bold blue]"):
             orch.up()
@@ -1580,17 +1635,17 @@ def _replay_render_turn(
             )
         cons.print(tbl)
     else:
-        body = Text(turn.content.rstrip())
-        if turn.files_written:
-            body.append(f"\n\n📄 wrote: {', '.join(turn.files_written)}", style="dim green")
-        tok_str = ""
-        if turn.prompt_tokens or turn.completion_tokens:
-            tok_str = f"  ·  {turn.prompt_tokens}↑ {turn.completion_tokens}↓ tok"
-        title = (
-            f"[bold {color}]@{turn.speaker}[/bold {color}]"
-            f" [dim]· {turn.role}  ·  turn {turn.index}{tok_str}[/dim]"
+        cons.print(
+            _render_turn_block(
+                turn.speaker, turn.role, color,
+                turn.content.rstrip(),
+                model=getattr(turn, "model", ""),
+                turn_index=turn.index,
+                prompt_tokens=turn.prompt_tokens or 0,
+                completion_tokens=turn.completion_tokens or 0,
+                files_written=turn.files_written or [],
+            )
         )
-        cons.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
 
     # Footer ---------------------------------------------------------------- #
     cons.print()
@@ -1793,14 +1848,14 @@ def replay(team_file: str, start_turn: int, speaker: str | None) -> None:
     if not sys.stdin.isatty():
         for t in turns:
             color = _get_member_color(t.speaker, cfg.members)
-            title = (
-                f"[bold {color}]@{t.speaker}[/bold {color}]"
-                f" [dim]· {t.role}  ·  turn {t.index}[/dim]"
+            console.print(
+                _render_turn_block(
+                    t.speaker, t.role, color, t.content,
+                    model=getattr(t, "model", ""),
+                    turn_index=t.index,
+                    files_written=t.files_written or [],
+                )
             )
-            body = Text(t.content)
-            if t.files_written:
-                body.append(f"\n\n📄 wrote: {', '.join(t.files_written)}", style="dim green")
-            console.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
             console.print()
         return
 
@@ -1816,12 +1871,14 @@ def replay(team_file: str, start_turn: int, speaker: str | None) -> None:
         console.print("[dim]Falling back to non-interactive output.[/dim]")
         for t in turns:
             color = _get_member_color(t.speaker, cfg.members)
-            title = (
-                f"[bold {color}]@{t.speaker}[/bold {color}]"
-                f" [dim]· {t.role}  ·  turn {t.index}[/dim]"
+            console.print(
+                _render_turn_block(
+                    t.speaker, t.role, color, t.content,
+                    model=getattr(t, "model", ""),
+                    turn_index=t.index,
+                    files_written=t.files_written or [],
+                )
             )
-            body = Text(t.content)
-            console.print(Panel(body, title=title, border_style=color, padding=(0, 1)))
             console.print()
         return
 
