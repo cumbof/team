@@ -128,19 +128,29 @@ class Transcript:
             "files_written": total_files,
         }
 
-    def render(self, viewer: str | None = None, max_turns: int | None = None) -> str:
+    def render(
+        self,
+        viewer: str | None = None,
+        max_turns: int | None = None,
+        first_n: int | None = None,
+    ) -> str:
         """Render the transcript as plain text for inclusion in a prompt.
 
         ``viewer`` is the member who will *read* this rendering; their own
         previous turns are tagged so they recognise themselves.
 
-        ``max_turns`` caps how many of the most-recent turns are included —
-        useful for very long runs where the full history would exceed a model's
-        context window.
+        ``max_turns`` caps how many of the *most-recent* turns are included —
+        useful for sliding-window context management.
+
+        ``first_n`` keeps only the *oldest* N turns — used when summarizing
+        the early portion of a long conversation.  Mutually exclusive with
+        ``max_turns``; ``max_turns`` takes precedence when both are provided.
         """
         turns = self.turns
         if max_turns is not None and len(turns) > max_turns:
             turns = turns[-max_turns:]
+        elif first_n is not None and len(turns) > first_n:
+            turns = turns[:first_n]
         lines: list[str] = []
         for t in turns:
             tag = f"@{t.speaker}"

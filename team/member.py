@@ -183,7 +183,7 @@ class Member:
         if strategy == "sliding_window" and budget > 0:
             return transcript.render(viewer=self.name, max_turns=budget)
 
-        if strategy in ("truncate", "summarize") and budget > 0:
+        if strategy == "truncate" and budget > 0:
             # Estimate tokens at ~4 chars/token; binary-search for the max
             # number of turns that fits within the budget.
             full = transcript.render(viewer=self.name)
@@ -202,7 +202,67 @@ class Member:
             )
             return prefix + trimmed
 
+        if strategy == "summarize" and budget > 0:
+            full = transcript.render(viewer=self.name)
+            if len(full) // 4 <= budget:
+                return full
+            # Reserve 20 % of the budget for the summary; keep 80 % for recent turns.
+            recent_budget = int(budget * 0.80)
+            n_total = len(transcript.turns)
+            n_recent = n_total
+            while n_recent > 1 and (
+                len(transcript.render(viewer=self.name, max_turns=n_recent)) // 4 > recent_budget
+            ):
+                n_recent = max(1, n_recent - max(1, n_recent // 8))
+            n_old = n_total - n_recent
+            recent_text = transcript.render(viewer=self.name, max_turns=n_recent)
+            if n_old > 0:
+                old_text = transcript.render(viewer=self.name, first_n=n_old)
+                summary = self._summarize_transcript(old_text, n_old)
+                return (
+                    f"[Summary of {n_old} earlier turn(s)]\n{summary}\n\n"
+                    f"[Recent conversation ({n_recent} turn(s))]\n{recent_text}"
+                )
+            return recent_text
+
         return transcript.render(viewer=self.name)
+
+    def _summarize_transcript(self, old_text: str, turn_count: int) -> str:
+        """Ask the LLM to compress *old_text* into a concise bullet-point digest.
+
+        Uses the member's own model at low temperature for factual accuracy.
+        Falls back to a plain omission notice if the call fails.
+        """
+        system = (
+            "You are a conversation summarizer. "
+            "Produce a concise bullet-point digest of the key decisions, conclusions, "
+            "facts, and open questions established in the conversation excerpt below. "
+            "Be brief but capture every important detail. Output only the digest."
+        )
+        user = f"Summarize the following conversation turns:\n\n{old_text}"
+        try:
+            summary = self.client.chat(
+                model=self.config.model,
+                messages=[
+                    ChatMessage(role="system", content=system),
+                    ChatMessage(role="user", content=user),
+                ],
+                temperature=0.2,
+                top_p=None,
+                num_ctx=resolve_member_setting(self.config, self.team.defaults, "context_window"),
+                keep_alive=resolve_member_setting(self.config, self.team.defaults, "keep_alive"),
+            )
+            return summary.strip()
+        except Exception as exc:
+            log.warning(
+                "@%s: context summarization failed (%s); omitting %d earlier turn(s)",
+                self.name,
+                exc,
+                turn_count,
+            )
+            return (
+                f"[Summarization failed — {turn_count} earlier turn(s) omitted. Error: {exc}]"
+            )
 
     # ----- conversation ------------------------------------------------- #
 
