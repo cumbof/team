@@ -113,6 +113,12 @@ class Defaults:
     # local Ollama server's memory at the end of the run (after the workflow
     # completes).  Has no effect for Docker-managed or openai_compat members.
     unload_on_exit: bool = False
+    # persona_reinforcement: when True, a brief "Persona reminder" block is
+    # prepended to each member's "Your turn" section so the model re-reads its
+    # role and persona description before every reply.  This combats prompt
+    # drift in long conversations where smaller models may forget their assigned
+    # identity.  Disabled by default to avoid unnecessary token overhead.
+    persona_reinforcement: bool = False
 
 
 @dataclass
@@ -172,6 +178,8 @@ class MemberConfig:
     keep_alive: str | None = None
     # unload_on_exit: per-member override; None = inherit from defaults.
     unload_on_exit: bool | None = None
+    # persona_reinforcement: per-member override; None = inherit from defaults.
+    persona_reinforcement: bool | None = None
     # Retry settings — override defaults.max_retries / defaults.retry_backoff per member
     max_retries: int | None = None      # None = inherit from defaults
     retry_backoff: float | None = None  # None = inherit from defaults
@@ -443,6 +451,7 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         retry_backoff=data.get("retry_backoff"),
         keep_alive=data.get("keep_alive"),
         unload_on_exit=data.get("unload_on_exit"),
+        persona_reinforcement=data.get("persona_reinforcement"),
         routes=_parse_routes(data.get("routes", []), ctx),
     )
 

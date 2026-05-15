@@ -342,6 +342,18 @@ class Member:
         # Transcript -------------------------------------------------------- #
         ctx_lines.append("## Conversation so far")
         ctx_lines.append(self._apply_context_strategy(transcript) or "(no turns yet)")
+
+        # Persona reinforcement — re-state role + persona before every reply to
+        # prevent smaller models from drifting away from their assigned identity
+        # over long conversations.
+        if resolve_member_setting(self.config, self.team.defaults, "persona_reinforcement"):
+            ctx_lines.append("")
+            ctx_lines.append("## Persona reminder")
+            ctx_lines.append(
+                f"You are @{self.config.name} — {self.config.role}. "
+                f"Stay in character:\n{self.config.persona.strip()}"
+            )
+
         if prompt:
             ctx_lines.append("")
             ctx_lines.append("## Your turn")
