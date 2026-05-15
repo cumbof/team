@@ -1971,5 +1971,407 @@ def replay(team_file: str, start_turn: int, speaker: str | None) -> None:
     )
 
 
+
+# --------------------------------------------------------------------------- #
+# forge
+# --------------------------------------------------------------------------- #
+
+
+def _forge_normalize(name: str) -> tuple[str, str, str]:
+    """Return (dir_name, pkg_name, ext_name) from a raw extension name.
+
+    Accepts either "bioinformatics" or "team-bioinformatics".
+    Returns e.g. ("team-bioinformatics", "team_bioinformatics", "bioinformatics").
+    """
+    name = name.strip().lower().replace(" ", "-")
+    ext_name = name.removeprefix("team-")
+    ext_name = ext_name.replace("-", "_")
+    if not ext_name.isidentifier():
+        raise click.BadParameter(
+            f"{ext_name!r} is not a valid Python identifier.  "
+            "Use only letters, digits, and underscores."
+        )
+    dir_name = f"team-{ext_name.replace('_', '-')}"
+    pkg_name = f"team_{ext_name}"
+    return dir_name, pkg_name, ext_name
+
+
+def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
+    """Return a mapping of relative path -> file content for a new extension scaffold."""
+    import datetime as _dt
+    ext_title = ext_name.replace("_", " ").title()
+    hyphen_name = ext_name.replace("_", "-")
+    year = _dt.date.today().year
+
+    pyproject = (
+        "[build-system]\n"
+        "requires = [\"setuptools>=64\", \"wheel\"]\n"
+        "build-backend = \"setuptools.build_meta\"\n"
+        "\n"
+        "[project]\n"
+        f'name = "team-{hyphen_name}"\n'
+        "version = \"0.1.0\"\n"
+        f'description = "{ext_title} extensions for the team multi-agent LLM framework."\n'
+        "readme = \"README.md\"\n"
+        "license = { file = \"LICENSE\" }\n"
+        "requires-python = \">=3.9\"\n"
+        "authors = [{ name = \"Your Name\" }]\n"
+        f'keywords = ["llm", "{hyphen_name}", "multi-agent", "team"]\n'
+        "dependencies = [\n"
+        "    \"team-core>=0.15.5\",\n"
+        "    \"click>=8.1\",\n"
+        "    \"rich>=13.0\",\n"
+        "]\n"
+        "\n"
+        "[project.optional-dependencies]\n"
+        "dev = [\n"
+        "    \"pytest>=7.0\",\n"
+        "    \"pytest-mock>=3.10\",\n"
+        "]\n"
+        "\n"
+        "[project.entry-points.\"team.persona_dirs\"]\n"
+        f'{ext_name} = "{pkg_name}:personas_dir"\n'
+        "\n"
+        "[project.entry-points.\"team.skills\"]\n"
+        f'# my_skill = "{pkg_name}.skills.my_skill"\n'
+        "\n"
+        "[project.entry-points.\"team.commands\"]\n"
+        f'{ext_name} = "{pkg_name}.commands:{ext_name}"\n'
+        "\n"
+        "[project.urls]\n"
+        f'Homepage = "https://github.com/YOUR_USERNAME/team-{hyphen_name}"\n'
+        f'Issues = "https://github.com/YOUR_USERNAME/team-{hyphen_name}/issues"\n'
+        "\n"
+        "[tool.pytest.ini_options]\n"
+        "markers = [\n"
+        "    \"integration: end-to-end tests that require external services\",\n"
+        "]\n"
+        "\n"
+        "[tool.setuptools.packages.find]\n"
+        f'include = ["{pkg_name}*"]\n'
+        "exclude = [\"tests*\", \"examples*\"]\n"
+        "\n"
+        "[tool.setuptools.package-data]\n"
+        f'{pkg_name} = ["skills/*.py", "skills/*.md", "personas/*.yaml", "examples/*.yaml"]\n'
+    )
+
+    init_py = (
+        f'"""{pkg_name} -- {ext_title} extensions for the team multi-agent LLM framework.\n'
+        "\n"
+        "Extension points registered\n"
+        "---------------------------\n"
+        "``team.skills``\n"
+        "    Short skill names usable anywhere in a team YAML ``skills:`` list.\n"
+        "\n"
+        "``team.persona_dirs``\n"
+        f'    Personas in ``{pkg_name}/personas/`` are auto-discovered with the ``@name`` shorthand.\n'
+        "\n"
+        "``team.commands``\n"
+        f'    ``team {ext_name}`` subcommand group injected into the ``team`` CLI.\n'
+        '"""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "from pathlib import Path\n"
+        "\n"
+        "\n"
+        "def skills_dir() -> Path:\n"
+        f'    """Return the absolute path to the {pkg_name} skills directory."""\n'
+        "    return Path(__file__).parent / \"skills\"\n"
+        "\n"
+        "\n"
+        "def personas_dir() -> Path:\n"
+        f'    """Return the absolute path to the {pkg_name} personas directory."""\n'
+        "    return Path(__file__).parent / \"personas\"\n"
+        "\n"
+        "\n"
+        "def examples_dir() -> Path:\n"
+        f'    """Return the absolute path to the {pkg_name} examples directory."""\n'
+        "    return Path(__file__).parent / \"examples\"\n"
+        "\n"
+        "\n"
+        "__all__ = [\"skills_dir\", \"personas_dir\", \"examples_dir\"]\n"
+    )
+
+    commands_py = (
+        f'"""{ext_name} subcommand group -- accessible as ``team {ext_name} <cmd>``."""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "from team.extension import make_extension_commands\n"
+        f'from {pkg_name} import examples_dir, personas_dir, skills_dir\n'
+        "\n"
+        "_SKILL_DESCRIPTIONS: dict[str, str] = {\n"
+        "    # \"my_skill\": \"Does something useful.\",\n"
+        "}\n"
+        "\n"
+        "_SCENARIO_DESCRIPTIONS: dict[str, str] = {\n"
+        "    # \"my-scenario\": \"Runs a multi-step analysis.\",\n"
+        "}\n"
+        "\n"
+        f'{ext_name} = make_extension_commands(\n'
+        f'    package_name="team-{hyphen_name}",\n'
+        f'    group_name="{ext_name}",\n'
+        f'    description="{ext_title} extensions for the team multi-agent framework.",\n'
+        "    skills_dir=skills_dir,\n"
+        "    personas_dir=personas_dir,\n"
+        "    examples_dir=examples_dir,\n"
+        "    skill_descriptions=_SKILL_DESCRIPTIONS,\n"
+        "    scenario_descriptions=_SCENARIO_DESCRIPTIONS,\n"
+        ")\n"
+    )
+
+    test_py = (
+        f'"""Standard extension package tests for team-{hyphen_name}."""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "from pathlib import Path\n"
+        "\n"
+        "import pytest\n"
+        "import yaml\n"
+        "from click.testing import CliRunner\n"
+        "\n"
+        f'from {pkg_name} import examples_dir, personas_dir, skills_dir\n'
+        f'from {pkg_name}.commands import {ext_name}\n'
+        "\n"
+        "\n"
+        "def test_skills_dir_exists():\n"
+        "    assert skills_dir().is_dir()\n"
+        "\n"
+        "\n"
+        "def test_personas_dir_exists():\n"
+        "    assert personas_dir().is_dir()\n"
+        "\n"
+        "\n"
+        "def test_examples_dir_exists():\n"
+        "    assert examples_dir().is_dir()\n"
+        "\n"
+        "\n"
+        "@pytest.mark.parametrize(\n"
+        "    \"yaml_path\",\n"
+        f'    list((Path(__file__).parent.parent / "{pkg_name}" / "personas").glob("*.yaml")),\n'
+        "    ids=lambda p: p.stem,\n"
+        ")\n"
+        "def test_persona_yaml_has_required_fields(yaml_path):\n"
+        "    raw = yaml.safe_load(yaml_path.read_text(encoding=\"utf-8\"))\n"
+        "    assert isinstance(raw, dict)\n"
+        "    for field in (\"role\", \"description\", \"persona\"):\n"
+        "        assert field in raw, f\"{yaml_path.name} missing {field!r}\"\n"
+        "\n"
+        "\n"
+        "@pytest.mark.parametrize(\n"
+        "    \"yaml_path\",\n"
+        f'    list((Path(__file__).parent.parent / "{pkg_name}" / "examples").glob("*.yaml")),\n'
+        "    ids=lambda p: p.stem,\n"
+        ")\n"
+        "def test_example_yaml_parseable(yaml_path):\n"
+        "    raw = yaml.safe_load(yaml_path.read_text(encoding=\"utf-8\"))\n"
+        "    assert isinstance(raw, dict)\n"
+        "    for key in (\"name\", \"goal\", \"workflow\", \"members\"):\n"
+        "        assert key in raw\n"
+        "    assert isinstance(raw[\"members\"], list) and len(raw[\"members\"]) >= 1\n"
+        "\n"
+        "\n"
+        "def test_cli_help():\n"
+        f'    result = CliRunner().invoke({ext_name}, ["--help"])\n'
+        "    assert result.exit_code == 0\n"
+        "\n"
+        "\n"
+        "def test_cli_scenarios():\n"
+        f'    result = CliRunner().invoke({ext_name}, ["scenarios"])\n'
+        "    assert result.exit_code == 0\n"
+        "\n"
+        "\n"
+        "def test_cli_skills():\n"
+        f'    result = CliRunner().invoke({ext_name}, ["skills"])\n'
+        "    assert result.exit_code == 0\n"
+        "\n"
+        "\n"
+        "def test_cli_personas():\n"
+        f'    result = CliRunner().invoke({ext_name}, ["personas"])\n'
+        "    assert result.exit_code == 0\n"
+        "\n"
+        "\n"
+        "def test_cli_init_creates_file(tmp_path):\n"
+        "    if not list(examples_dir().glob(\"*.yaml\")):\n"
+        "        pytest.skip(\"no example scenarios defined yet\")\n"
+        "    scenario = sorted(examples_dir().glob(\"*.yaml\"))[0].stem\n"
+        f'    result = CliRunner().invoke({ext_name}, ["init", "--scenario", scenario, "--output-dir", str(tmp_path)])\n'
+        "    assert result.exit_code == 0, result.output\n"
+        "    assert (tmp_path / f\"{scenario}.yaml\").is_file()\n"
+    )
+
+    readme = (
+        f'# team-{hyphen_name}\n'
+        "\n"
+        f'{ext_title} extensions for the [team](https://github.com/cumbof/team) multi-agent LLM framework.\n'
+        "\n"
+        "## Installation\n"
+        "\n"
+        "```bash\n"
+        f'pip install team-{hyphen_name}\n'
+        "```\n"
+        "\n"
+        "## Quick Start\n"
+        "\n"
+        "```bash\n"
+        f'team {ext_name} scenarios\n'
+        f'team {ext_name} init --scenario <scenario-name>\n'
+        "team run <scenario-name>.yaml\n"
+        "```\n"
+        "\n"
+        "## Skills\n"
+        "\n"
+        "```yaml\n"
+        "defaults:\n"
+        "  skills:\n"
+        "    - my_skill\n"
+        "```\n"
+        "\n"
+        "## Personas\n"
+        "\n"
+        "```yaml\n"
+        "members:\n"
+        "  - name: agent\n"
+        "    persona: \"@my_persona\"\n"
+        "```\n"
+        "\n"
+        "## How it extends team-core\n"
+        "\n"
+        "```\n"
+        "team-core plugin API\n"
+        f'|- team.skills          <- registered skill names\n'
+        f'|- team.persona_dirs    <- {pkg_name}/personas/ (auto-merged)\n'
+        f'`- team.commands        <- team {ext_name} <subcommand>\n'
+        "```\n"
+        "\n"
+        "## Development\n"
+        "\n"
+        "```bash\n"
+        "pip install -e \".[dev]\"\n"
+        "pytest -q\n"
+        "```\n"
+    )
+
+    gitignore = (
+        "__pycache__/\n"
+        "*.egg-info/\n"
+        "*.egg\n"
+        ".pytest_cache/\n"
+        "dist/\n"
+        "build/\n"
+        ".venv/\n"
+    )
+
+    license_txt = (
+        "MIT License\n"
+        "\n"
+        f"Copyright (c) {year} Your Name\n"
+        "\n"
+        "Permission is hereby granted, free of charge, to any person obtaining a copy\n"
+        "of this software and associated documentation files (the \"Software\"), to deal\n"
+        "in the Software without restriction, including without limitation the rights\n"
+        "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n"
+        "copies of the Software, and to permit persons to whom the Software is\n"
+        "furnished to do so, subject to the following conditions:\n"
+        "\n"
+        "The above copyright notice and this permission notice shall be included in all\n"
+        "copies or substantial portions of the Software.\n"
+        "\n"
+        "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
+        "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
+        "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
+        "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
+        "LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
+        "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
+        "SOFTWARE.\n"
+    )
+
+    return {
+        "pyproject.toml": pyproject,
+        f"{pkg_name}/__init__.py": init_py,
+        f"{pkg_name}/commands.py": commands_py,
+        f"{pkg_name}/skills/.gitkeep": "",
+        f"{pkg_name}/personas/.gitkeep": "",
+        f"{pkg_name}/examples/.gitkeep": "",
+        "tests/__init__.py": "",
+        "tests/test_package.py": test_py,
+        "README.md": readme,
+        "LICENSE": license_txt,
+        ".gitignore": gitignore,
+    }
+
+
+@cli.command("forge")
+@click.argument("name")
+@click.option(
+    "--output-dir", "-o", default=".", show_default=True,
+    help="Parent directory in which to create the extension package directory.",
+)
+@click.option(
+    "--force", is_flag=True, default=False, help="Overwrite an existing directory.",
+)
+def forge(name: str, output_dir: str, force: bool) -> None:
+    """Scaffold a new team-* extension package.
+
+    NAME is the extension name -- either "bioinformatics" or the full
+    "team-bioinformatics".  The package directory is created as
+    team-<name>/ inside OUTPUT_DIR.
+
+    The generated package is a minimal but complete team-* extension:
+
+    \b
+    team-<name>/
+      pyproject.toml          entry points pre-wired, version 0.1.0
+      team_<name>/
+        __init__.py           skills_dir / personas_dir / examples_dir helpers
+        commands.py           make_extension_commands() call
+        skills/               drop .py and .md skill files here
+        personas/             drop persona YAML files here
+        examples/             drop scenario YAML templates here
+      tests/
+        test_package.py       standard scaffold tests (pass immediately)
+      README.md
+      LICENSE                 MIT
+      .gitignore
+
+    After scaffolding:
+
+    \b
+      cd team-<name>
+      pip install -e ".[dev]"
+      pytest -q            # all tests pass out of the box
+      team <name> --help   # subcommand registered immediately
+    """
+    try:
+        dir_name, pkg_name, ext_name = _forge_normalize(name)
+    except click.BadParameter as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    dest_root = Path(output_dir).expanduser().resolve() / dir_name
+    if dest_root.exists() and not force:
+        console.print(f"[yellow]{dest_root} already exists.[/yellow]  Use --force to overwrite.")
+        raise SystemExit(1)
+
+    files = _forge_files(dir_name, pkg_name, ext_name)
+    created: list[str] = []
+    for rel_path, content in files.items():
+        full = dest_root / rel_path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(content, encoding="utf-8")
+        created.append(rel_path)
+
+    console.print(f"\n[green bold]Created[/green bold] [bold]{dest_root}[/bold]\n")
+    for rel in created:
+        console.print(f"  [dim]{rel}[/dim]")
+    console.print()
+    console.print("Next steps:")
+    console.print(f"  [bold]cd {dir_name}[/bold]")
+    console.print(f"  [bold]pip install -e \".[dev]\"[/bold]")
+    console.print(f"  [bold]pytest -q[/bold]                # all tests pass out of the box")
+    console.print(f"  [bold]team {ext_name} --help[/bold]   # your new subcommand")
+
+
 if __name__ == "__main__":  # pragma: no cover
     cli()
