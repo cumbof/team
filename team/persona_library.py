@@ -69,32 +69,34 @@ log = logging.getLogger(__name__)
 _BUILTIN_DIR = Path(__file__).parent.parent / "personas"
 
 
-def _persona_dirs() -> list[Path]:
-    """Return the list of directories to scan for persona YAML files.
+def _persona_dirs() -> list[tuple[Path, str]]:
+    """Return the list of ``(directory, source_label)`` pairs to scan for persona YAML files.
 
     Priority (highest → lowest):
-    1. ``TEAM_PERSONA_DIR`` environment variable
+    1. ``TEAM_PERSONA_DIR`` environment variable → labelled ``"env (TEAM_PERSONA_DIR)"``
     2. Directories registered via ``team.persona_dirs`` entry points
-       (in installation order, last-installed wins)
-    3. Built-in ``personas/`` directory shipped with ``team-core``
+       (in installation order, last-installed wins) → labelled with ``ep.name``
+    3. Built-in ``personas/`` directory shipped with ``team-core`` → labelled ``"built-in"``
     """
-    dirs: list[Path] = []
+    dirs: list[tuple[Path, str]] = []
 
     # 1. Explicit env var override — highest priority.
     env = os.environ.get("TEAM_PERSONA_DIR", "").strip()
     if env:
         custom = Path(env).expanduser().resolve()
         if custom.is_dir():
-            dirs.append(custom)
+            dirs.append((custom, "env (TEAM_PERSONA_DIR)"))
 
     # 2. Entry-point registered persona directories.
     try:
+        known_paths = {p for p, _ in dirs}
         for ep in entry_points(group="team.persona_dirs"):
             try:
                 fn = ep.load()
                 p = Path(fn()).expanduser().resolve()
-                if p.is_dir() and p not in dirs:
-                    dirs.append(p)
+                if p.is_dir() and p not in known_paths:
+                    dirs.append((p, ep.name))
+                    known_paths.add(p)
                     log.debug("persona_library: loaded persona dir from plugin %r: %s", ep.name, p)
             except Exception as exc:  # noqa: BLE001
                 log.warning("persona_library: failed to load persona dir from plugin %r: %s", ep.name, exc)
@@ -103,7 +105,7 @@ def _persona_dirs() -> list[Path]:
 
     # 3. Built-in directory — lowest priority.
     if _BUILTIN_DIR.is_dir():
-        dirs.append(_BUILTIN_DIR)
+        dirs.append((_BUILTIN_DIR, "built-in"))
 
     return dirs
 
@@ -120,14 +122,19 @@ def _load() -> dict[str, dict[str, str]]:
 
     Results are cached after the first call.  Set ``_CACHE = None`` to force
     a reload (useful in tests).
+
+    Each value dict contains ``role``, ``description``, ``persona``, and
+    ``source`` (the human-readable label of the directory the persona came from).
+    When the same key appears in multiple directories, the higher-priority
+    directory wins and a warning is emitted.
     """
     global _CACHE
     if _CACHE is not None:
         return _CACHE
 
     personas: dict[str, dict[str, str]] = {}
-    # Process built-in dir last so custom dirs take precedence.
-    for directory in reversed(_persona_dirs()):
+    # Process built-in dir first (lowest priority) so custom dirs can override.
+    for directory, source_label in reversed(_persona_dirs()):
         for yaml_path in sorted(directory.glob("*.yaml")):
             key = yaml_path.stem
             try:
@@ -150,10 +157,16 @@ def _load() -> dict[str, dict[str, str]]:
                     stacklevel=2,
                 )
                 continue
+            if key in personas:
+                log.warning(
+                    "persona @%s from %r overrides definition from %r",
+                    key, source_label, personas[key]["source"],
+                )
             personas[key] = {
                 "role": str(raw["role"]).strip(),
                 "description": str(raw["description"]).strip(),
                 "persona": str(raw["persona"]).strip(),
+                "source": source_label,
             }
 
     _CACHE = personas
@@ -204,9 +217,9 @@ def resolve(name: str) -> tuple[str, str]:
 
 
 def list_all() -> list[dict[str, str]]:
-    """Return a list of dicts (``key``, ``role``, ``description``) for all personas."""
+    """Return a list of dicts (``key``, ``role``, ``description``, ``source``) for all personas."""
     return [
-        {"key": k, "role": v["role"], "description": v["description"]}
+        {"key": k, "role": v["role"], "description": v["description"], "source": v["source"]}
         for k, v in _load().items()
     ]
 

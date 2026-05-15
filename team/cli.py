@@ -1354,7 +1354,8 @@ def personas(key: str | None) -> None:
             sys.exit(2)
         entry = PERSONAS[key]
         console.print(f"[bold]@{key}[/bold] — [cyan]{entry['role']}[/cyan]")
-        console.print(f"[dim]{entry['description']}[/dim]\n")
+        console.print(f"[dim]{entry['description']}[/dim]")
+        console.print(f"[dim]Source:[/dim] {entry.get('source', 'built-in')}\n")
         console.print(entry["persona"])
         console.print(
             f"\n[dim]Use in YAML:[/dim] [bold]persona: \"@{key}\"[/bold]"
@@ -1362,11 +1363,12 @@ def personas(key: str | None) -> None:
         return
 
     table = Table(title="Predefined persona library", show_lines=True)
+    table.add_column("Source", style="dim", no_wrap=True)
     table.add_column("Key", style="bold cyan", no_wrap=True)
     table.add_column("Role", style="bold")
     table.add_column("Description")
-    for entry in list_all():
-        table.add_row(f"@{entry['key']}", entry["role"], entry["description"])
+    for entry in sorted(list_all(), key=lambda e: (e.get("source", ""), e["key"])):
+        table.add_row(entry.get("source", "built-in"), f"@{entry['key']}", entry["role"], entry["description"])
     console.print(table)
     console.print(
         "\n[dim]Use in YAML:[/dim]  [bold]persona: \"@<key>\"[/bold]  "

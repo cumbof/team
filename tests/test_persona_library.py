@@ -57,7 +57,7 @@ class TestPersonaLibrary:
         items = list_all()
         assert isinstance(items, list)
         assert all(isinstance(i, dict) for i in items)
-        assert all("key" in i and "role" in i and "description" in i for i in items)
+        assert all("key" in i and "role" in i and "description" in i and "source" in i for i in items)
 
     def test_list_all_contains_all_keys(self):
         keys = {i["key"] for i in list_all()}
@@ -165,6 +165,54 @@ class TestCustomPersonaDir:
             assert "pi" in loaded
         finally:
             _reset_cache()
+
+    def test_source_field_present_in_loaded_personas(self):
+        loaded = _lib._load()
+        for key, entry in loaded.items():
+            assert "source" in entry, f"@{key}: missing 'source' field"
+
+    def test_builtin_personas_have_builtin_source(self):
+        _reset_cache()
+        try:
+            loaded = _lib._load()
+            assert loaded["pi"]["source"] == "built-in"
+        finally:
+            _reset_cache()
+
+    def test_env_dir_personas_have_env_source(self, tmp_path, monkeypatch):
+        persona_dir = tmp_path / "custom_personas"
+        persona_dir.mkdir()
+        (persona_dir / "testpersona.yaml").write_text(
+            "role: Tester\ndescription: Test persona.\npersona: You are a tester.\n"
+        )
+        _reset_cache()
+        monkeypatch.setenv("TEAM_PERSONA_DIR", str(persona_dir))
+        try:
+            loaded = _lib._load()
+            assert loaded["testpersona"]["source"] == "env (TEAM_PERSONA_DIR)"
+        finally:
+            _reset_cache()
+
+    def test_conflict_emits_warning(self, tmp_path, monkeypatch, caplog):
+        import logging
+        persona_dir = tmp_path / "custom_personas"
+        persona_dir.mkdir()
+        (persona_dir / "pi.yaml").write_text(
+            "role: Custom PI\ndescription: Overridden PI.\npersona: You are the custom PI.\n"
+        )
+        _reset_cache()
+        monkeypatch.setenv("TEAM_PERSONA_DIR", str(persona_dir))
+        try:
+            with caplog.at_level(logging.WARNING, logger="team.persona_library"):
+                _lib._load()
+            assert any("@pi" in r.message and "overrides" in r.message for r in caplog.records)
+        finally:
+            _reset_cache()
+
+    def test_list_all_has_source_field(self):
+        items = list_all()
+        for item in items:
+            assert "source" in item, f"list_all() entry for @{item.get('key')} missing 'source'"
 
 
 # --------------------------------------------------------------------------- #
@@ -430,7 +478,7 @@ class TestPersonaLibrary:
         items = list_all()
         assert isinstance(items, list)
         assert all(isinstance(i, dict) for i in items)
-        assert all("key" in i and "role" in i and "description" in i for i in items)
+        assert all("key" in i and "role" in i and "description" in i and "source" in i for i in items)
 
     def test_list_all_contains_all_keys(self):
         keys = {i["key"] for i in list_all()}
@@ -633,9 +681,12 @@ class TestPersonasCLI:
         runner = CliRunner()
         result = runner.invoke(cli, ["personas"])
         assert result.exit_code == 0
-        assert "pi" in result.output
-        assert "Principal Investigator" in result.output
+        assert "@pi" in result.output
+        # Role may wrap across lines in a narrow terminal — check words separately
+        assert "Principal" in result.output
+        assert "Investigator" in result.output
         assert "engineer" in result.output
+        assert "built-in" in result.output  # Source column present
         assert "persona:" in result.output.lower() or "@" in result.output
 
     def test_show_specific_persona(self):

@@ -274,7 +274,7 @@ class TestPersonaDirsEntryPoints:
         with patch("team.persona_library.entry_points", return_value=[ep]):
             dirs = list(_persona_dirs())
 
-        assert ep_dir in dirs
+        assert ep_dir in [d for d, _ in dirs]
 
     def test_env_var_dir_takes_priority(self, tmp_path, monkeypatch):
         from team.persona_library import _persona_dirs
@@ -294,7 +294,7 @@ class TestPersonaDirsEntryPoints:
         with patch("team.persona_library.entry_points", return_value=[ep]):
             dirs = list(_persona_dirs())
 
-        assert dirs[0] == env_dir  # env dir first
+        assert dirs[0][0] == env_dir  # env dir first
 
     def test_no_ep_dirs_when_none_registered(self, tmp_path, monkeypatch):
         from team.persona_library import _persona_dirs
