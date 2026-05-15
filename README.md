@@ -7,7 +7,7 @@ persona, role, and goal — that collaborate until the work is done.
 ![Build Status](https://img.shields.io/github/actions/workflow/status/cumbof/team/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/cumbof/team/blob/main/LICENSE)
 
-![team](assets/logo.png)
+![team](https://raw.githubusercontent.com/cumbof/team/refs/heads/main/assets/logo.png)
 
 <p align="center"><b>⭐ Star this repository to stay updated with new releases ⭐</b></p>
 <br>
