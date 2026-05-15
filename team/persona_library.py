@@ -11,6 +11,17 @@ Users can **add their own personas** by:
 2. Setting the ``TEAM_PERSONA_DIR`` environment variable to a custom directory
    that is scanned *in addition to* the built-in directory.  Files in the
    custom directory take precedence over built-in ones with the same key.
+3. Installing a Python package that declares a ``team.persona_dirs`` entry
+   point.  Each entry point must be a callable that returns a
+   :class:`pathlib.Path` pointing to a directory of persona YAML files.
+   All such directories are merged; later-installed packages take precedence
+   over built-in personas with the same key, and ``TEAM_PERSONA_DIR`` takes
+   precedence over all entry-point dirs.
+
+   Example ``pyproject.toml`` declaration::
+
+       [project.entry-points."team.persona_dirs"]
+       mypkg = "mypkg:personas_dir"   # personas_dir() → Path
 
 Each YAML file must have the following top-level keys:
 
@@ -40,11 +51,15 @@ default role is applied automatically.  You may still override it::
 
 from __future__ import annotations
 
+import logging
 import os
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Paths
@@ -57,17 +72,39 @@ _BUILTIN_DIR = Path(__file__).parent.parent / "personas"
 def _persona_dirs() -> list[Path]:
     """Return the list of directories to scan for persona YAML files.
 
-    Custom dirs (from ``TEAM_PERSONA_DIR``) are listed first so they override
-    built-in personas with the same key.
+    Priority (highest → lowest):
+    1. ``TEAM_PERSONA_DIR`` environment variable
+    2. Directories registered via ``team.persona_dirs`` entry points
+       (in installation order, last-installed wins)
+    3. Built-in ``personas/`` directory shipped with ``team-core``
     """
     dirs: list[Path] = []
+
+    # 1. Explicit env var override — highest priority.
     env = os.environ.get("TEAM_PERSONA_DIR", "").strip()
     if env:
         custom = Path(env).expanduser().resolve()
         if custom.is_dir():
             dirs.append(custom)
+
+    # 2. Entry-point registered persona directories.
+    try:
+        for ep in entry_points(group="team.persona_dirs"):
+            try:
+                fn = ep.load()
+                p = Path(fn()).expanduser().resolve()
+                if p.is_dir() and p not in dirs:
+                    dirs.append(p)
+                    log.debug("persona_library: loaded persona dir from plugin %r: %s", ep.name, p)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("persona_library: failed to load persona dir from plugin %r: %s", ep.name, exc)
+    except Exception:  # noqa: BLE001
+        pass  # importlib.metadata not available in very old environments
+
+    # 3. Built-in directory — lowest priority.
     if _BUILTIN_DIR.is_dir():
         dirs.append(_BUILTIN_DIR)
+
     return dirs
 
 

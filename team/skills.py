@@ -8,11 +8,57 @@ Skills can be loaded from:
 
 * **Local files** — any path on the host filesystem (trusted by default).
 * **Remote URLs** (``http://`` / ``https://``) — fetched via ``requests``.
+* **Registered names** — short names registered by installed packages via the
+  ``team.skills`` entry-point group.  Any package can contribute skills that
+  are then referenceable by name in any team YAML without knowing the
+  installation path.
 
   .. warning::
      Remote skill files execute **arbitrary code on the host** with the
      privileges of the ``team`` process.  Treat a remote skill URL with the
      same caution as ``curl URL | python``.
+
+Plugin skills via entry points
+-------------------------------
+A Python package registers skills by declaring ``team.skills`` entry points
+in its ``pyproject.toml``::
+
+    [project.entry-points."team.skills"]
+    bioblend      = "team_galaxy.skills.bioblend"
+    iuc_standards = "team_galaxy.skills.iuc_standards"
+
+The entry-point value is a Python module path.  For Python (``.py``) skills
+the module is imported and its ``TOOLS`` / ``TOOL_NAME`` / ``execute``
+interface is used.  For Markdown (``.md``) context-injection skills the
+value should be a module path whose ``__file__`` attribute resolves to
+the ``.md`` file (place the ``.md`` alongside a thin ``__init__.py`` that
+exposes it, or use the ``path:`` form instead).
+
+In practice, the simplest approach is to point entry-point values directly
+at Python modules for ``.py`` skills.  For ``.md`` skills, register a
+helper module that sets ``SKILL_FILE`` to the absolute path of the
+Markdown file::
+
+    # team_mypkg/skills/my_context.py  (thin wrapper for a .md file)
+    from pathlib import Path
+    SKILL_FILE = str(Path(__file__).parent / "my_context.md")
+
+Then in ``pyproject.toml``::
+
+    [project.entry-points."team.skills"]
+    my_context = "team_mypkg.skills.my_context"
+
+Alternatively, point to the Markdown file directly using the ``path:`` form
+in the team YAML — registered names are most useful for ``.py`` skills.
+
+Once registered, reference a skill by its entry-point name in any team YAML::
+
+    defaults:
+      skills:
+        - bioblend        # resolved via team.skills entry point
+        - iuc_standards   # same
+        - path: ./local.py          # local file — works as before
+        - url: https://example.com/skill.py  # remote — works as before
 
 Skill file format
 -----------------
@@ -81,6 +127,8 @@ Config example
 
     defaults:
       skills:
+        - bioblend                            # registered name (team.skills entry point)
+        - iuc_standards                       # same
         - path: ./skills/review_checklist.md  # markdown → system-prompt injection
         - path: ./skills/my_tool.py           # python  → callable tool
         - url: https://example.com/tool.py    # remote (loaded with a warning)
@@ -112,7 +160,9 @@ integrity you want to verify:
 from __future__ import annotations
 
 import hashlib
+import importlib
 import logging
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Callable
 
@@ -124,6 +174,81 @@ ToolFn = Callable[..., str]
 
 class SkillLoadError(Exception):
     """Raised when a skill cannot be loaded or does not export valid tools."""
+
+
+# --------------------------------------------------------------------------- #
+# Entry-point skill registry
+# --------------------------------------------------------------------------- #
+
+_SKILL_REGISTRY: dict[str, str] | None = None
+
+
+def _load_skill_registry() -> dict[str, str]:
+    """Build a mapping of registered skill name → Python module path.
+
+    Scans ``team.skills`` entry points.  Results are cached after the first
+    call; set ``_SKILL_REGISTRY = None`` to force a reload (useful in tests).
+    """
+    global _SKILL_REGISTRY
+    if _SKILL_REGISTRY is not None:
+        return _SKILL_REGISTRY
+
+    registry: dict[str, str] = {}
+    try:
+        for ep in entry_points(group="team.skills"):
+            registry[ep.name] = ep.value
+            log.debug("skill registry: registered %r → %s", ep.name, ep.value)
+    except Exception:  # noqa: BLE001
+        pass  # importlib.metadata not available in very old environments
+
+    _SKILL_REGISTRY = registry
+    return _SKILL_REGISTRY
+
+
+def _load_skill_by_name(name: str) -> tuple[dict[str, ToolFn], dict[str, str], list[str]]:
+    """Load a skill by its registered entry-point name.
+
+    The entry-point value is a Python module path (e.g.
+    ``team_galaxy.skills.bioblend``).  The module is imported and inspected
+    for ``TOOLS`` / ``TOOL_NAME`` / ``execute`` just like a ``.py`` skill
+    file, *except* that Markdown-only skills may instead set ``SKILL_FILE``
+    to an absolute path to a ``.md`` file.
+
+    Raises :class:`SkillLoadError` if the name is not registered or the
+    module cannot be loaded.
+    """
+    registry = _load_skill_registry()
+    if name not in registry:
+        known = sorted(registry)
+        hint = f"  Registered names: {known}" if known else "  No skills are registered via entry points."
+        raise SkillLoadError(
+            f"unknown skill name {name!r}.  "
+            f"Install a package that registers it via the 'team.skills' entry-point group.\n{hint}"
+        )
+
+    module_path = registry[name]
+    try:
+        mod = importlib.import_module(module_path)
+    except ImportError as exc:
+        raise SkillLoadError(
+            f"failed to import skill module {module_path!r} for skill {name!r}: {exc}"
+        ) from exc
+
+    # Check for a SKILL_FILE attribute pointing to a .md file.
+    skill_file = getattr(mod, "SKILL_FILE", None)
+    if skill_file and Path(skill_file).suffix.lower() == ".md":
+        content = Path(skill_file).read_text(encoding="utf-8")
+        return {}, {}, ([content] if content.strip() else [])
+
+    # Otherwise treat the module as a normal Python skill — re-exec its source
+    # so it runs in an isolated namespace (same behaviour as a .py file skill).
+    source_file = getattr(mod, "__file__", None)
+    if not source_file or not Path(source_file).is_file():
+        raise SkillLoadError(
+            f"skill module {module_path!r} has no readable __file__ attribute"
+        )
+    code = Path(source_file).read_text(encoding="utf-8")
+    return _exec_skill_code(code, module_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -275,14 +400,23 @@ def _load_remote(url: str, checksum: str | None = None) -> str:
 def load_skill(
     source: str | dict,
 ) -> tuple[dict[str, ToolFn], dict[str, str], list[str]]:
-    """Load a single skill from a local path or remote URL.
+    """Load a single skill from a registered name, local path, or remote URL.
 
     *source* can be:
 
-    * A plain **string**: treated as a local path unless it starts with
-      ``http://`` or ``https://``, in which case it is fetched remotely.
-    * A **dict** with either ``path`` or ``url`` key, and optional
-      ``checksum`` key.
+    * A plain **string**:
+
+      - If it starts with ``http://`` or ``https://``, it is fetched remotely.
+      - If it has a file extension (``.py``, ``.md``) or contains a path
+        separator, it is treated as a local file path.
+      - Otherwise it is treated as a **registered skill name** resolved via the
+        ``team.skills`` entry-point group (e.g. ``"bioblend"``).
+
+    * A **dict** with one of ``name``, ``path``, or ``url`` key:
+
+      - ``name`` — registered skill name (same as the plain-string name form).
+      - ``path`` — local file path, with optional ``checksum`` key.
+      - ``url``  — remote URL, with optional ``checksum`` key.
 
     Returns ``(tools_dict, descriptions_dict, injected_context)``.
     *injected_context* is a (possibly empty) list of strings to be prepended
@@ -295,35 +429,51 @@ def load_skill(
         is_url = source.startswith("http://") or source.startswith("https://")
         if is_url:
             code = _load_remote(source)
-            label = source
-            return _exec_skill_code(code, label)
-        else:
-            label = source
-            if Path(source).expanduser().suffix.lower() == ".md":
+            return _exec_skill_code(code, source)
+
+        suffix = Path(source).expanduser().suffix.lower()
+        has_path_chars = "/" in source or "\\" in source or suffix in (".py", ".md")
+        if has_path_chars:
+            # Local file path.
+            if suffix == ".md":
                 content = _load_local(source)
                 return {}, {}, ([content] if content.strip() else [])
             code = _load_local(source)
-            return _exec_skill_code(code, label)
+            return _exec_skill_code(code, source)
+
+        # Plain name with no path chars — resolve via registry.
+        return _load_skill_by_name(source)
+
     elif isinstance(source, dict):
-        if "path" in source and "url" in source:
+        exclusive = [k for k in ("name", "path", "url") if k in source]
+        if len(exclusive) > 1:
             raise SkillLoadError(
-                "skill entry must have 'path' OR 'url', not both"
+                f"skill entry must have exactly one of 'name', 'path', or 'url' "
+                f"(got {exclusive})"
             )
         checksum = source.get("checksum")
+
+        if "name" in source:
+            if checksum:
+                log.warning(
+                    "checksum is not supported for registered skill names; ignoring"
+                )
+            return _load_skill_by_name(source["name"])
+
         if "url" in source:
             code = _load_remote(source["url"], checksum=checksum)
-            label = source["url"]
-            return _exec_skill_code(code, label)
-        elif "path" in source:
-            label = source["path"]
+            return _exec_skill_code(code, source["url"])
+
+        if "path" in source:
             path = source["path"]
             if Path(path).expanduser().suffix.lower() == ".md":
                 content = _load_local(path, checksum=checksum)
                 return {}, {}, ([content] if content.strip() else [])
             code = _load_local(path, checksum=checksum)
-            return _exec_skill_code(code, label)
-        else:
-            raise SkillLoadError("skill entry dict must have 'path' or 'url'")
+            return _exec_skill_code(code, path)
+
+        raise SkillLoadError("skill entry dict must have 'name', 'path', or 'url'")
+
     else:
         raise SkillLoadError(
             f"skill source must be a string or dict, got {type(source).__name__!r}"

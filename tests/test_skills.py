@@ -139,7 +139,7 @@ def test_bad_source_type_raises():
 
 
 def test_dict_both_path_and_url_raises(tmp_path):
-    with pytest.raises(SkillLoadError, match="OR"):
+    with pytest.raises(SkillLoadError, match="exactly one of"):
         load_skill({"path": "a.py", "url": "http://x.com/b.py"})
 
 

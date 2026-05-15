@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import sys
+from importlib.metadata import entry_points
 from pathlib import Path
 
 import click
 from rich import box as _rich_box
 from rich.console import Console, Group
 from rich.live import Live
+
+log = logging.getLogger(__name__)
 from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.rule import Rule
@@ -134,6 +137,36 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     _setup_logging(verbose)
+
+
+def _load_plugin_commands() -> None:
+    """Register commands from installed packages that declare ``team.commands`` entry points.
+
+    Each entry point must load to a :class:`click.BaseCommand` (a command or
+    group).  The entry-point name becomes the sub-command name under ``team``.
+
+    Example ``pyproject.toml`` declaration in an extension package::
+
+        [project.entry-points."team.commands"]
+        galaxy = "team_galaxy.commands:galaxy"
+
+    After ``pip install team-mypkg``, ``team mypkg --help`` becomes available.
+    Errors loading individual plugins are logged and skipped so one bad plugin
+    does not prevent ``team`` from starting.
+    """
+    try:
+        for ep in entry_points(group="team.commands"):
+            try:
+                cmd = ep.load()
+                cli.add_command(cmd, name=ep.name)
+                log.debug("cli: loaded plugin command %r from %s", ep.name, ep.value)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cli: failed to load plugin command %r: %s", ep.name, exc)
+    except Exception:  # noqa: BLE001
+        pass  # importlib.metadata not available in very old environments
+
+
+_load_plugin_commands()
 
 
 # --------------------------------------------------------------------------- #
