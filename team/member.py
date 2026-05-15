@@ -15,7 +15,7 @@ from team.container import MemberRuntime
 from team.ollama_client import ChatMessage, OllamaClient, OllamaError, OpenAICompatClient, ToolCall
 from team.personas import render_system_prompt
 from team.skills import load_skills
-from team.tools import TOOL_DESCRIPTIONS, TOOL_SCHEMAS, TOOLS, args_to_body, execute_tool, parse_tool_blocks
+from team.tools import TOOL_DESCRIPTIONS, TOOL_SCHEMAS, TOOLS, _VALID_TOOL_SANDBOXES, args_to_body, execute_tool, parse_tool_blocks
 from team.workspace import SharedWorkspace, list_dir_files
 
 # Optional feature imports — guarded so the modules are only required when enabled.
@@ -150,6 +150,38 @@ class Member:
             tool_descriptions=self._member_tool_descs,
             injected_context=skill_context or None,
         )
+
+        # Resolve and validate the effective sandbox mode.
+        _eff_sandbox = (
+            resolve_member_setting(config, team.defaults, "tool_sandbox") or "none"
+        )
+        if _eff_sandbox not in _VALID_TOOL_SANDBOXES:
+            log.warning(
+                "@%s: unknown tool_sandbox value %r; falling back to 'none'. "
+                "Valid values: %s",
+                config.name, _eff_sandbox, ", ".join(sorted(_VALID_TOOL_SANDBOXES)),
+            )
+            _eff_sandbox = "none"
+        self._tool_sandbox: str = _eff_sandbox
+
+        # Security advisory: code-execution tools running on the host without
+        # a sandbox are a significant risk — the LLM can read/write/delete any
+        # file the process can touch.  When the member is using a host Ollama
+        # server (no Docker) and dangerous tools are enabled, emit a clear
+        # warning so operators know they should set tool_sandbox.
+        _code_tools = {"run_python", "run_bash"}
+        _using_host_ollama = bool(config.ollama_url or team.defaults.ollama_url)
+        _has_code_tools = any(t in _code_tools for t in self._enabled_tools)
+        if _using_host_ollama and _has_code_tools and self._tool_sandbox == "none":
+            _active = [t for t in self._enabled_tools if t in _code_tools]
+            log.warning(
+                "SECURITY: @%s has %s enabled in host-Ollama mode (no Docker "
+                "isolation). Code will execute on the host with the privileges "
+                "of this process. Set tool_sandbox: firejail or "
+                "tool_sandbox: bubblewrap in your team YAML to limit exposure.",
+                config.name, _active,
+            )
+
         self._ready = False
 
     @property
@@ -458,6 +490,7 @@ class Member:
                     member_name=self.name,
                     bridge_secret=self.team.bridge.secret,
                     peers=self.team.bridge.peers or None,
+                    sandbox=self._tool_sandbox,
                 )
                 if on_tool_result:
                     on_tool_result(self.name, tool_name, result)
@@ -583,6 +616,7 @@ class Member:
                         beliefs=self.beliefs,
                         member_name=self.name,
                         bridge_secret=self.team.bridge.secret,
+                        sandbox=self._tool_sandbox,
                     )
                 if on_tool_result:
                     on_tool_result(self.name, tool_name, result)

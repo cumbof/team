@@ -65,6 +65,97 @@ log = logging.getLogger(__name__)
 _MAX_OUTPUT = 8192
 _MAX_SEARCH_OUTPUT = 4096
 
+# Valid sandbox identifiers for run_python / run_bash.
+_VALID_TOOL_SANDBOXES = {"none", "firejail", "bubblewrap"}
+
+
+# --------------------------------------------------------------------------- #
+# Sandbox helpers
+# --------------------------------------------------------------------------- #
+
+
+def _sandbox_available(name: str) -> bool:
+    """Return True if *name* (e.g. ``"firejail"``, ``"bwrap"``) is on PATH."""
+    import shutil
+    return shutil.which(name) is not None
+
+
+def _build_sandboxed_cmd(
+    cmd: list[str],
+    workspace_path: Path | None,
+    sandbox: str,
+) -> list[str]:
+    """Wrap *cmd* with the requested sandbox tool.
+
+    Parameters
+    ----------
+    cmd:
+        The bare command list to sandbox (e.g. ``["python", "/tmp/x.py"]``).
+    workspace_path:
+        Shared workspace directory that must be writable inside the sandbox.
+    sandbox:
+        One of ``"firejail"``, ``"bubblewrap"``.  ``"none"`` is a no-op and
+        returns *cmd* unchanged.
+
+    When the requested sandbox binary is not available the function falls back
+    to *cmd* unchanged and logs a warning — the tool still executes, just
+    unsandboxed.
+    """
+    if sandbox == "none":
+        return cmd
+
+    ws = str(workspace_path) if workspace_path else None
+
+    if sandbox == "firejail":
+        if not _sandbox_available("firejail"):
+            log.warning(
+                "tool_sandbox=firejail requested but 'firejail' is not on PATH; "
+                "running without sandbox. Install firejail to enable isolation."
+            )
+            return cmd
+        args = [
+            "firejail",
+            "--quiet",
+            "--noprofile",
+            "--private-tmp",
+            "--noroot",
+        ]
+        if ws:
+            # Allow read-write access to the workspace; all other user paths
+            # are invisible inside the jail.
+            args.append(f"--whitelist={ws}")
+        args.append("--")
+        return args + cmd
+
+    if sandbox == "bubblewrap":
+        bwrap = "bwrap"
+        if not _sandbox_available(bwrap):
+            log.warning(
+                "tool_sandbox=bubblewrap requested but 'bwrap' is not on PATH; "
+                "running without sandbox. Install bubblewrap to enable isolation."
+            )
+            return cmd
+        # Build a minimal read-only rootfs.  Only the workspace is writable.
+        args = [bwrap]
+        for sys_dir in ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64",
+                        "/etc", "/run"):
+            p = Path(sys_dir)
+            if p.exists():
+                args += ["--ro-bind", sys_dir, sys_dir]
+        # Proc, dev, and a private /tmp.
+        args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+        # No access to $HOME or arbitrary host paths.
+        args += ["--tmpfs", "/home", "--tmpfs", "/root"]
+        # Writable workspace bind.
+        if ws:
+            args += ["--bind", ws, ws]
+        args += ["--chdir", ws or "/tmp", "--die-with-parent", "--"]
+        return args + cmd
+
+    # Unknown sandbox value — already validated upstream but be safe.
+    log.warning("Unknown tool_sandbox value %r; running without sandbox.", sandbox)
+    return cmd
+
 
 # --------------------------------------------------------------------------- #
 # Block parsing
@@ -109,6 +200,7 @@ def _run_python(
     *,
     workspace_path: Path | None = None,
     timeout: int = 30,
+    sandbox: str = "none",
     **_: Any,
 ) -> str:
     """Execute *body* as Python code and return stdout + stderr."""
@@ -118,15 +210,22 @@ def _run_python(
     if cwd:
         env["WORKSPACE"] = cwd
 
+    # When sandboxing, write the script inside the workspace so it is
+    # accessible from inside the sandbox (which has no access to /tmp).
+    script_dir = workspace_path if sandbox != "none" and workspace_path and workspace_path.is_dir() else None
+
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, encoding="utf-8"
+        mode="w", suffix=".py", delete=False, encoding="utf-8",
+        dir=script_dir,
     ) as fh:
         fh.write(code)
         script = fh.name
 
     try:
+        base_cmd = ["python", script]
+        cmd = _build_sandboxed_cmd(base_cmd, workspace_path, sandbox)
         result = subprocess.run(
-            ["python", script],
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -153,14 +252,17 @@ def _run_bash(
     *,
     workspace_path: Path | None = None,
     timeout: int = 30,
+    sandbox: str = "none",
     **_: Any,
 ) -> str:
     """Execute *body* as a bash command and return stdout + stderr."""
-    cmd = body.strip()
+    cmd_str = body.strip()
     cwd = str(workspace_path) if workspace_path and workspace_path.is_dir() else None
     try:
+        base_cmd = ["bash", "-c", cmd_str]
+        cmd = _build_sandboxed_cmd(base_cmd, workspace_path, sandbox)
         result = subprocess.run(
-            ["bash", "-c", cmd],
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -1563,6 +1665,7 @@ def execute_tool(
     member_name: str = "unknown",
     bridge_secret: str | None = None,
     peers: dict[str, str] | None = None,
+    sandbox: str = "none",
 ) -> str:
     """Execute the named tool and return its string output.
 
@@ -1594,6 +1697,10 @@ def execute_tool(
         Mapping of peer name → URL from the team's ``bridge.peers`` config.
         Forwarded to federation tools (``delegate_task``, ``broadcast_task``,
         etc.) so they can resolve named peers.
+    sandbox:
+        Sandbox mode for code-execution tools (``run_python``, ``run_bash``).
+        One of ``"none"`` (default), ``"firejail"``, or ``"bubblewrap"``.
+        Passed through via ``**kwargs`` to the tool; non-code tools ignore it.
 
     Raises :class:`KeyError` if *name* is not in the registry.
     All exceptions from the tool implementation are caught and returned
@@ -1611,6 +1718,7 @@ def execute_tool(
         member_name=member_name,
         bridge_secret=bridge_secret,
         peers=peers,
+        sandbox=sandbox,
     )
     log.debug("tool:%s → %d chars", name, len(result))
     return result

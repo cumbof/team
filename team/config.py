@@ -119,6 +119,14 @@ class Defaults:
     # drift in long conversations where smaller models may forget their assigned
     # identity.  Disabled by default to avoid unnecessary token overhead.
     persona_reinforcement: bool = False
+    # tool_sandbox: sandbox to apply when executing run_python / run_bash tools.
+    # Has no effect for tools that run in-process (web_search, read_url, etc.).
+    # "none"       — no isolation (default; fine when Docker provides the sandbox).
+    # "firejail"   — wrap execution with firejail(1); must be installed on the host.
+    # "bubblewrap" — wrap execution with bwrap(1) (bubblewrap); must be installed.
+    # Use firejail or bubblewrap when running with a host Ollama server (no Docker)
+    # to limit the blast radius of rogue or hallucinated shell/Python commands.
+    tool_sandbox: str = "none"
 
 
 @dataclass
@@ -180,6 +188,9 @@ class MemberConfig:
     unload_on_exit: bool | None = None
     # persona_reinforcement: per-member override; None = inherit from defaults.
     persona_reinforcement: bool | None = None
+    # tool_sandbox: per-member override; None = inherit from defaults.
+    # "none" | "firejail" | "bubblewrap"
+    tool_sandbox: str | None = None
     # Retry settings — override defaults.max_retries / defaults.retry_backoff per member
     max_retries: int | None = None      # None = inherit from defaults
     retry_backoff: float | None = None  # None = inherit from defaults
@@ -452,6 +463,7 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         keep_alive=data.get("keep_alive"),
         unload_on_exit=data.get("unload_on_exit"),
         persona_reinforcement=data.get("persona_reinforcement"),
+        tool_sandbox=data.get("tool_sandbox"),
         routes=_parse_routes(data.get("routes", []), ctx),
     )
 
