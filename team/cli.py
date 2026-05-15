@@ -1362,13 +1362,25 @@ def personas(key: str | None) -> None:
         )
         return
 
-    table = Table(title="Predefined persona library", show_lines=True)
+    table = Table(title="Predefined persona library", show_lines=False)
     table.add_column("Source", style="dim", no_wrap=True)
     table.add_column("Key", style="bold cyan", no_wrap=True)
     table.add_column("Role", style="bold")
     table.add_column("Description")
-    for entry in sorted(list_all(), key=lambda e: (e.get("source", ""), e["key"])):
-        table.add_row(entry.get("source", "built-in"), f"@{entry['key']}", entry["role"], entry["description"])
+
+    sorted_entries = sorted(list_all(), key=lambda e: (e.get("source", ""), e["key"]))
+    prev_source: str | None = None
+    for entry in sorted_entries:
+        src = entry.get("source", "built-in")
+        if prev_source is not None and src != prev_source:
+            table.add_section()  # visible divider only between source groups
+        table.add_row(
+            src if src != prev_source else "",  # label only on first row of group
+            f"@{entry['key']}",
+            entry["role"],
+            entry["description"],
+        )
+        prev_source = src
     console.print(table)
     console.print(
         "\n[dim]Use in YAML:[/dim]  [bold]persona: \"@<key>\"[/bold]  "
