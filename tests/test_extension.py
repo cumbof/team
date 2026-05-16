@@ -287,7 +287,7 @@ class TestInitCmd:
         (tmp_path / "demo.yaml").write_text("existing")
         result = CliRunner().invoke(grp, ["init", "--scenario", "demo", "--output-dir", str(tmp_path)])
         assert result.exit_code != 0
-        assert "already exists" in result.output
+        assert "already" in result.output and "--force" in result.output
         assert (tmp_path / "demo.yaml").read_text() == "existing"
 
     def test_force_overwrites(self, ext_dirs, tmp_path):
