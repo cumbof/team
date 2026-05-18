@@ -34,6 +34,8 @@ Available tools
 - ``contest_belief``  — contest an existing belief (moves it to contested status).
 - ``accept_belief``   — cast an accept vote for an existing belief.
 - ``list_beliefs``    — list the team's belief board (optionally by status).
+- ``delegate_to_expert`` — send a prompt to an external cloud LLM (OpenAI, Anthropic, Google)
+  when the local model needs expert assistance.
 - ``log_decision``    — append a timestamped decision entry to decisions.md in the shared workspace.
 - ``read_decisions``  — read the full decisions log (decisions.md) from the shared workspace.
 
@@ -43,6 +45,12 @@ Security note
 privileges of the process that runs ``team``.  Only enable these tools for
 members whose prompts you trust, and always review the generated code before
 a run when security matters.
+
+``delegate_to_expert`` sends the prompt text to an external API (OpenAI,
+Anthropic, or Google).  Only enable it for members you trust to handle
+sensitive data appropriately, and ensure the corresponding API key is set
+in the environment.  Required env vars: ``OPENAI_API_KEY``,
+``ANTHROPIC_API_KEY``, or ``GOOGLE_API_KEY`` (depending on the provider used).
 """
 
 from __future__ import annotations
@@ -1153,6 +1161,245 @@ def _cancel_remote_task(
 
 
 
+# --------------------------------------------------------------------------- #
+# Expert delegation: send a prompt to an external cloud LLM
+# --------------------------------------------------------------------------- #
+
+#: Supported external providers and their defaults.
+_EXPERT_PROVIDERS: dict[str, dict] = {
+    "openai": {
+        "env_key": "OPENAI_API_KEY",
+        "default_model": "gpt-4o",
+        "api_url": "https://api.openai.com/v1/chat/completions",
+    },
+    "anthropic": {
+        "env_key": "ANTHROPIC_API_KEY",
+        "default_model": "claude-opus-4-5",
+        "api_url": "https://api.anthropic.com/v1/messages",
+    },
+    "google": {
+        "env_key": "GOOGLE_API_KEY",
+        "default_model": "gemini-1.5-pro",
+        "api_url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+    },
+}
+
+
+def _call_openai(
+    api_url: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    timeout: int,
+) -> str:
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    r = requests.post(api_url, json=payload, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    choices = data.get("choices") or []
+    if not choices:
+        return "ERROR: OpenAI returned no choices in response"
+    return choices[0].get("message", {}).get("content", "").strip()
+
+
+def _call_anthropic(
+    api_url: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    timeout: int,
+) -> str:
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    r = requests.post(api_url, json=payload, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    content = data.get("content") or []
+    texts = [block.get("text", "") for block in content if block.get("type") == "text"]
+    return "\n".join(texts).strip() or "ERROR: Anthropic returned no text content"
+
+
+def _call_google(
+    api_url_template: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    timeout: int,
+) -> str:
+    url = api_url_template.format(model=model)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature": temperature,
+        },
+    }
+    params = {"key": api_key}
+    r = requests.post(url, json=payload, params=params, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    candidates = data.get("candidates") or []
+    if not candidates:
+        return "ERROR: Google returned no candidates in response"
+    parts = candidates[0].get("content", {}).get("parts") or []
+    texts = [p.get("text", "") for p in parts]
+    return "\n".join(texts).strip() or "ERROR: Google returned no text content"
+
+
+def _delegate_to_expert(
+    body: str,
+    *,
+    timeout: int = 120,
+    **_: Any,
+) -> str:
+    """Send a prompt to an external subscription-based cloud LLM and return its reply.
+
+    Use this when a task exceeds the local model's capabilities — the response
+    is returned as a tool result so you can incorporate it into your own reply.
+
+    **Privacy notice**: the prompt text is sent to an external API. Only use
+    this tool when the data is safe to share with the chosen provider.
+
+    Required environment variable (set on the host before running ``team``):
+
+    * ``OPENAI_API_KEY``   — for ``provider: openai``
+    * ``ANTHROPIC_API_KEY`` — for ``provider: anthropic``
+    * ``GOOGLE_API_KEY``   — for ``provider: google``
+
+    Body format (multi-line prompt via ``---`` separator)::
+
+        provider: openai
+        model: gpt-4o
+        max_tokens: 2048
+        temperature: 0.3
+        ---
+        Explain quantum entanglement in simple terms.
+        Provide at least three analogies.
+
+    Or a single-line prompt::
+
+        provider: anthropic
+        model: claude-opus-4-5
+        prompt: What is the capital of France?
+
+    Fields
+    ------
+    provider:
+        Required.  One of ``openai``, ``anthropic``, ``google``.
+    model:
+        Optional.  Model identifier accepted by the provider API.
+        Defaults: ``gpt-4o`` (OpenAI), ``claude-opus-4-5`` (Anthropic),
+        ``gemini-1.5-pro`` (Google).
+    prompt:
+        The prompt to send (single-line form).  Ignored when the body
+        contains a ``---`` separator — the text after ``---`` is used instead.
+    max_tokens:
+        Maximum tokens in the response (default: 2048).
+    temperature:
+        Sampling temperature 0–2 (default: 0.2).
+    """
+    provider_name = (_parse_kv(body, "provider") or "").strip().lower()
+    if not provider_name:
+        return (
+            "ERROR: provide provider: <name> — supported: "
+            + ", ".join(_EXPERT_PROVIDERS)
+        )
+    if provider_name not in _EXPERT_PROVIDERS:
+        return (
+            f"ERROR: unknown provider {provider_name!r}. "
+            f"Supported: {', '.join(_EXPERT_PROVIDERS)}"
+        )
+
+    info = _EXPERT_PROVIDERS[provider_name]
+    api_key = os.environ.get(info["env_key"], "").strip()
+    if not api_key:
+        return (
+            f"ERROR: {info['env_key']} environment variable is not set. "
+            f"Export it on the host before running team to use provider {provider_name!r}."
+        )
+
+    model = (_parse_kv(body, "model") or "").strip() or info["default_model"]
+
+    # Multi-line prompt: text after the first \n---\n separator.
+    idx = body.find("\n---\n")
+    if idx != -1:
+        prompt = body[idx + 5:].strip()
+    else:
+        prompt = (_parse_kv(body, "prompt") or "").strip()
+    if not prompt:
+        return "ERROR: provide a prompt (use 'prompt: ...' or place the text after a '---' line)"
+
+    max_tokens_raw = _parse_kv(body, "max_tokens")
+    try:
+        max_tokens = int(max_tokens_raw) if max_tokens_raw else 2048
+    except ValueError:
+        return f"ERROR: max_tokens must be an integer, got {max_tokens_raw!r}"
+
+    temperature_raw = _parse_kv(body, "temperature")
+    try:
+        temperature = float(temperature_raw) if temperature_raw else 0.2
+    except ValueError:
+        return f"ERROR: temperature must be a float, got {temperature_raw!r}"
+
+    log.info(
+        "delegate_to_expert: calling %s/%s (max_tokens=%d)",
+        provider_name, model, max_tokens,
+    )
+
+    try:
+        if provider_name == "openai":
+            reply = _call_openai(
+                info["api_url"], api_key, model, prompt,
+                max_tokens, temperature, timeout,
+            )
+        elif provider_name == "anthropic":
+            reply = _call_anthropic(
+                info["api_url"], api_key, model, prompt,
+                max_tokens, temperature, timeout,
+            )
+        else:  # google
+            reply = _call_google(
+                info["api_url"], api_key, model, prompt,
+                max_tokens, temperature, timeout,
+            )
+    except requests.exceptions.Timeout:
+        return f"ERROR: request to {provider_name} timed out after {timeout}s"
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        return f"ERROR: {provider_name} API returned HTTP {status}: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: delegate_to_expert failed ({provider_name}): {exc}"
+
+    if reply.startswith("ERROR"):
+        return reply
+
+    header = f"[Expert response from {provider_name}/{model}]\n\n"
+    return _truncate(header + reply)
+
 
 _DECISIONS_FILE = "decisions.md"
 
@@ -1426,6 +1673,22 @@ TOOL_SCHEMAS: dict[str, dict] = {
         },
         ["task_id"],
     ),
+    "delegate_to_expert": _fn(
+        "delegate_to_expert",
+        "Send a prompt to an external cloud LLM (OpenAI, Anthropic, Google) for expert assistance.",
+        {
+            "provider":    {
+                "type": "string",
+                "enum": ["openai", "anthropic", "google"],
+                "description": "Cloud provider to use.",
+            },
+            "model":       {"type": "string",  "description": "Model identifier (optional; provider default used if omitted)."},
+            "prompt":      {"type": "string",  "description": "The prompt or question to send to the expert model."},
+            "max_tokens":  {"type": "integer", "description": "Maximum tokens in the response (default 2048)."},
+            "temperature": {"type": "number",  "description": "Sampling temperature 0–2 (default 0.2)."},
+        },
+        ["provider", "prompt"],
+    ),
     "log_decision": _fn(
         "log_decision",
         "Append a timestamped decision entry to decisions.md in the shared workspace.",
@@ -1572,6 +1835,18 @@ def args_to_body(tool_name: str, args: dict) -> str:
     if tool_name == "read_decisions":
         return ""
 
+    if tool_name == "delegate_to_expert":
+        lines = [f"provider: {args.get('provider', '')}"]
+        if args.get("model"):
+            lines.append(f"model: {args['model']}")
+        if args.get("max_tokens") is not None:
+            lines.append(f"max_tokens: {args['max_tokens']}")
+        if args.get("temperature") is not None:
+            lines.append(f"temperature: {args['temperature']}")
+        lines.append("---")
+        lines.append(args.get("prompt", ""))
+        return "\n".join(lines)
+
     # Unknown tool or custom skill — pass args as JSON so the skill can parse them.
     import json as _json
     return _json.dumps(args, ensure_ascii=False)
@@ -1603,6 +1878,7 @@ TOOLS: dict[str, Any] = {
     "list_peers":          _list_peers,
     "broadcast_task":      _broadcast_task,
     "cancel_remote_task":  _cancel_remote_task,
+    "delegate_to_expert":  _delegate_to_expert,
     "log_decision":        _log_decision,
     "read_decisions":      _read_decisions,
 }
@@ -1644,6 +1920,13 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "cancel_remote_task": (
         "Cancel a queued or running task on a remote bridge server by task ID. "
         "Use after a delegate_task call when you no longer need the result."
+    ),
+    "delegate_to_expert": (
+        "Send a prompt to an external cloud LLM (OpenAI, Anthropic, or Google) "
+        "and return its reply. Use this when the current task exceeds your "
+        "capabilities and you need expert assistance. Requires the provider's "
+        "API key to be set in the environment (OPENAI_API_KEY, ANTHROPIC_API_KEY, "
+        "or GOOGLE_API_KEY). WARNING: the prompt is sent to an external service."
     ),
     "log_decision":   (
         "Append a timestamped decision entry to decisions.md in the shared workspace. "

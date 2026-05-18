@@ -1416,6 +1416,7 @@ transcript as usual.
 | `list_peers` | List all configured peer teams and their live health status (pending/running counts). |
 | `broadcast_task` | Fan out the same goal to multiple peer teams concurrently and collect all results. |
 | `cancel_remote_task` | Cancel a queued or running task on a remote bridge server by task ID. |
+| `delegate_to_expert` | Send a prompt to an external cloud LLM (OpenAI, Anthropic, Google) for expert assistance when the task exceeds local capabilities. |
 
 **`write_file` and `append_file` body format**
 
@@ -1446,6 +1447,84 @@ pattern: **/*.py
 `run_python` and `run_bash` execute code on the **host machine** with the
 privileges of the `team` process.  Only enable these tools for members whose
 prompts you trust.
+
+### Expert delegation — `delegate_to_expert`
+
+When a task is too complex for the local model assigned to a member, that
+member can **delegate the sub-problem** to a subscription-based cloud LLM
+(ChatGPT, Claude, Gemini) and receive the answer as a tool result.  The
+member remains responsible for the turn — it incorporates the expert's reply
+into its own response, so the team structure and role assignments are preserved.
+
+The cloud model is **not** a team member.  It has no access to the
+transcript, the shared workspace, or any other team state — only the prompt
+text you explicitly send.
+
+#### Setup
+
+Export the API key for the provider(s) you want to use **on the host** before
+running `team`:
+
+```bash
+export OPENAI_API_KEY=sk-…          # for provider: openai
+export ANTHROPIC_API_KEY=sk-ant-…   # for provider: anthropic
+export GOOGLE_API_KEY=AIza…         # for provider: google
+```
+
+Enable the tool for a member in the YAML:
+
+```yaml
+members:
+  - name: analyst
+    model: llama3.2:3b
+    tools: [delegate_to_expert, read_file, write_file]
+```
+
+#### Usage
+
+**Multi-line prompt (recommended for complex requests)**:
+
+````
+```tool:delegate_to_expert
+provider: openai
+model: gpt-4o
+max_tokens: 4096
+temperature: 0.2
+---
+You are a statistics expert.
+Given the following regression output, identify any violations
+of linear regression assumptions and suggest remedies.
+
+Residuals: …
+```
+````
+
+**Single-line prompt**:
+
+````
+```tool:delegate_to_expert
+provider: anthropic
+model: claude-opus-4-5
+prompt: What is the time complexity of Dijkstra's algorithm with a binary heap?
+```
+````
+
+| field | required | default | description |
+| --- | --- | --- | --- |
+| `provider` | ✓ | — | `openai`, `anthropic`, or `google` |
+| `model` | | provider default | Model name accepted by the provider API |
+| `prompt` | ✓* | — | Prompt text (single-line form; ignored when `---` body is present) |
+| `max_tokens` | | `2048` | Maximum tokens in the response |
+| `temperature` | | `0.2` | Sampling temperature 0–2 |
+
+\* Required unless a `---` body separator is used.
+
+**Provider defaults**: `gpt-4o` (OpenAI), `claude-opus-4-5` (Anthropic),
+`gemini-1.5-pro` (Google).
+
+> **Privacy**: the prompt text is sent to the external API.  Do not include
+> sensitive data unless your data-handling agreement with the provider permits it.
+> Only enable `delegate_to_expert` for members that may handle the data appropriately.
 
 ### Full system access and package installation
 
@@ -2827,7 +2906,7 @@ team/
 ├── workspace.py     # parse `file:` blocks, atomic writes, traversal guard, CheckpointManager
 ├── bus.py           # transcript with on-disk JSONL persistence and stats()
 ├── personas.py      # render the system prompt + collaboration protocol + tool section
-├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file, write_file, append_file, list_files, delegate_task, remember, recall, forget, list_memories, assert_belief, contest_belief, accept_belief, list_beliefs
+├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file, write_file, append_file, list_files, delegate_task, delegate_to_expert, remember, recall, forget, list_memories, assert_belief, contest_belief, accept_belief, list_beliefs
 ├── skills.py        # skill plugin loader: local files and remote URLs → tool registry
 ├── memory.py        # AgentMemory: per-agent SQLite-backed persistent cross-session memory
 ├── beliefs.py       # BeliefBoard: shared JSON-backed team belief board with voting/consensus

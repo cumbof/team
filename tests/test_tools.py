@@ -602,3 +602,179 @@ def test_log_decision_in_tool_registry():
     assert "read_decisions" in TOOLS
     assert "log_decision" in TOOL_DESCRIPTIONS
     assert "read_decisions" in TOOL_DESCRIPTIONS
+
+
+# --------------------------------------------------------------------------- #
+# delegate_to_expert
+# --------------------------------------------------------------------------- #
+
+
+import os
+
+
+def test_delegate_to_expert_in_registry():
+    assert "delegate_to_expert" in TOOLS
+    assert "delegate_to_expert" in TOOL_DESCRIPTIONS
+
+
+def test_delegate_to_expert_missing_provider():
+    result = execute_tool("delegate_to_expert", "prompt: hello")
+    assert result.startswith("ERROR")
+    assert "provider" in result.lower()
+
+
+def test_delegate_to_expert_unknown_provider():
+    result = execute_tool("delegate_to_expert", "provider: fakeai\nprompt: hello")
+    assert result.startswith("ERROR")
+    assert "fakeai" in result
+
+
+def test_delegate_to_expert_missing_api_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    result = execute_tool("delegate_to_expert", "provider: openai\nprompt: hello")
+    assert result.startswith("ERROR")
+    assert "OPENAI_API_KEY" in result
+
+
+def test_delegate_to_expert_missing_prompt(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    result = execute_tool("delegate_to_expert", "provider: openai")
+    assert result.startswith("ERROR")
+    assert "prompt" in result.lower()
+
+
+def test_delegate_to_expert_openai_success(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": "Paris is the capital of France."}}]
+    }
+    mock_response.raise_for_status = MagicMock()
+    with patch("team.tools.requests.post", return_value=mock_response):
+        result = execute_tool(
+            "delegate_to_expert",
+            "provider: openai\nmodel: gpt-4o\nprompt: What is the capital of France?",
+        )
+    assert "Paris" in result
+    assert "openai" in result.lower()
+
+
+def test_delegate_to_expert_anthropic_success(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "content": [{"type": "text", "text": "The answer is 42."}]
+    }
+    mock_response.raise_for_status = MagicMock()
+    with patch("team.tools.requests.post", return_value=mock_response):
+        result = execute_tool(
+            "delegate_to_expert",
+            "provider: anthropic\nprompt: What is the answer?",
+        )
+    assert "42" in result
+    assert "anthropic" in result.lower()
+
+
+def test_delegate_to_expert_google_success(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "candidates": [
+            {"content": {"parts": [{"text": "Quantum entanglement explained."}]}}
+        ]
+    }
+    mock_response.raise_for_status = MagicMock()
+    with patch("team.tools.requests.post", return_value=mock_response):
+        result = execute_tool(
+            "delegate_to_expert",
+            "provider: google\nprompt: Explain quantum entanglement.",
+        )
+    assert "Quantum" in result
+    assert "google" in result.lower()
+
+
+def test_delegate_to_expert_multiline_prompt(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": "Sure, here are three analogies."}}]
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    body = (
+        "provider: openai\n"
+        "model: gpt-4o\n"
+        "max_tokens: 1024\n"
+        "temperature: 0.5\n"
+        "---\n"
+        "Explain quantum entanglement.\n"
+        "Give at least three analogies."
+    )
+    with patch("team.tools.requests.post", return_value=mock_response) as mock_post:
+        result = execute_tool("delegate_to_expert", body)
+
+    assert "analogies" in result.lower()
+    # Verify the full multi-line prompt was sent to the API.
+    call_kwargs = mock_post.call_args
+    payload = call_kwargs[1]["json"] if call_kwargs[1] else call_kwargs[0][1]
+    sent_prompt = payload["messages"][0]["content"]
+    assert "three analogies" in sent_prompt
+
+
+def test_delegate_to_expert_network_error(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    with patch("team.tools.requests.post", side_effect=ConnectionError("no route")):
+        result = execute_tool("delegate_to_expert", "provider: openai\nprompt: hello")
+    assert result.startswith("ERROR")
+
+
+def test_delegate_to_expert_http_error(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "bad-key")
+    mock_response = MagicMock()
+    mock_response.status_code = 401
+    http_err = __import__("requests").exceptions.HTTPError(response=mock_response)
+    mock_response.raise_for_status.side_effect = http_err
+    with patch("team.tools.requests.post", return_value=mock_response):
+        result = execute_tool("delegate_to_expert", "provider: anthropic\nprompt: hello")
+    assert result.startswith("ERROR")
+    assert "401" in result
+
+
+def test_delegate_to_expert_invalid_max_tokens(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    result = execute_tool(
+        "delegate_to_expert",
+        "provider: openai\nmax_tokens: not-a-number\nprompt: hello",
+    )
+    assert result.startswith("ERROR")
+    assert "max_tokens" in result
+
+
+def test_delegate_to_expert_invalid_temperature(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    result = execute_tool(
+        "delegate_to_expert",
+        "provider: openai\ntemperature: hot\nprompt: hello",
+    )
+    assert result.startswith("ERROR")
+    assert "temperature" in result
+
+
+def test_delegate_to_expert_openai_empty_choices(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"choices": []}
+    mock_response.raise_for_status = MagicMock()
+    with patch("team.tools.requests.post", return_value=mock_response):
+        result = execute_tool("delegate_to_expert", "provider: openai\nprompt: hello")
+    assert result.startswith("ERROR")
+
+
+def test_delegate_to_expert_google_no_candidates(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"candidates": []}
+    mock_response.raise_for_status = MagicMock()
+    with patch("team.tools.requests.post", return_value=mock_response):
+        result = execute_tool("delegate_to_expert", "provider: google\nprompt: hello")
+    assert result.startswith("ERROR")
