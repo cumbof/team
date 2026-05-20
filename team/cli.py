@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import sys
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -23,7 +24,21 @@ from team._version import __version__
 from team.config import TeamConfigError, load_team
 from team.orchestrator import Orchestrator
 
-console = Console()
+# Maximum console width: keeps the UI readable on very wide terminals.
+# On narrower terminals the actual terminal width is used instead.
+_MAX_CONSOLE_WIDTH = 100
+
+def _make_console() -> Console:
+    """Return a Console whose width is capped at *_MAX_CONSOLE_WIDTH*."""
+    cols = shutil.get_terminal_size((80, 24)).columns
+    return Console(width=min(cols, _MAX_CONSOLE_WIDTH))
+
+console = _make_console()
+
+# Separator length for decorative ─ lines; derived from the console width so
+# they never overflow the panel.  4 chars of left-side prefix (e.g. "  └") are
+# subtracted so the full line stays within the console width.
+_SEP = console.width - 4
 
 # Colour palette — one colour per team member, cycles if there are more members than colours.
 _MEMBER_COLORS = [
@@ -104,8 +119,9 @@ def _render_turn_block(
         t.append(f"📄 wrote: {', '.join(files_written)}", style="dim green")
         lines.append(t)
 
-    lines.append(Text(f"  └{'─' * 58}", style=f"{color} dim"))
+    lines.append(Text(f"  └{'─' * _SEP}", style=f"{color} dim"))
     return Group(*lines)
+
 
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
@@ -480,7 +496,7 @@ def _setup_streaming(orch: Orchestrator, cons: Console) -> None:
             t.append("thinking…", style="dim italic")
             lines.append(t)
         lines.extend(state["tools"])
-        lines.append(Text(f"  └{'─' * 58}", style=f"{state['color']} dim"))
+        lines.append(Text(f"  └{'─' * _SEP}", style=f"{state['color']} dim"))
         return Group(*lines)
 
     def on_turn_start(name: str) -> None:
@@ -490,7 +506,7 @@ def _setup_streaming(orch: Orchestrator, cons: Console) -> None:
             rh.append(f"  ▶  Round {state['pending_round']} / {max_rounds}", style="bold bright_blue")
             rh.append(f"   {len(orch.team.members)} members active", style="dim")
             cons.print(rh)
-            cons.print(Text("  " + "─" * 60, style="bright_blue dim"))
+            cons.print(Text("  " + "─" * _SEP, style="bright_blue dim"))
             cons.print()
             state["pending_round_header"] = False
         state["name"] = name
@@ -565,7 +581,7 @@ def _setup_streaming(orch: Orchestrator, cons: Console) -> None:
         ph.append("  ⚡  parallel  ", style="bold bright_blue")
         ph.append(color_list)
         cons.print(ph)
-        cons.print(Text("  " + "─" * 60, style="bright_blue dim"))
+        cons.print(Text("  " + "─" * _SEP, style="bright_blue dim"))
         cons.print()
 
     def on_parallel_round_end(results: list) -> None:
@@ -702,7 +718,7 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
     _rh.append(f"  ▶  Round 1 / {cfg.workflow.max_rounds}", style="bold bright_blue")
     _rh.append(f"   {len(cfg.members)} members active", style="dim")
     console.print(_rh)
-    console.print(Text("  " + "─" * 60, style="bright_blue dim"))
+    console.print(Text("  " + "─" * _SEP, style="bright_blue dim"))
     console.print()
     _budget_hit = False
     _retry_exhausted = False
@@ -1479,7 +1495,7 @@ def test_cmd(
         _rh.append(f"  ▶  Round 1 / {cfg.workflow.max_rounds}", style="bold bright_blue")
         _rh.append(f"   {len(cfg.members)} members active", style="dim")
         console.print(_rh)
-        console.print(Text("  " + "─" * 60, style="bright_blue dim"))
+        console.print(Text("  " + "─" * _SEP, style="bright_blue dim"))
         console.print()
         with console.status("[bold blue]starting containers and pulling models…[/bold blue]"):
             orch.up()
