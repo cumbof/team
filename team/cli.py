@@ -936,10 +936,60 @@ def serve(team_file: str, port: int | None) -> None:
         f"[dim]max concurrent tasks: {max_conc} · "
         f"workspace: {cfg.workspace / 'bridge_workspaces'}[/dim]"
     )
+
+    # Auto-register with the configured registry if requested.
+    _registry_client = None
+    if cfg.registry.auto_register and cfg.registry.url:
+        import socket as _socket
+        from team.registry import RegistryEntry
+        from team.registry_client import RegistryClient, RegistryClientError
+
+        hostname = _socket.gethostname()
+        bridge_url = f"http://{hostname}:{listen_port}"
+        models = list({m.model for m in cfg.members})
+        tools: list[str] = []
+        for m in cfg.members:
+            for t in (m.tools or cfg.defaults.tools or []):
+                if t not in tools:
+                    tools.append(t)
+        entry = RegistryEntry(
+            name=cfg.name,
+            url=bridge_url,
+            description=cfg.registry.description,
+            tags=cfg.registry.tags,
+            models=models,
+            tools=tools,
+        )
+        _registry_client = RegistryClient(cfg.registry.url)
+        try:
+            _registry_client.register(entry)
+            _registry_client.start_heartbeat(
+                cfg.name,
+                interval=float(cfg.registry.heartbeat_interval),
+                entry=entry,
+            )
+            console.print(
+                f"[green]registered[/green] with registry at "
+                f"[bold]{cfg.registry.url}[/bold]  "
+                f"[dim](heartbeat every {cfg.registry.heartbeat_interval}s)[/dim]"
+            )
+        except RegistryClientError as _exc:
+            console.print(f"[yellow]⚠ registry auto-register failed:[/yellow] {_exc}")
+            _registry_client = None
+
     console.print("[dim]Press Ctrl-C to stop.[/dim]")
 
     def _stop(sig: int, frame: object) -> None:  # noqa: ARG001
         console.print("\n[yellow]shutting down bridge server…[/yellow]")
+        if _registry_client is not None:
+            try:
+                _registry_client.stop_heartbeat()
+                _registry_client.deregister(cfg.name)
+                console.print(
+                    f"[dim]deregistered {cfg.name!r} from {cfg.registry.url}[/dim]"
+                )
+            except Exception:  # noqa: BLE001
+                pass
         server.stop()
 
     signal.signal(signal.SIGINT, _stop)
@@ -2401,6 +2451,323 @@ def forge(name: str, output_dir: str, force: bool) -> None:
     console.print(f"  [bold]pip install -e \".[dev]\"[/bold]")
     console.print(f"  [bold]pytest -q[/bold]                # all tests pass out of the box")
     console.print(f"  [bold]team {ext_name} --help[/bold]   # your new subcommand")
+
+
+# --------------------------------------------------------------------------- #
+# registry
+# --------------------------------------------------------------------------- #
+
+
+@cli.group()
+def registry() -> None:
+    """Manage the team service-discovery registry.
+
+    The registry is a lightweight HTTP directory where running team clusters
+    can advertise their capabilities (tags, models, bridge URL) so other teams
+    can discover and delegate work to them.
+
+    Common workflow:
+
+    \\b
+        # Start a standalone registry server on port 8000
+        team registry start --port 8000
+
+        # Register a team with the registry
+        team registry register myteam.yaml http://localhost:8000
+
+        # Find teams that handle biology and statistics
+        team registry find http://localhost:8000 --tag biology --tag statistics
+
+        # List all registered teams
+        team registry list http://localhost:8000
+    """
+
+
+@registry.command(name="start")
+@click.option("--port", default=8000, show_default=True, help="TCP port to listen on.")
+@click.option("--host", default="0.0.0.0", show_default=True, help="Bind address.")
+@click.option("--secret", default=None, help="Optional HMAC shared secret for write operations.")
+@click.option(
+    "--entry-ttl",
+    "entry_ttl",
+    default=300,
+    show_default=True,
+    type=int,
+    help="Seconds after which an entry without a heartbeat is evicted (0 = never).",
+)
+def registry_start(port: int, host: str, secret: str | None, entry_ttl: int) -> None:
+    """Start a standalone team registry server.
+
+    The server listens for team registrations and answers discovery queries.
+    Any team can register itself with ``team registry register`` or by setting
+    ``registry.auto_register: true`` and ``registry.url`` in its YAML.
+
+    Example:
+
+    \\b
+        team registry start --port 8000 --secret mysharedsecret
+    """
+    import signal
+
+    from team.registry_server import RegistryServer
+
+    server = RegistryServer(
+        port=port,
+        host=host,
+        secret=secret,
+        entry_ttl_seconds=float(entry_ttl),
+    )
+    server.start()
+    console.print(
+        f"[green]registry server started[/green] — "
+        f"listening on [bold]{host}:{port}[/bold]"
+    )
+    if entry_ttl:
+        console.print(f"[dim]entry TTL: {entry_ttl}s  ·  auth: {'yes' if secret else 'no'}[/dim]")
+    else:
+        console.print("[dim]entry TTL: disabled  ·  entries live forever[/dim]")
+    console.print("[dim]Press Ctrl-C to stop.[/dim]")
+
+    def _stop(sig: int, frame: object) -> None:  # noqa: ARG001
+        console.print("\n[yellow]shutting down registry server…[/yellow]")
+        server.stop()
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+    server.join()
+    console.print("[green]registry server stopped[/green]")
+
+
+@registry.command(name="register")
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.argument("registry_url")
+@click.option("--secret", default=None, help="HMAC shared secret (required when server uses --secret).")
+@click.option(
+    "--heartbeat",
+    "heartbeat_interval",
+    default=0,
+    type=int,
+    show_default=True,
+    help="Send heartbeats every N seconds to keep the registration alive (0 = no heartbeat).",
+)
+def registry_register(
+    team_file: str,
+    registry_url: str,
+    secret: str | None,
+    heartbeat_interval: int,
+) -> None:
+    """Register a team with a registry server.
+
+    Reads team name, description, tags, models, and tools from the team YAML
+    and registers the team's bridge URL with the registry at REGISTRY_URL.
+    The bridge.listen_port from the YAML is used to compute the bridge URL
+    unless the YAML sets ``registry.url`` (which is used as the team's
+    advertised bridge URL).
+
+    Example:
+
+    \\b
+        team registry register myteam.yaml http://registry.example.com:8000
+    """
+    import socket
+
+    from team.registry import RegistryEntry
+    from team.registry_client import RegistryClient, RegistryClientError
+
+    cfg = _load(team_file)
+
+    # Build the advertised bridge URL.
+    # Priority: explicit registry.url in YAML > compute from bridge.listen_port.
+    bridge_url = cfg.registry.url
+    if not bridge_url:
+        hostname = socket.gethostname()
+        bridge_url = f"http://{hostname}:{cfg.bridge.listen_port}"
+
+    # Collect tools and models.
+    models = list({m.model for m in cfg.members})
+    tools: list[str] = []
+    for m in cfg.members:
+        for t in (m.tools or cfg.defaults.tools or []):
+            if t not in tools:
+                tools.append(t)
+
+    tags = cfg.registry.tags
+    description = cfg.registry.description
+
+    entry = RegistryEntry(
+        name=cfg.name,
+        url=bridge_url,
+        description=description,
+        tags=tags,
+        models=models,
+        tools=tools,
+    )
+
+    effective_secret = secret or (cfg.registry.url and None)
+    client = RegistryClient(registry_url, secret=effective_secret)
+    try:
+        stored = client.register(entry)
+    except RegistryClientError as exc:
+        console.print(f"[red]registration failed:[/red] {exc}")
+        sys.exit(1)
+
+    console.print(
+        f"[green]registered[/green] team [bold]{stored.name}[/bold] "
+        f"with registry at [bold]{registry_url}[/bold]"
+    )
+    console.print(f"  bridge URL: {stored.url}")
+    if stored.tags:
+        console.print(f"  tags: {', '.join(stored.tags)}")
+    if stored.models:
+        console.print(f"  models: {', '.join(stored.models)}")
+
+    if heartbeat_interval > 0:
+        console.print(
+            f"[dim]Sending heartbeats every {heartbeat_interval}s — "
+            "press Ctrl-C to stop.[/dim]"
+        )
+        import signal
+        client.start_heartbeat(cfg.name, interval=float(heartbeat_interval), entry=stored)
+
+        def _stop(sig: int, frame: object) -> None:  # noqa: ARG001
+            client.stop_heartbeat()
+            console.print("\n[yellow]heartbeat stopped[/yellow]")
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, _stop)
+        signal.signal(signal.SIGTERM, _stop)
+        import threading
+        threading.Event().wait()  # block until signal
+
+
+@registry.command(name="deregister")
+@click.argument("team_name")
+@click.argument("registry_url")
+@click.option("--secret", default=None, help="HMAC shared secret.")
+def registry_deregister(team_name: str, registry_url: str, secret: str | None) -> None:
+    """Remove a team from the registry.
+
+    Example:
+
+    \\b
+        team registry deregister myteam http://localhost:8000
+    """
+    from team.registry_client import RegistryClient, RegistryClientError
+
+    client = RegistryClient(registry_url, secret=secret)
+    try:
+        client.deregister(team_name)
+    except RegistryClientError as exc:
+        console.print(f"[red]deregistration failed:[/red] {exc}")
+        sys.exit(1)
+    console.print(
+        f"[green]deregistered[/green] [bold]{team_name}[/bold] from {registry_url}"
+    )
+
+
+@registry.command(name="list")
+@click.argument("registry_url")
+def registry_list(registry_url: str) -> None:
+    """List all teams currently registered with the registry.
+
+    Example:
+
+    \\b
+        team registry list http://localhost:8000
+    """
+    from team.registry_client import RegistryClient, RegistryClientError
+
+    client = RegistryClient(registry_url)
+    try:
+        entries = client.list_all()
+    except RegistryClientError as exc:
+        console.print(f"[red]registry error:[/red] {exc}")
+        sys.exit(1)
+
+    if not entries:
+        console.print("[yellow]No teams registered.[/yellow]")
+        return
+
+    table = Table(
+        title=f"Registered teams — {registry_url}",
+        border_style="dim",
+        header_style="bold dim",
+    )
+    table.add_column("Name", style="bold")
+    table.add_column("Bridge URL")
+    table.add_column("Tags")
+    table.add_column("Models")
+    table.add_column("Description")
+
+    for e in entries:
+        table.add_row(
+            e.name,
+            e.url,
+            ", ".join(e.tags) if e.tags else "—",
+            ", ".join(e.models) if e.models else "—",
+            (e.description[:50] + "…") if len(e.description) > 50 else (e.description or "—"),
+        )
+
+    console.print(table)
+
+
+@registry.command(name="find")
+@click.argument("registry_url")
+@click.option("--tag", "tags", multiple=True, help="Required capability tag (repeat for AND logic).")
+@click.option("--keyword", default=None, help="Substring searched across name, description, and tags.")
+def registry_find(registry_url: str, tags: tuple[str, ...], keyword: str | None) -> None:
+    """Find teams in the registry matching given tags or a keyword.
+
+    Example:
+
+    \\b
+        team registry find http://localhost:8000 --tag biology --tag python
+        team registry find http://localhost:8000 --keyword "survival analysis"
+    """
+    from team.registry_client import RegistryClient, RegistryClientError
+
+    client = RegistryClient(registry_url)
+    try:
+        entries = client.query(tags=list(tags) or None, keyword=keyword)
+    except RegistryClientError as exc:
+        console.print(f"[red]registry error:[/red] {exc}")
+        sys.exit(1)
+
+    if not entries:
+        filters = []
+        if tags:
+            filters.append(f"tags=[{', '.join(tags)}]")
+        if keyword:
+            filters.append(f"keyword={keyword!r}")
+        desc = " and ".join(filters) if filters else "(no filters)"
+        console.print(f"[yellow]No teams match {desc}.[/yellow]")
+        return
+
+    table = Table(
+        title=f"Matching teams — {registry_url}",
+        border_style="dim",
+        header_style="bold dim",
+    )
+    table.add_column("Name", style="bold")
+    table.add_column("Bridge URL")
+    table.add_column("Tags")
+    table.add_column("Models")
+    table.add_column("Description")
+
+    for e in entries:
+        table.add_row(
+            e.name,
+            e.url,
+            ", ".join(e.tags) if e.tags else "—",
+            ", ".join(e.models) if e.models else "—",
+            (e.description[:50] + "…") if len(e.description) > 50 else (e.description or "—"),
+        )
+
+    console.print(table)
+    console.print(
+        f"\n[dim]{len(entries)} result(s). Use [bold]delegate_task[/bold] with the bridge URL "
+        "to route work to any of these teams.[/dim]"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

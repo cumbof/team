@@ -491,6 +491,7 @@ class Member:
                     bridge_secret=self.team.bridge.secret,
                     peers=self.team.bridge.peers or None,
                     sandbox=self._tool_sandbox,
+                    registry_url=self.team.registry.url,
                 )
                 if on_tool_result:
                     on_tool_result(self.name, tool_name, result)
@@ -617,6 +618,7 @@ class Member:
                         member_name=self.name,
                         bridge_secret=self.team.bridge.secret,
                         sandbox=self._tool_sandbox,
+                        registry_url=self.team.registry.url,
                     )
                 if on_tool_result:
                     on_tool_result(self.name, tool_name, result)

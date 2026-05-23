@@ -225,6 +225,32 @@ class BeliefConfig:
 
 
 @dataclass
+class RegistryConfig:
+    """Optional team registry settings.
+
+    When ``url`` is set, the team can register itself with a central
+    :class:`~team.registry_server.RegistryServer` at startup (via
+    ``team serve``) and members can use the ``query_registry`` tool to
+    discover other teams.
+
+    YAML example::
+
+        registry:
+          url: http://registry.example.com:8000
+          auto_register: true
+          heartbeat_interval: 60
+          tags: [biology, python, statistics]
+          description: Computational biology team specialising in survival analysis
+    """
+
+    url: str | None = None
+    auto_register: bool = False
+    heartbeat_interval: int = 60          # seconds between heartbeats
+    tags: list[str] = field(default_factory=list)
+    description: str = ""
+
+
+@dataclass
 class TeamConfig:
     name: str
     goal: str
@@ -236,6 +262,7 @@ class TeamConfig:
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     beliefs: BeliefConfig = field(default_factory=BeliefConfig)
+    registry: RegistryConfig = field(default_factory=RegistryConfig)
     tests: list[dict] = field(default_factory=list)
 
     # Convenience -------------------------------------------------------- #
@@ -314,6 +341,27 @@ def _parse_beliefs(data: dict) -> BeliefConfig:
     if "inject_limit" in data:
         b.inject_limit = int(data["inject_limit"])
     return b
+
+
+def _parse_registry(data: dict) -> RegistryConfig:
+    if not data:
+        return RegistryConfig()
+    r = RegistryConfig()
+    if "url" in data and data["url"] is not None:
+        r.url = str(data["url"])
+    if "auto_register" in data:
+        r.auto_register = bool(data["auto_register"])
+    if "heartbeat_interval" in data:
+        r.heartbeat_interval = int(data["heartbeat_interval"])
+    if "tags" in data:
+        raw_tags = data["tags"]
+        if isinstance(raw_tags, list):
+            r.tags = [str(t) for t in raw_tags]
+        elif isinstance(raw_tags, str):
+            r.tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+    if "description" in data and data["description"] is not None:
+        r.description = str(data["description"])
+    return r
 
 
 def _parse_tests(data: list | None) -> list[dict]:
@@ -487,6 +535,7 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
     bridge = _parse_bridge(raw.get("bridge", {}))
     memory = _parse_memory(raw.get("memory", {}))
     beliefs = _parse_beliefs(raw.get("beliefs", {}))
+    registry = _parse_registry(raw.get("registry", {}))
     tests = _parse_tests(raw.get("tests"))
 
     members_raw = _require(raw, "members", "team")
@@ -581,6 +630,7 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
         bridge=bridge,
         memory=memory,
         beliefs=beliefs,
+        registry=registry,
         tests=tests,
     )
 

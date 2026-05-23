@@ -80,6 +80,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **LLM retry with backoff** | Automatic retry with exponential backoff on transient errors (5xx, connection refused, timeout); configurable per member. Raises `LLMRetryExhaustedError` when all attempts fail. |
 | **Cost estimation** | Estimated USD cost displayed in the token-usage table after every run (`team run`, `team stats`). Built-in pricing for OpenAI, Anthropic, Google, and Mistral; local Ollama models show `$0.00 (local)`. |
 | **Multi-team pipelines** | Chain multiple team runs with `team pipeline`; upstream artifacts and transcript summaries are automatically injected into downstream stages via `inject_files`, `inject_context`, and `goal_override` templates. |
+| **Team registry (service discovery)** | A lightweight HTTP directory where running team clusters advertise their capabilities (tags, models, tools). Other teams discover and delegate to specialist clusters via `query_registry` or the CLI. |
 
 ---
 
@@ -156,6 +157,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [Bridge config reference](#bridge-config-reference)
   - [Security — HMAC-SHA256 shared secret](#security--hmac-sha256-shared-secret)
   - [Additional security considerations](#additional-security-considerations)
+- [Team registry (service discovery)](#team-registry-service-discovery)
 - [Examples](#examples)
 - [Architecture overview](#architecture-overview)
 - [Development](#development)
@@ -2854,6 +2856,117 @@ Practical recommendations:
   needed (e.g. disable `run_bash` if the remote goal is purely analytical).
 * Set `max_concurrent_tasks: 1` (the default) if your hardware cannot
   safely support parallel model runs.
+
+---
+
+
+## Team registry (service discovery)
+
+The registry is a lightweight HTTP directory where **running team clusters
+advertise their capabilities** — name, bridge URL, speciality tags, models,
+and available tools.  Any member (or another team) can then *query* the
+registry to find the right specialist cluster and delegate work to it, without
+hard-coding the bridge URL in every YAML.
+
+This is the dynamic counterpart to `bridge.peers`: peers are pre-configured
+point-to-point links; the registry enables dynamic discovery across an
+unlimited number of teams.
+
+### Starting a standalone registry server
+
+```bash
+team registry start --port 8000
+# optional HMAC secret for write operations:
+team registry start --port 8000 --secret mysecret
+```
+
+The registry server listens on `0.0.0.0:8000` by default.  Teams that have
+not sent a heartbeat within `--entry-ttl` seconds (default: 300) are
+automatically evicted.
+
+### Registering a team
+
+**Option A — one-shot registration from the CLI:**
+
+```bash
+team registry register myteam.yaml http://registry.example.com:8000
+```
+
+This reads the team name, description, tags, models, and tools from the YAML
+and posts them to the registry.  Use `--heartbeat 60` to keep the entry alive.
+
+**Option B — auto-registration inside `team serve`:**
+
+Add a `registry:` section to the team YAML:
+
+```yaml
+registry:
+  url: http://registry.example.com:8000
+  auto_register: true          # register automatically on team serve
+  heartbeat_interval: 60       # seconds between heartbeats
+  tags:
+    - biology
+    - python
+    - statistics
+  description: "Computational biology team — survival analysis, RNA-seq, ML."
+```
+
+When you run `team serve myteam.yaml`, the bridge server starts and the team
+registers itself with the registry.  A background heartbeat thread keeps the
+entry alive.  On `Ctrl-C` the server deregisters gracefully.
+
+### Discovering teams
+
+**From the CLI:**
+
+```bash
+# list all registered teams
+team registry list http://registry.example.com:8000
+
+# find teams that handle biology AND statistics
+team registry find http://registry.example.com:8000 --tag biology --tag statistics
+
+# keyword search
+team registry find http://registry.example.com:8000 --keyword "survival analysis"
+```
+
+**From an agent tool call:**
+
+```tool:query_registry
+url: http://registry.example.com:8000
+tag: biology
+tag: statistics
+keyword: survival analysis
+```
+
+The tool returns a Markdown list of matching teams with their names, bridge
+URLs, tags, and descriptions.  An agent can then immediately delegate work
+using `delegate_task` with the URL from the result.
+
+### `registry:` config reference
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `url` | `null` | URL of the registry server. Required for auto-registration and as the default for `query_registry` tool calls. |
+| `auto_register` | `false` | Register this team with the registry when `team serve` starts. |
+| `heartbeat_interval` | `60` | Seconds between heartbeat pings to the registry server. |
+| `tags` | `[]` | Capability labels advertised to other teams. Can be a YAML list or a comma-separated string. |
+| `description` | `""` | Short human-readable description advertised in the registry. |
+
+### Registry HTTP API reference
+
+| Method | Path | Auth required | Description |
+| --- | --- | --- | --- |
+| `POST` | `/register` | ✓ | Register or update a team entry (JSON body = `RegistryEntry`). |
+| `DELETE` | `/teams/<name>` | ✓ | Deregister a team. |
+| `POST` | `/heartbeat/<name>` | ✓ | Refresh the TTL for a registered team. Returns `404` if not found. |
+| `GET` | `/teams` | — | List all registered teams. Accepts `?tag=X&tag=Y&keyword=Z` query params. |
+| `GET` | `/teams/<name>` | — | Get a single team by name. |
+| `GET` | `/health` | — | `{"status":"ok","registered":N}`. |
+
+Auth uses the same HMAC-SHA256 scheme as the bridge (headers
+`X-Registry-Timestamp` / `X-Registry-Signature`).  Read operations are always
+public.
 
 ---
 

@@ -1484,6 +1484,99 @@ def _read_decisions(
 
 
 # --------------------------------------------------------------------------- #
+# Registry discovery tool
+# --------------------------------------------------------------------------- #
+
+
+def _query_registry(
+    body: str,
+    *,
+    registry_url: str | None = None,
+    **_: Any,
+) -> str:
+    """Query a team registry server to find teams matching a keyword or tag.
+
+    Use this tool to discover remote teams that can handle a specialised
+    sub-task.  Once you know a team's URL, delegate work to it with
+    ``delegate_task``.
+
+    Body format::
+
+        url: http://registry.example.com:8000
+        tag: biology
+        tag: python
+        keyword: survival analysis
+        limit: 5
+
+    ``url`` is the registry server URL.  If omitted, the team's configured
+    ``registry.url`` is used (set via the ``--registry-url`` flag or the YAML
+    ``registry.url`` field).  ``tag`` may be repeated for multiple required
+    tags.  ``keyword`` is a substring searched across team names, descriptions,
+    and tags.  ``limit`` caps the number of results (default: 10).
+
+    Returns a Markdown list of matching teams with their name, URL,
+    description, and capability tags.
+    """
+    from team.registry_client import RegistryClient, RegistryClientError
+
+    # Collect all tags from body (handles one or many "tag: X" lines).
+    tags: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("tag:"):
+            t = stripped[4:].strip()
+            if t:
+                tags.append(t)
+
+    keyword = _parse_kv(body, "keyword") or None
+    limit_raw = _parse_kv(body, "limit")
+    try:
+        limit = int(limit_raw) if limit_raw else 10
+    except ValueError:
+        limit = 10
+
+    # URL resolution: explicit body param → injected registry_url → error.
+    url = _parse_kv(body, "url") or registry_url
+    if not url:
+        return (
+            "ERROR: provide url: <registry URL> or configure registry.url in the team YAML"
+        )
+
+    try:
+        client = RegistryClient(url)
+        entries = client.query(tags=tags or None, keyword=keyword)
+    except RegistryClientError as exc:
+        return f"ERROR: registry query failed: {exc}"
+
+    if not entries:
+        filters = []
+        if tags:
+            filters.append(f"tags={tags}")
+        if keyword:
+            filters.append(f"keyword={keyword!r}")
+        desc = " and ".join(filters) if filters else "(no filters)"
+        return f"No registered teams match {desc}."
+
+    shown = entries[:limit]
+    lines = [
+        f"Found {len(entries)} matching team(s)"
+        + (f" (showing {len(shown)})" if len(entries) > limit else "")
+        + ":"
+    ]
+    for e in shown:
+        tags_str = ", ".join(e.tags) if e.tags else "(none)"
+        models_str = ", ".join(e.models) if e.models else "(unknown)"
+        lines.append(
+            f"\n**{e.name}**  \n"
+            f"  URL: {e.url}  \n"
+            f"  Description: {e.description or '(none)'}  \n"
+            f"  Tags: {tags_str}  \n"
+            f"  Models: {models_str}"
+        )
+    return _truncate("\n".join(lines))
+
+
+# --------------------------------------------------------------------------- #
 # Native function-calling schemas
 # --------------------------------------------------------------------------- #
 
@@ -1705,6 +1798,17 @@ TOOL_SCHEMAS: dict[str, dict] = {
         {},
         [],
     ),
+    "query_registry": _fn(
+        "query_registry",
+        "Query a team registry server to discover teams matching capability tags or a keyword.",
+        {
+            "url":     {"type": "string", "description": "Registry server URL (optional if registry.url is configured)."},
+            "tag":     {"type": "string", "description": "Required capability tag (call multiple times for AND logic)."},
+            "keyword": {"type": "string", "description": "Substring searched across team names, descriptions, and tags."},
+            "limit":   {"type": "integer", "description": "Maximum number of results to return (default 10)."},
+        },
+        [],
+    ),
 }
 
 
@@ -1835,6 +1939,21 @@ def args_to_body(tool_name: str, args: dict) -> str:
     if tool_name == "read_decisions":
         return ""
 
+    if tool_name == "query_registry":
+        lines = []
+        if args.get("url"):
+            lines.append(f"url: {args['url']}")
+        # tag can be a single value; wrap in list for uniform handling
+        tag = args.get("tag")
+        if tag:
+            for t in ([tag] if isinstance(tag, str) else tag):
+                lines.append(f"tag: {t}")
+        if args.get("keyword"):
+            lines.append(f"keyword: {args['keyword']}")
+        if args.get("limit") is not None:
+            lines.append(f"limit: {args['limit']}")
+        return "\n".join(lines)
+
     if tool_name == "delegate_to_expert":
         lines = [f"provider: {args.get('provider', '')}"]
         if args.get("model"):
@@ -1881,6 +2000,7 @@ TOOLS: dict[str, Any] = {
     "delegate_to_expert":  _delegate_to_expert,
     "log_decision":        _log_decision,
     "read_decisions":      _read_decisions,
+    "query_registry":      _query_registry,
 }
 
 #: Human-readable one-line description of each tool (used in system prompts).
@@ -1933,6 +2053,11 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "Provide title, rationale, and alternatives considered."
     ),
     "read_decisions": "Read the full decision log (decisions.md) from the shared workspace.",
+    "query_registry": (
+        "Query a team registry server to find teams matching capability tags or a keyword. "
+        "Returns each matching team's name, URL, description, and tags so you can then "
+        "use delegate_task to route work to the right specialist team."
+    ),
 }
 
 
@@ -1949,6 +2074,7 @@ def execute_tool(
     bridge_secret: str | None = None,
     peers: dict[str, str] | None = None,
     sandbox: str = "none",
+    registry_url: str | None = None,
 ) -> str:
     """Execute the named tool and return its string output.
 
@@ -1984,6 +2110,9 @@ def execute_tool(
         Sandbox mode for code-execution tools (``run_python``, ``run_bash``).
         One of ``"none"`` (default), ``"firejail"``, or ``"bubblewrap"``.
         Passed through via ``**kwargs`` to the tool; non-code tools ignore it.
+    registry_url:
+        Base URL of the team registry server, forwarded to ``query_registry``
+        as the default URL when none is specified in the tool body.
 
     Raises :class:`KeyError` if *name* is not in the registry.
     All exceptions from the tool implementation are caught and returned
@@ -2002,6 +2131,7 @@ def execute_tool(
         bridge_secret=bridge_secret,
         peers=peers,
         sandbox=sandbox,
+        registry_url=registry_url,
     )
     log.debug("tool:%s → %d chars", name, len(result))
     return result
