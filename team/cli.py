@@ -926,6 +926,7 @@ def serve(team_file: str, port: int | None) -> None:
         workspace_root=cfg.workspace / "bridge_workspaces",
         secret=cfg.bridge.secret,
         task_ttl_seconds=cfg.bridge.task_ttl_seconds,
+        beliefs_path=cfg.workspace / "beliefs.json",
     )
     server.start()
     console.print(
@@ -1389,6 +1390,118 @@ def beliefs(team_file: str, status: str | None) -> None:
         console.print(
             "[yellow]⚡ Some beliefs are contested — review and resolve via accept_belief / contest_belief tools.[/yellow]"
         )
+
+
+@cli.command(name="beliefs-sync")
+@click.argument("team_file", type=click.Path(exists=True, dir_okay=False))
+@click.argument("remote_url")
+@click.option(
+    "--direction",
+    type=click.Choice(["pull", "push", "both"]),
+    default="pull",
+    show_default=True,
+    help="Sync direction: pull from remote, push to remote, or both.",
+)
+@click.option(
+    "--status",
+    default=None,
+    help="Only sync beliefs with this status (e.g. 'accepted'). Omit for all.",
+)
+@click.option(
+    "--limit",
+    default=50,
+    show_default=True,
+    type=int,
+    help="Maximum number of beliefs to transfer per direction.",
+)
+@click.option("--secret", default=None, help="HMAC shared secret for the remote bridge server.")
+def beliefs_sync(
+    team_file: str,
+    remote_url: str,
+    direction: str,
+    status: str | None,
+    limit: int,
+    secret: str | None,
+) -> None:
+    """Synchronize the belief board with a remote team cluster.
+
+    Pulls accepted beliefs from the remote team (they arrive as *pending*
+    locally, requiring local consensus), pushes local beliefs to the remote
+    team, or does both.
+
+    Examples:
+
+    \\b
+        # Pull accepted beliefs from Lab B into the local board
+        team beliefs-sync lab-a.yaml http://lab-b.example.com:7001 \\
+            --direction pull --status accepted
+
+        # Push and pull simultaneously
+        team beliefs-sync lab-a.yaml http://lab-b.example.com:7001 \\
+            --direction both
+    """
+    from team.beliefs import BeliefBoard
+    from team.bridge_client import BridgeClient, BridgeClientError
+    from team.belief_federation import export_beliefs, import_beliefs
+
+    cfg = _load(team_file)
+    beliefs_path = cfg.workspace / "beliefs.json"
+    if not beliefs_path.exists():
+        console.print(
+            "[yellow]Belief board is empty (beliefs.json not found).[/yellow]\n"
+            "[dim]Enable beliefs in your team YAML:\n"
+            "  beliefs:\n"
+            "    enabled: true[/dim]"
+        )
+        if direction in ("push", "both"):
+            return
+        # Still attempt pull even if local board is empty
+
+    board = BeliefBoard(
+        path=beliefs_path,
+        member_names=[m.name for m in cfg.members],
+        consensus_threshold=cfg.beliefs.consensus_threshold,
+    )
+    client = BridgeClient(remote_url, secret=secret)
+
+    if direction in ("pull", "both"):
+        try:
+            bundle = client.pull_beliefs(status=status, limit=limit)
+        except BridgeClientError as exc:
+            console.print(f"[red]pull failed:[/red] {exc}")
+            bundle = None
+        if bundle is None:
+            console.print("[yellow]Remote team does not expose a belief board.[/yellow]")
+        else:
+            imported, skipped = import_beliefs(board, bundle)
+            console.print(
+                f"[green]pulled from[/green] [bold]{bundle.source_team}[/bold]: "
+                f"[bold]{imported}[/bold] belief(s) imported as pending, "
+                f"[dim]{skipped} skipped (duplicates)[/dim]"
+            )
+            if imported:
+                console.print(
+                    f"[dim]Use 'team beliefs {team_file}' to review pending beliefs.[/dim]"
+                )
+
+    if direction in ("push", "both"):
+        bundle_out = export_beliefs(
+            board, cfg.name, f"local", status=status, limit=limit
+        )
+        try:
+            result = client.push_beliefs(bundle_out)
+        except BridgeClientError as exc:
+            console.print(f"[red]push failed:[/red] {exc}")
+            result = None
+        if result is None:
+            console.print("[yellow]Remote team does not support belief import.[/yellow]")
+        else:
+            r_imported, r_skipped = result
+            console.print(
+                f"[green]pushed to[/green] [bold]{remote_url}[/bold]: "
+                f"remote imported [bold]{r_imported}[/bold] belief(s), "
+                f"[dim]{r_skipped} skipped[/dim]"
+            )
 
 
 # --------------------------------------------------------------------------- #

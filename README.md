@@ -81,6 +81,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Cost estimation** | Estimated USD cost displayed in the token-usage table after every run (`team run`, `team stats`). Built-in pricing for OpenAI, Anthropic, Google, and Mistral; local Ollama models show `$0.00 (local)`. |
 | **Multi-team pipelines** | Chain multiple team runs with `team pipeline`; upstream artifacts and transcript summaries are automatically injected into downstream stages via `inject_files`, `inject_context`, and `goal_override` templates. |
 | **Team registry (service discovery)** | A lightweight HTTP directory where running team clusters advertise their capabilities (tags, models, tools). Other teams discover and delegate to specialist clusters via `query_registry` or the CLI. |
+| **Federated belief board** | Independent team clusters share their collective knowledge across the bridge. Pull accepted beliefs from a partner team (they arrive as pending for local consensus), push local beliefs outward, or bidirectional sync — via the `sync_beliefs` tool or `team beliefs-sync` CLI. |
 
 ---
 
@@ -158,6 +159,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
   - [Security — HMAC-SHA256 shared secret](#security--hmac-sha256-shared-secret)
   - [Additional security considerations](#additional-security-considerations)
 - [Team registry (service discovery)](#team-registry-service-discovery)
+- [Federated belief board](#federated-belief-board)
 - [Examples](#examples)
 - [Architecture overview](#architecture-overview)
 - [Development](#development)
@@ -1419,6 +1421,10 @@ transcript as usual.
 | `broadcast_task` | Fan out the same goal to multiple peer teams concurrently and collect all results. |
 | `cancel_remote_task` | Cancel a queued or running task on a remote bridge server by task ID. |
 | `delegate_to_expert` | Send a prompt to an external cloud LLM (OpenAI, Anthropic, Google) for expert assistance when the task exceeds local capabilities. |
+| `log_decision` | Append a timestamped decision entry to `decisions.md` in the shared workspace. |
+| `read_decisions` | Read the full decision log (`decisions.md`) from the shared workspace. |
+| `query_registry` | Query a team registry to discover teams matching capability tags or a keyword; returns names, URLs, and tags. |
+| `sync_beliefs` | Synchronize the team belief board with a remote team cluster (pull, push, or both directions). |
 
 **`write_file` and `append_file` body format**
 
@@ -2967,6 +2973,108 @@ using `delegate_task` with the URL from the result.
 Auth uses the same HMAC-SHA256 scheme as the bridge (headers
 `X-Registry-Timestamp` / `X-Registry-Signature`).  Read operations are always
 public.
+
+---
+
+
+## Federated belief board
+
+Two independent ``team`` clusters can share their **collective knowledge** via
+the bridge protocol.  When Team A has strong consensus on a set of findings,
+it can push them to Team B.  Team B receives the beliefs as *pending*, subjects
+them to its own consensus process, and either accepts or contests them.  This
+models how real research groups share, challenge, and build on each other's
+knowledge.
+
+### How federation works
+
+Each bridge server exposes two new endpoints when `beliefs.enabled: true`:
+
+* **`GET /beliefs[?status=accepted&limit=50]`** — export the team's belief
+  board as a JSON bundle (publicly readable).
+* **`POST /beliefs/import`** — import an incoming belief bundle (auth-gated).
+
+Belief deduplication is based on a **claim hash** — a SHA-256 digest of the
+normalized claim text (lowercased, punctuation stripped, whitespace collapsed).
+A belief is skipped if a belief with the same normalized claim already exists
+locally, regardless of status.
+
+Imported beliefs carry author attribution in the form
+``"<source_team>/<original_author>"`` so members can distinguish external
+beliefs from local ones.
+
+### Synchronizing via the `sync_beliefs` tool
+
+Members can call `sync_beliefs` from inside a workflow:
+
+```tool:sync_beliefs
+url: http://lab-b.example.com:7001
+direction: pull
+status: accepted
+limit: 20
+```
+
+Or push local knowledge outward:
+
+```tool:sync_beliefs
+url: http://lab-b.example.com:7001
+direction: push
+status: accepted
+local_team: lab-a
+```
+
+Or do both in one call:
+
+```tool:sync_beliefs
+peer: lab-b
+direction: both
+status: accepted
+```
+
+The tool returns a human-readable summary:
+
+```
+Pulled from lab-b: 3 belief(s) imported as pending, 1 skipped (already known).
+Tip: use list_beliefs to review the new pending beliefs and accept_belief /
+     contest_belief to vote on them.
+```
+
+### Synchronizing from the CLI
+
+```bash
+# Pull accepted beliefs from Lab B
+team beliefs-sync lab-a.yaml http://lab-b.example.com:7001 \
+    --direction pull --status accepted
+
+# Push and pull simultaneously
+team beliefs-sync lab-a.yaml http://lab-b.example.com:7001 \
+    --direction both
+
+# With HMAC authentication
+team beliefs-sync lab-a.yaml http://lab-b.example.com:7001 \
+    --direction pull --secret mysharedsecret
+```
+
+### `sync_beliefs` tool parameters
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `url` | — | Bridge URL of the remote team (required unless `peer:` is used). |
+| `peer` | — | Named peer from `bridge.peers` — resolved to its URL. |
+| `direction` | `pull` | `pull`, `push`, or `both`. |
+| `status` | (all) | Filter beliefs by status (e.g. `accepted`). |
+| `limit` | `50` | Max beliefs to transfer per direction. |
+| `local_team` | `local` | Name to use as source when pushing. |
+
+### Bridge server belief endpoints
+
+The `GET /beliefs` and `POST /beliefs/import` endpoints are served by any
+bridge server started with `team serve` when the team's `beliefs.json` exists.
+No additional configuration is required.
+
+Auth for `POST /beliefs/import` uses the same HMAC-SHA256 scheme as the bridge
+(headers `X-Bridge-Timestamp` / `X-Bridge-Signature`).  `GET /beliefs` is
+always public.
 
 ---
 

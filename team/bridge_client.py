@@ -32,10 +32,14 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import TYPE_CHECKING
 
 import requests
 
 from team.bridge import BridgeResult, BridgeTask, sign_request
+
+if TYPE_CHECKING:
+    from team.belief_federation import BeliefBundle
 
 log = logging.getLogger(__name__)
 
@@ -184,6 +188,66 @@ class BridgeClient:
                     f"(last status: {result.status!r})"
                 )
             time.sleep(min(poll_interval, max(0, remaining)))
+
+    # ------------------------------------------------------------------ #
+    # Belief federation
+    # ------------------------------------------------------------------ #
+
+    def pull_beliefs(
+        self,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> "BeliefBundle | None":
+        """Fetch the remote team's belief board as a :class:`~team.belief_federation.BeliefBundle`.
+
+        Returns ``None`` when the remote server does not expose belief
+        endpoints (``404``).  Raises :class:`BridgeClientError` on other
+        network or HTTP errors.
+
+        Parameters
+        ----------
+        status:
+            Optional filter, e.g. ``"accepted"`` — only retrieve beliefs with
+            that status.  ``None`` returns all beliefs.
+        limit:
+            Maximum number of beliefs to request (server-side cap).
+        """
+        params: list[str] = []
+        if status:
+            params.append(f"status={status}")
+        if limit != 50:
+            params.append(f"limit={limit}")
+        path = "/beliefs" + ("?" + "&".join(params) if params else "")
+        try:
+            data = self._get(path)
+        except BridgeClientError as exc:
+            if "404" in str(exc):
+                return None
+            raise
+        from team.belief_federation import BeliefBundle
+        return BeliefBundle.from_dict(data)
+
+    def push_beliefs(self, bundle: "BeliefBundle") -> tuple[int, int] | None:
+        """Push a :class:`~team.belief_federation.BeliefBundle` to the remote team.
+
+        Returns ``(imported, skipped)`` — counts from the remote team's import
+        operation.  Returns ``None`` when the remote server does not support
+        belief import (``404``).  Raises :class:`BridgeClientError` on other
+        errors.
+
+        Parameters
+        ----------
+        bundle:
+            The belief bundle to push.  Build one with
+            :func:`~team.belief_federation.export_beliefs`.
+        """
+        try:
+            resp = self._post("/beliefs/import", bundle.to_dict())
+        except BridgeClientError as exc:
+            if "404" in str(exc):
+                return None
+            raise
+        return resp.get("imported", 0), resp.get("skipped", 0)
 
     # ------------------------------------------------------------------ #
     # Low-level HTTP helpers

@@ -43,6 +43,18 @@ HTTP API
 ``GET /health``
     Response 200: ``{"status": "ok", "pending": N, "running": N}``
 
+``GET /beliefs``
+    Export the team's belief board as a :class:`~team.belief_federation.BeliefBundle`.
+    Optional query parameters: ``?status=accepted&limit=50``.
+    Response 200: BeliefBundle JSON.
+    Response 404: beliefs not available (board not configured or no board file).
+
+``POST /beliefs/import``
+    Import a :class:`~team.belief_federation.BeliefBundle` from a remote team.
+    Response 200: ``{"imported": N, "skipped": N}``
+    Response 400: malformed payload.
+    Response 404: belief board not configured.
+
 Isolation
 ---------
 Each task gets its own sub-workspace under
@@ -221,6 +233,8 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/tasks/"):
             task_id = self.path[len("/tasks/"):]
             self._handle_get_task(task_id)
+        elif self.path == "/beliefs" or self.path.startswith("/beliefs?"):
+            self._handle_get_beliefs()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -231,6 +245,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/tasks":
             self._handle_post_task(body)
+        elif self.path == "/beliefs/import":
+            self._handle_import_beliefs(body)
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -292,6 +308,82 @@ class _Handler(BaseHTTPRequestHandler):
                 {"error": f"task is already in terminal state: {result.status!r}"},
             )
 
+    # ------------------------------------------------------------------ #
+    # Belief federation endpoints
+    # ------------------------------------------------------------------ #
+
+    def _load_belief_board(self):  # -> BeliefBoard | None
+        """Load the belief board from the server's configured beliefs_path."""
+        beliefs_path = self.server.bridge_server._beliefs_path  # noqa: SLF001
+        if beliefs_path is None or not beliefs_path.exists():
+            return None
+        try:
+            from team.beliefs import BeliefBoard
+            cfg_path = self.server.bridge_server._cfg_path  # noqa: SLF001
+            member_names: list[str] = []
+            if cfg_path is not None:
+                try:
+                    from team.config import load_team
+                    cfg = load_team(cfg_path)
+                    member_names = [m.name for m in cfg.members]
+                except Exception:  # noqa: BLE001
+                    pass
+            return BeliefBoard(beliefs_path, member_names)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _handle_get_beliefs(self) -> None:
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        status_filter = (qs.get("status") or [None])[0]
+        try:
+            limit = int((qs.get("limit") or [50])[0])
+        except (ValueError, TypeError):
+            limit = 50
+
+        board = self._load_belief_board()
+        if board is None:
+            self._send_json(404, {"error": "belief board not available"})
+            return
+
+        from team.belief_federation import export_beliefs
+
+        team_name = (
+            self.server.bridge_server._capabilities.get("name", "unknown")  # noqa: SLF001
+        )
+        # Use the host header as a best-effort source URL.
+        host = self.headers.get("Host", "localhost")
+        source_url = f"http://{host}"
+
+        bundle = export_beliefs(board, team_name, source_url,
+                                status=status_filter, limit=limit)
+        self._send_json(200, bundle.to_dict())
+
+    def _handle_import_beliefs(self, body: bytes) -> None:
+        data = self._parse_json(body)
+        if not data:
+            self._send_json(400, {"error": "invalid or empty JSON body"})
+            return
+
+        board = self._load_belief_board()
+        if board is None:
+            self._send_json(404, {"error": "belief board not available"})
+            return
+
+        try:
+            from team.belief_federation import BeliefBundle, import_beliefs
+            bundle = BeliefBundle.from_dict(data)
+        except (TypeError, KeyError) as exc:
+            self._send_json(400, {"error": f"malformed belief bundle: {exc}"})
+            return
+
+        imported, skipped = import_beliefs(board, bundle)
+        log.info(
+            "bridge: belief import from %r — %d imported, %d skipped",
+            bundle.source_team, imported, skipped,
+        )
+        self._send_json(200, {"imported": imported, "skipped": skipped})
+
     def _handle_post_task(self, body: bytes) -> None:
         data = self._parse_json(body)
         if not data:
@@ -347,6 +439,7 @@ class BridgeServer:
         secret: str | None = None,
         capabilities: dict | None = None,
         task_ttl_seconds: float = 3600.0,
+        beliefs_path: Path | None = None,
     ) -> None:
         if runner is None:
             if cfg_path is None:
@@ -363,6 +456,8 @@ class BridgeServer:
         self._capabilities: dict = capabilities or {}
         self._semaphore = threading.Semaphore(max_concurrent_tasks)
         self._workspace_root: Path = Path(workspace_root or "./bridge_workspaces").resolve()
+        self._beliefs_path: Path | None = beliefs_path
+        self._cfg_path: Path | None = cfg_path
 
         self.store = TaskStore(ttl_seconds=task_ttl_seconds)
         self._http: HTTPServer | None = None

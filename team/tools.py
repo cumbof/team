@@ -1576,9 +1576,117 @@ def _query_registry(
     return _truncate("\n".join(lines))
 
 
-# --------------------------------------------------------------------------- #
-# Native function-calling schemas
-# --------------------------------------------------------------------------- #
+def _sync_beliefs(
+    body: str,
+    *,
+    beliefs: Any = None,
+    workspace_path: Path | None = None,
+    member_name: str = "unknown",
+    bridge_secret: str | None = None,
+    peers: dict[str, str] | None = None,
+    **_kwargs: object,
+) -> str:
+    """Synchronize beliefs with a remote team via the bridge protocol.
+
+    Supports three directions:
+    * ``pull`` (default) — fetch accepted beliefs from the remote team and
+      import them locally as pending for consensus validation.
+    * ``push`` — export local beliefs and send them to the remote team.
+    * ``both`` — do pull then push in sequence.
+
+    Parameters parsed from *body* (key: value lines):
+
+    * ``url:`` — bridge URL of the remote team (required).  ``peer:`` is also
+      accepted to resolve from the configured peer table.
+    * ``direction: pull | push | both`` (default: ``pull``).
+    * ``status:`` — filter beliefs by status when pushing or pulling
+      (e.g. ``accepted``).  ``None`` means all statuses.
+    * ``limit:`` — max beliefs to transfer per direction (default: 50).
+    * ``local_team:`` — name to use as source when pushing (default: ``local``).
+    """
+    from team.bridge_client import BridgeClient, BridgeClientError
+
+    # --- Resolve URL (peer: name or url: <url>) ---------------------------
+    raw_url = _parse_kv(body, "url")
+    peer_name = _parse_kv(body, "peer")
+    if peer_name and peers:
+        raw_url = peers.get(peer_name) or raw_url
+    if not raw_url:
+        return "ERROR: provide url: <bridge URL> or peer: <name>"
+
+    direction = (_parse_kv(body, "direction") or "pull").lower().strip()
+    if direction not in ("pull", "push", "both"):
+        direction = "pull"
+    status_filter = _parse_kv(body, "status") or None
+    limit_raw = _parse_kv(body, "limit")
+    try:
+        limit = int(limit_raw) if limit_raw else 50
+    except ValueError:
+        limit = 50
+    local_team = _parse_kv(body, "local_team") or "local"
+
+    # --- Lazy-load board from workspace when not injected -----------------
+    board = beliefs
+    if board is None and workspace_path is not None:
+        beliefs_path = workspace_path / "beliefs.json"
+        if beliefs_path.exists():
+            try:
+                from team.beliefs import BeliefBoard
+                board = BeliefBoard(beliefs_path, [])
+            except Exception:  # noqa: BLE001
+                pass
+
+    if board is None:
+        return "ERROR: no belief board available — enable beliefs in the team YAML"
+
+    client = BridgeClient(raw_url, secret=bridge_secret)
+    lines: list[str] = []
+
+    # --- Pull direction ---------------------------------------------------
+    if direction in ("pull", "both"):
+        try:
+            bundle = client.pull_beliefs(status=status_filter, limit=limit)
+        except BridgeClientError as exc:
+            lines.append(f"Pull failed: {exc}")
+            bundle = None
+        if bundle is None:
+            lines.append("Remote team does not expose a belief board.")
+        else:
+            from team.belief_federation import import_beliefs
+            imported, skipped = import_beliefs(board, bundle)
+            lines.append(
+                f"Pulled from **{bundle.source_team}**: "
+                f"{imported} belief(s) imported as pending, "
+                f"{skipped} skipped (already known)."
+            )
+            if imported:
+                lines.append(
+                    "Tip: use `list_beliefs` to review the new pending beliefs "
+                    "and `accept_belief` / `contest_belief` to vote on them."
+                )
+
+    # --- Push direction ---------------------------------------------------
+    if direction in ("push", "both"):
+        try:
+            from team.belief_federation import export_beliefs
+            bundle_out = export_beliefs(
+                board, local_team, raw_url, status=status_filter, limit=limit
+            )
+            result = client.push_beliefs(bundle_out)
+        except BridgeClientError as exc:
+            lines.append(f"Push failed: {exc}")
+            result = None
+        if result is None:
+            lines.append("Remote team does not support belief import.")
+        else:
+            r_imported, r_skipped = result
+            lines.append(
+                f"Pushed to remote ({raw_url}): "
+                f"remote imported {r_imported} belief(s), "
+                f"skipped {r_skipped}."
+            )
+
+    return "\n".join(lines) if lines else "No sync performed."
 
 def _fn(name: str, description: str, props: dict, required: list[str]) -> dict:
     """Build an OpenAI/Ollama-compatible function-tool dict."""
@@ -1809,6 +1917,19 @@ TOOL_SCHEMAS: dict[str, dict] = {
         },
         [],
     ),
+    "sync_beliefs": _fn(
+        "sync_beliefs",
+        "Synchronize the team belief board with a remote team cluster (pull, push, or both).",
+        {
+            "url":        {"type": "string", "description": "Bridge URL of the remote team."},
+            "peer":       {"type": "string", "description": "Named peer (resolved from bridge.peers config)."},
+            "direction":  {"type": "string", "enum": ["pull", "push", "both"], "description": "Sync direction (default: pull)."},
+            "status":     {"type": "string", "description": "Filter beliefs by status (e.g. 'accepted'). Omit for all."},
+            "limit":      {"type": "integer", "description": "Max beliefs to transfer per direction (default: 50)."},
+            "local_team": {"type": "string", "description": "Name to use as source when pushing (default: 'local')."},
+        },
+        [],
+    ),
 }
 
 
@@ -1954,6 +2075,22 @@ def args_to_body(tool_name: str, args: dict) -> str:
             lines.append(f"limit: {args['limit']}")
         return "\n".join(lines)
 
+    if tool_name == "sync_beliefs":
+        lines = []
+        if args.get("url"):
+            lines.append(f"url: {args['url']}")
+        if args.get("peer"):
+            lines.append(f"peer: {args['peer']}")
+        if args.get("direction"):
+            lines.append(f"direction: {args['direction']}")
+        if args.get("status"):
+            lines.append(f"status: {args['status']}")
+        if args.get("limit") is not None:
+            lines.append(f"limit: {args['limit']}")
+        if args.get("local_team"):
+            lines.append(f"local_team: {args['local_team']}")
+        return "\n".join(lines)
+
     if tool_name == "delegate_to_expert":
         lines = [f"provider: {args.get('provider', '')}"]
         if args.get("model"):
@@ -2001,6 +2138,7 @@ TOOLS: dict[str, Any] = {
     "log_decision":        _log_decision,
     "read_decisions":      _read_decisions,
     "query_registry":      _query_registry,
+    "sync_beliefs":        _sync_beliefs,
 }
 
 #: Human-readable one-line description of each tool (used in system prompts).
@@ -2057,6 +2195,12 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "Query a team registry server to find teams matching capability tags or a keyword. "
         "Returns each matching team's name, URL, description, and tags so you can then "
         "use delegate_task to route work to the right specialist team."
+    ),
+    "sync_beliefs": (
+        "Synchronize the team's belief board with a remote team cluster. "
+        "Pull accepted beliefs from a remote team (they arrive as pending for local voting), "
+        "push your team's beliefs to a remote team, or do both. "
+        "Use url: <bridge URL> or peer: <name>."
     ),
 }
 

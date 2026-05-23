@@ -257,3 +257,60 @@ class BeliefBoard:
     def to_dict_list(self) -> list[dict[str, Any]]:
         """Return all beliefs as a list of plain dicts (for serialisation)."""
         return [asdict(b) for b in self._beliefs.values()]
+
+    def receive_remote_belief(
+        self,
+        claim: str,
+        source_team: str,
+        original_author: str,
+        confidence: float = 0.5,
+        evidence: str = "",
+        original_id: str = "",
+    ) -> Belief:
+        """Import a belief received from a remote team.
+
+        The belief is added with status ``"pending"`` and no votes so that it
+        must go through the local team's normal consensus process before it is
+        considered accepted.
+
+        The author is recorded as ``"<source_team>/<original_author>"`` so
+        members know the belief originated externally.  Any evidence text from
+        the source is preserved and annotated with the provenance.
+
+        Parameters
+        ----------
+        claim:
+            The belief text, verbatim from the remote team.
+        source_team:
+            Name of the team that asserted this belief.
+        original_author:
+            Name of the member in the remote team who first asserted it.
+        confidence:
+            Confidence score from the remote team (0.0–1.0).
+        evidence:
+            Supporting evidence text from the remote team.
+        original_id:
+            The belief's ID in the remote team's board (for traceability).
+        """
+        belief_id = str(uuid.uuid4())[:8]
+        now = time.time()
+        provenance = f"\n\n[imported from team {source_team!r}"
+        if original_id:
+            provenance += f", id: {original_id}"
+        provenance += "]"
+        b = Belief(
+            id=belief_id,
+            claim=claim,
+            author=f"{source_team}/{original_author}",
+            confidence=confidence,
+            evidence=(evidence + provenance).strip(),
+            status="pending",
+            votes_for=[],
+            votes_against=[],
+            reasons={},
+            created_at=now,
+            updated_at=now,
+        )
+        self._beliefs[belief_id] = b
+        self._save()
+        return b
