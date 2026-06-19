@@ -49,4 +49,4 @@ include = ["team*"]
 exclude = ["tests*", "examples*"]
 
 [tool.setuptools.package-data]
-team = ["templates/*.j2", "docker/*"]
+team = ["templates/*.j2", "docker/*", "personas/*.yaml"]
