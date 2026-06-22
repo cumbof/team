@@ -65,8 +65,8 @@ log = logging.getLogger(__name__)
 # Paths
 # --------------------------------------------------------------------------- #
 
-# Built-in personas directory — sibling of this file's package root.
-_BUILTIN_DIR = Path(__file__).parent.parent / "personas"
+# Built-in personas directory — shipped inside the team package.
+_BUILTIN_DIR = Path(__file__).parent / "personas"
 
 
 def _persona_dirs() -> list[tuple[Path, str]]:
