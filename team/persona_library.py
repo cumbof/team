@@ -88,20 +88,17 @@ def _persona_dirs() -> list[tuple[Path, str]]:
             dirs.append((custom, "env (TEAM_PERSONA_DIR)"))
 
     # 2. Entry-point registered persona directories.
-    try:
-        known_paths = {p for p, _ in dirs}
-        for ep in entry_points(group="team.persona_dirs"):
-            try:
-                fn = ep.load()
-                p = Path(fn()).expanduser().resolve()
-                if p.is_dir() and p not in known_paths:
-                    dirs.append((p, ep.name))
-                    known_paths.add(p)
-                    log.debug("persona_library: loaded persona dir from plugin %r: %s", ep.name, p)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("persona_library: failed to load persona dir from plugin %r: %s", ep.name, exc)
-    except Exception:  # noqa: BLE001
-        pass  # importlib.metadata not available in very old environments
+    known_paths = {p for p, _ in dirs}
+    for ep in entry_points(group="team.persona_dirs"):
+        try:
+            fn = ep.load()
+            p = Path(fn()).expanduser().resolve()
+            if p.is_dir() and p not in known_paths:
+                dirs.append((p, ep.name))
+                known_paths.add(p)
+                log.debug("persona_library: loaded persona dir from plugin %r: %s", ep.name, p)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("persona_library: failed to load persona dir from plugin %r: %s", ep.name, exc)
 
     # 3. Built-in directory — lowest priority.
     if _BUILTIN_DIR.is_dir():

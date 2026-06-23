@@ -75,12 +75,6 @@ class TestLoadSkillRegistry:
             skills_mod._load_skill_registry()
         assert m.call_count == 1  # entry_points only called once
 
-    def test_importlib_error_yields_empty(self):
-        # If importlib.metadata raises, we get an empty dict (graceful degradation).
-        with patch("team.skills.entry_points", side_effect=RuntimeError("no metadata")):
-            registry = skills_mod._load_skill_registry()
-        assert registry == {}
-
 
 # --------------------------------------------------------------------------- #
 # _load_skill_by_name

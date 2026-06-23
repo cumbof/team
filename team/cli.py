@@ -170,16 +170,13 @@ def _load_plugin_commands() -> None:
     Errors loading individual plugins are logged and skipped so one bad plugin
     does not prevent ``team`` from starting.
     """
-    try:
-        for ep in entry_points(group="team.commands"):
-            try:
-                cmd = ep.load()
-                cli.add_command(cmd, name=ep.name)
-                log.debug("cli: loaded plugin command %r from %s", ep.name, ep.value)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("cli: failed to load plugin command %r: %s", ep.name, exc)
-    except Exception:  # noqa: BLE001
-        pass  # importlib.metadata not available in very old environments
+    for ep in entry_points(group="team.commands"):
+        try:
+            cmd = ep.load()
+            cli.add_command(cmd, name=ep.name)
+            log.debug("cli: loaded plugin command %r from %s", ep.name, ep.value)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cli: failed to load plugin command %r: %s", ep.name, exc)
 
 
 _load_plugin_commands()

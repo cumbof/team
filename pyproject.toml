@@ -8,7 +8,7 @@ version = "0.17.0"
 description = "Orchestrate a cluster of containerized local LLMs (via Ollama), each with a specific persona and role, that collaborate to solve a goal."
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "Fabio Cumbo" }]
 keywords = ["llm", "ollama", "multi-agent", "orchestration", "docker", "agents"]
 classifiers = [

@@ -194,12 +194,9 @@ def _load_skill_registry() -> dict[str, str]:
         return _SKILL_REGISTRY
 
     registry: dict[str, str] = {}
-    try:
-        for ep in entry_points(group="team.skills"):
-            registry[ep.name] = ep.value
-            log.debug("skill registry: registered %r → %s", ep.name, ep.value)
-    except Exception:  # noqa: BLE001
-        pass  # importlib.metadata not available in very old environments
+    for ep in entry_points(group="team.skills"):
+        registry[ep.name] = ep.value
+        log.debug("skill registry: registered %r → %s", ep.name, ep.value)
 
     _SKILL_REGISTRY = registry
     return _SKILL_REGISTRY
