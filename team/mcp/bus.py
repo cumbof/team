@@ -48,6 +48,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# The SDK's low-level server logs every request at INFO ("Processing request of
+# type ...").  That is far too chatty for an in-process transport we drive on
+# every tool call, so quiet it to WARNING.  Callers can re-enable if desired.
+logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
+
 #: Maximum characters returned by any tool call (mirrors the old tools._MAX_OUTPUT).
 _MAX_OUTPUT = 8192
 
