@@ -59,7 +59,7 @@ class TestForgeFiles:
             "pyproject.toml",
             "team_myext/__init__.py",
             "team_myext/commands.py",
-            "team_myext/skills/.gitkeep",
+            "team_myext/servers/.gitkeep",
             "team_myext/personas/.gitkeep",
             "team_myext/examples/.gitkeep",
             "tests/__init__.py",
@@ -73,7 +73,7 @@ class TestForgeFiles:
     def test_pyproject_has_entry_points(self, files):
         toml = files["pyproject.toml"]
         assert 'team.persona_dirs' in toml
-        assert 'team.skills' in toml
+        assert 'team.mcp_servers' in toml
         assert 'team.commands' in toml
 
     def test_pyproject_package_name(self, files):
@@ -84,7 +84,7 @@ class TestForgeFiles:
 
     def test_init_has_path_helpers(self, files):
         init = files["team_myext/__init__.py"]
-        assert "def skills_dir" in init
+        assert "def servers_dir" in init
         assert "def personas_dir" in init
         assert "def examples_dir" in init
 
@@ -136,7 +136,7 @@ class TestForgeCli:
         assert (root / "pyproject.toml").is_file()
         assert (root / "team_myext" / "__init__.py").is_file()
         assert (root / "team_myext" / "commands.py").is_file()
-        assert (root / "team_myext" / "skills" / ".gitkeep").is_file()
+        assert (root / "team_myext" / "servers" / ".gitkeep").is_file()
         assert (root / "team_myext" / "personas" / ".gitkeep").is_file()
         assert (root / "team_myext" / "examples" / ".gitkeep").is_file()
         assert (root / "tests" / "test_package.py").is_file()

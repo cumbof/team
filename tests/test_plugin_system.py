@@ -1,24 +1,19 @@
 """Tests for the entry-point plugin system.
 
 Covers:
-- ``team.skills`` entry-point scanning (_load_skill_registry, _load_skill_by_name)
+- ``team.mcp_servers`` entry-point resolution (orchestrator._resolve_entry_point)
 - ``team.persona_dirs`` entry-point scanning (_persona_dirs)
 - ``team.commands`` CLI plugin loading (_load_plugin_commands / cli)
-- ``load_skill()`` dispatch for registered-name forms (plain string and ``name:`` dict)
 """
 
 from __future__ import annotations
 
-import sys
-import textwrap
-from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-import team.skills as skills_mod
-from team.skills import SkillLoadError, load_skill
+from team.orchestrator import _resolve_entry_point
 
 
 # --------------------------------------------------------------------------- #
@@ -36,214 +31,34 @@ def _make_ep(name: str, value: str, load_return=None):
     return ep
 
 
-def _reset_registry():
-    """Force _load_skill_registry to re-scan on next call."""
-    skills_mod._SKILL_REGISTRY = None
-
-
 # --------------------------------------------------------------------------- #
-# _load_skill_registry
+# _resolve_entry_point (team.mcp_servers)
 # --------------------------------------------------------------------------- #
 
 
-class TestLoadSkillRegistry:
-    def setup_method(self):
-        _reset_registry()
+class TestResolveEntryPoint:
+    def test_module_attr_form(self):
+        fake_server = MagicMock(name="fastmcp")
+        factory = MagicMock(return_value=fake_server)
+        mod = ModuleType("fake_srv_mod")
+        mod.build = factory
+        with patch("importlib.import_module", return_value=mod):
+            result = _resolve_entry_point("fake_srv_mod:build")
+        assert result is fake_server
+        factory.assert_called_once()
 
-    def teardown_method(self):
-        _reset_registry()
-
-    def test_returns_empty_when_no_eps(self):
-        with patch("team.skills.entry_points", return_value=[]):
-            registry = skills_mod._load_skill_registry()
-        assert registry == {}
-
-    def test_maps_ep_names_to_values(self):
-        eps = [
-            _make_ep("bioblend", "team_galaxy.skills.bioblend"),
-            _make_ep("planemo", "team_galaxy.skills.planemo"),
-        ]
-        with patch("team.skills.entry_points", return_value=eps):
-            registry = skills_mod._load_skill_registry()
-        assert registry["bioblend"] == "team_galaxy.skills.bioblend"
-        assert registry["planemo"] == "team_galaxy.skills.planemo"
-
-    def test_result_is_cached(self):
-        ep = _make_ep("s1", "some.module")
-        with patch("team.skills.entry_points", return_value=[ep]) as m:
-            skills_mod._load_skill_registry()
-            skills_mod._load_skill_registry()
-        assert m.call_count == 1  # entry_points only called once
-
-
-# --------------------------------------------------------------------------- #
-# _load_skill_by_name
-# --------------------------------------------------------------------------- #
-
-
-class TestLoadSkillByName:
-    def setup_method(self):
-        _reset_registry()
-
-    def teardown_method(self):
-        _reset_registry()
-
-    def test_raises_on_unknown_name(self):
-        with patch("team.skills.entry_points", return_value=[]):
-            with pytest.raises(SkillLoadError, match="unknown skill name"):
-                skills_mod._load_skill_by_name("no_such_skill")
-
-    def test_raises_on_import_failure(self):
-        ep = _make_ep("broken", "definitely.not.a.real.module.xyz")
-        with patch("team.skills.entry_points", return_value=[ep]):
-            with pytest.raises(SkillLoadError, match="failed to import"):
-                skills_mod._load_skill_by_name("broken")
-
-    def test_loads_py_skill_module(self, tmp_path):
-        """A registered skill that is a normal .py skill file can be loaded."""
-        skill_file = tmp_path / "my_skill.py"
-        skill_file.write_text(textwrap.dedent("""\
-            TOOL_NAME = "my_tool"
-            TOOL_DESCRIPTION = "A test tool."
-
-            def execute(body, **kwargs):
-                return "result:" + body
-        """), encoding="utf-8")
-
-        mod = ModuleType("fake_skill_module")
-        mod.__file__ = str(skill_file)
-
-        ep = _make_ep("my_skill", "fake_skill_module")
-        with patch("team.skills.entry_points", return_value=[ep]):
-            with patch("importlib.import_module", return_value=mod):
-                tools, descs, ctx = skills_mod._load_skill_by_name("my_skill")
-
-        assert "my_tool" in tools
-        assert tools["my_tool"]("hello") == "result:hello"
-        assert ctx == []
-
-    def test_loads_md_skill_via_skill_file_attr(self, tmp_path):
-        """A module that sets SKILL_FILE to a .md path produces injected context."""
-        md_file = tmp_path / "context.md"
-        md_file.write_text("# Galaxy context\nSome background.", encoding="utf-8")
-
-        mod = ModuleType("md_skill_module")
-        mod.__file__ = str(tmp_path / "md_skill_module.py")
-        mod.SKILL_FILE = str(md_file)
-
-        ep = _make_ep("my_context", "md_skill_module")
-        with patch("team.skills.entry_points", return_value=[ep]):
-            with patch("importlib.import_module", return_value=mod):
-                tools, descs, ctx = skills_mod._load_skill_by_name("my_context")
-
-        assert tools == {}
-        assert descs == {}
-        assert len(ctx) == 1
-        assert "Galaxy context" in ctx[0]
-
-    def test_empty_md_file_returns_empty_context(self, tmp_path):
-        md_file = tmp_path / "empty.md"
-        md_file.write_text("   \n  ", encoding="utf-8")
-
-        mod = ModuleType("empty_md_mod")
-        mod.__file__ = str(tmp_path / "empty_md_mod.py")
-        mod.SKILL_FILE = str(md_file)
-
-        ep = _make_ep("empty_skill", "empty_md_mod")
-        with patch("team.skills.entry_points", return_value=[ep]):
-            with patch("importlib.import_module", return_value=mod):
-                tools, descs, ctx = skills_mod._load_skill_by_name("empty_skill")
-
-        assert ctx == []
-
-
-# --------------------------------------------------------------------------- #
-# load_skill dispatch for plain-name and name-dict forms
-# --------------------------------------------------------------------------- #
-
-
-class TestLoadSkillDispatch:
-    def setup_method(self):
-        _reset_registry()
-
-    def teardown_method(self):
-        _reset_registry()
-
-    def _registry_with_tool(self, tmp_path, skill_name="mysimple"):
-        """Return (ep list, module) for a one-tool skill registered as skill_name."""
-        sf = tmp_path / "simple.py"
-        sf.write_text(textwrap.dedent("""\
-            TOOL_NAME = "simple"
-            TOOL_DESCRIPTION = "Simple tool."
-            def execute(body, **kwargs):
-                return "ok"
-        """), encoding="utf-8")
-        mod = ModuleType("simple_mod")
-        mod.__file__ = str(sf)
-        ep = _make_ep(skill_name, "simple_mod")
-        return [ep], mod
-
-    def test_plain_string_name_resolved_via_registry(self, tmp_path):
-        eps, mod = self._registry_with_tool(tmp_path)
-        with patch("team.skills.entry_points", return_value=eps):
-            with patch("importlib.import_module", return_value=mod):
-                tools, _, _ = load_skill("mysimple")
-        assert "simple" in tools
-
-    def test_dict_name_key_resolved_via_registry(self, tmp_path):
-        eps, mod = self._registry_with_tool(tmp_path)
-        with patch("team.skills.entry_points", return_value=eps):
-            with patch("importlib.import_module", return_value=mod):
-                tools, _, _ = load_skill({"name": "mysimple"})
-        assert "simple" in tools
-
-    def test_plain_path_string_still_works(self, tmp_path):
-        sf = tmp_path / "direct.py"
-        sf.write_text(textwrap.dedent("""\
-            TOOL_NAME = "direct"
-            TOOL_DESCRIPTION = "Direct."
-            def execute(body, **kwargs):
-                return "direct"
-        """), encoding="utf-8")
-        tools, _, _ = load_skill(str(sf))
-        assert "direct" in tools
-
-    def test_dict_path_key_still_works(self, tmp_path):
-        sf = tmp_path / "pathed.py"
-        sf.write_text(textwrap.dedent("""\
-            TOOL_NAME = "pathed"
-            TOOL_DESCRIPTION = "Pathed."
-            def execute(body, **kwargs):
-                return "pathed"
-        """), encoding="utf-8")
-        tools, _, _ = load_skill({"path": str(sf)})
-        assert "pathed" in tools
-
-    def test_dict_with_multiple_keys_raises(self, tmp_path):
-        with pytest.raises(SkillLoadError, match="exactly one of"):
-            load_skill({"path": "/some/path.py", "url": "http://example.com"})
-
-    def test_dict_with_name_and_path_raises(self, tmp_path):
-        with pytest.raises(SkillLoadError, match="exactly one of"):
-            load_skill({"name": "myskill", "path": "/some/path.py"})
+    def test_registered_name_form(self):
+        fake_server = MagicMock(name="fastmcp")
+        factory = MagicMock(return_value=fake_server)
+        ep = _make_ep("helpers", "pkg.servers:build", load_return=factory)
+        with patch("importlib.metadata.entry_points", return_value=[ep]):
+            result = _resolve_entry_point("helpers")
+        assert result is fake_server
 
     def test_unknown_name_raises(self):
-        with patch("team.skills.entry_points", return_value=[]):
-            with pytest.raises(SkillLoadError, match="unknown skill name"):
-                load_skill("totally_unknown_skill_xyz")
-
-    def test_dict_missing_all_keys_raises(self):
-        with pytest.raises(SkillLoadError, match="'name', 'path', or 'url'"):
-            load_skill({"checksum": "abc123"})
-
-    def test_checksum_warning_for_name_form(self, tmp_path, caplog):
-        import logging
-        eps, mod = self._registry_with_tool(tmp_path)
-        with patch("team.skills.entry_points", return_value=eps):
-            with patch("importlib.import_module", return_value=mod):
-                with caplog.at_level(logging.WARNING, logger="team.skills"):
-                    load_skill({"name": "mysimple", "checksum": "sha256:abc"})
-        assert "checksum is not supported" in caplog.text
+        with patch("importlib.metadata.entry_points", return_value=[]):
+            with pytest.raises(ValueError, match="team.mcp_servers"):
+                _resolve_entry_point("totally_unknown_server")
 
 
 # --------------------------------------------------------------------------- #
