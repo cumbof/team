@@ -26,8 +26,10 @@ team/                  # main package
   orchestrator.py      # Orchestrator: ties workflow + members + workspace
   member.py            # Member: couples config with its container and Ollama client
   workflows.py         # Pluggable turn schedulers (round_robin, manager_driven, …)
-  tools.py             # 19 built-in agent tools (run_python, web_search, …)
-  skills.py            # Skill loader: Python (.py) or Markdown (.md) extensions
+  mcp/                 # MCP-native tool layer:
+    bus.py             #   MCPToolBus + MemberToolset (loop thread, sessions, dispatch)
+    textmode.py        #   text-mode tool block parsing + prompt rendering
+    builtin/           #   25 built-in tools as 8 in-process MCP servers
   personas.py          # System-prompt renderer
   persona_library.py   # @-shorthand resolver (e.g. @pi → personas/pi.yaml)
   beliefs.py           # Shared team belief board (SQLite-backed)
@@ -44,8 +46,7 @@ team/                  # main package
   wizard.py            # `team new` interactive YAML wizard
 
 personas/              # Ready-made persona YAML files (@pi, @engineer, …)
-skills/                # Built-in skill files (.py tools + .md context injections)
-examples/              # Example team YAML configs (academic_lab, software_team)
+examples/              # Example team YAML configs + mcp/ example server + context/ files
 tests/                 # Pytest unit tests (one file per module)
   integration/         # End-to-end tests that require Docker + live Ollama
 .github/workflows/     # CI: tests.yml (pytest), publish.yml (PyPI release)
@@ -83,8 +84,9 @@ surface used by workflows is: `run_turn(name, prompt=None)`, `members`, and
 
 **Member** (`member.py`)  
 Couples a `MemberConfig` with its `MemberRuntime` (Docker) and `OllamaClient`.
-`Member.take_turn()` builds the prompt, calls the LLM, parses tool blocks (or
-native function calls), executes tools, and returns a `TurnResult`.
+`Member.take_turn()` builds the prompt, calls the LLM, parses tool calls (text
+blocks or native function calls), dispatches them through its `MemberToolset`,
+and returns a `TurnResult`.
 
 **Workflows** (`workflows.py`)  
 A workflow is a plain function `run(orch: Orchestrator) -> None`. Available:
@@ -92,18 +94,24 @@ A workflow is a plain function `run(orch: Orchestrator) -> None`. Available:
 `parallel_review`. Register a new workflow in `get_workflow()` at the bottom of
 the file.
 
-**Tools** (`tools.py`)  
-Tool calls are either *text mode* (fenced `` ```tool:<name> `` blocks in the LLM
-reply) or *native mode* (OpenAI function-calling JSON). The orchestrator parses
-the reply, calls `execute_tool(name, body, ...)`, and injects the result back
-before the final turn reply is recorded. The sentinel `DONE_TOKEN = "[[TEAM_DONE]]"`
-signals the workflow to stop.
+**Tools** (`mcp/`)  
+Every tool call — built-in or external — flows through one `MCPToolBus`. The 25
+built-in tools are grouped into 8 in-process MCP servers under `mcp/builtin/`
+(`code`, `web`, `workspace`, `memory`, `beliefs`, `decisions`, `federation`,
+`expert`), created **per member** from a `BuiltinContext` so member identity is
+baked into the server instance. Members see the bus through a `MemberToolset`
+that filters to enabled `server/tool` patterns. Tool calls arrive as either
+*text mode* (fenced `` ```tool:server__tool `` blocks with a JSON body, parsed by
+`mcp/textmode.py`) or *native mode* (function-calling JSON); both converge on
+`MemberToolset.call()`. The sentinel `DONE_TOKEN = "[[TEAM_DONE]]"` signals the
+workflow to stop.
 
-**Skills** (`skills.py`)  
-Extend the toolbox without touching core code. A `.py` skill adds new callable
-tools; a `.md` skill injects its content into the member's system prompt as
-background knowledge. Skills can be local files or remote URLs — treat remote
-skill URLs as arbitrary code execution.
+**External MCP servers + plugins**  
+Users connect any MCP server via `mcp_servers:` in the YAML (stdio or Streamable
+HTTP), or register in-process servers under the `team.mcp_servers` entry-point
+group (`transport: entry_point`). Standing Markdown context is injected via the
+`extra_context:` config key. There is no `exec()`-based skill loader — the old
+`tools.py`/`skills.py` are gone.
 
 **Personas** (`personas.py`, `persona_library.py`)  
 A persona is a YAML file with `role`, `goal`, and `system_prompt` fields. Members
@@ -122,8 +130,10 @@ on every turn. `CheckpointManager` snapshots the workspace before each turn so
 - Prefer dataclasses (not dicts) for structured data passed between modules.
 - Keep Docker/container logic inside `container.py`; keep LLM HTTP calls inside
   `ollama_client.py`. Do not scatter `requests` calls across modules.
-- New built-in tools go in `tools.py` — add the callable to `TOOLS`, a one-line
-  description to `TOOL_DESCRIPTIONS`, and a JSON Schema entry to `TOOL_SCHEMAS`.
+- New built-in tools go in the relevant `mcp/builtin/<server>.py` — add a
+  `@srv.tool()`-decorated function with typed keyword args (use
+  `Annotated[T, Field(description=...)]` for arg descriptions); the schema is
+  generated automatically. Pin it in `tests/test_builtin_servers.py`.
 - New workflow strategies go in `workflows.py` — add the function and register it
   in `get_workflow()`.
 - Module-level docstrings are mandatory for every new module and should follow the

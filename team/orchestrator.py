@@ -156,7 +156,7 @@ class Orchestrator:
             try:
                 if sc.transport == "stdio":
                     env = {k: expand_env(v, default="") for k, v in sc.env.items()}
-                    env["TEAM_WORKSPACE"] = str(self.team.workspace)
+                    env["TEAM_WORKSPACE"] = str(self.workspace.shared_dir)
                     self.tool_bus.add_stdio_server(
                         sc.name, sc.command, sc.args, env=env, cwd=str(base)
                     )
@@ -200,7 +200,7 @@ class Orchestrator:
 
         tool_timeout = resolve_member_setting(member, self.team.defaults, "tool_timeout") or 300
         ctx = BuiltinContext(
-            workspace_path=self.team.workspace,
+            workspace_path=self.workspace.shared_dir,
             member_name=member.name,
             memory=member_memory,
             beliefs=self.beliefs,

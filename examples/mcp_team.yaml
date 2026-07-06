@@ -1,0 +1,66 @@
+# Example team using the MCP-native tool architecture (v0.18.0).
+#
+# Demonstrates:
+#   * qualified tool patterns (server/tool, server/*)
+#   * an external stdio MCP server (the bundled helpers example)
+#   * extra_context: standing knowledge injected into the system prompt
+#   * both tool modes (defaults to text; flip a member to native to compare)
+#
+# Run against a host Ollama:
+#   team run examples/mcp_team.yaml
+
+name: mcp-demo
+goal: |
+  Investigate a small question, coordinate via the shared task board, and
+  produce a short report.md in the shared workspace. Keep decisions logged.
+
+workspace: ./runs/mcp-demo
+
+workflow:
+  type: round_robin
+  max_rounds: 6
+
+mcp_servers:
+  # An external stdio MCP server. The orchestrator injects TEAM_WORKSPACE into
+  # its environment automatically (pointing at the shared workspace); the run
+  # transcript is one level up at TEAM_WORKSPACE/../transcript.jsonl.
+  helpers:
+    transport: stdio
+    command: python
+    args: ["examples/mcp/team_helpers_server.py"]
+
+  # Example of a remote server over Streamable HTTP (commented out — needs a
+  # reachable endpoint). Header values support env:VAR expansion.
+  # kb:
+  #   transport: http
+  #   url: https://kb.example.com/mcp
+  #   headers: { Authorization: "env:KB_TOKEN" }
+
+defaults:
+  # Small local models are most reliable in text mode; flip to native on a
+  # tool-capable model to use the Ollama/OpenAI tools API instead.
+  tool_mode: text
+  tools: [workspace/*, code/run_python, web/web_search, helpers/*]
+  # Standing knowledge injected into every member's system prompt. Paths are
+  # relative to this YAML's directory.
+  extra_context:
+    - context/review_checklist.md
+  # Uncomment to sandbox host code execution when not using Docker:
+  # tool_sandbox: firejail
+
+members:
+  - name: researcher
+    role: Researcher
+    model: llama3.1:8b
+    persona: |
+      You gather facts and draft findings. You use web_search sparingly and
+      write intermediate notes to the shared workspace.
+    tools: [workspace/*, web/*, helpers/task_add, helpers/task_list]
+
+  - name: writer
+    role: Writer
+    model: llama3.1:8b
+    persona: |
+      You turn the researcher's notes into a clear report.md and keep the task
+      board and decisions log up to date.
+    tools: [workspace/*, decisions/*, helpers/*]

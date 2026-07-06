@@ -56,7 +56,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 | **Containerised members** | Every LLM runs in its own Docker + Ollama container with configurable CPU, RAM, and GPU limits. |
 | **Flexible workflows** | `round_robin`, `manager`, `review_loop`, `sequential_chain`, `debate`, `parallel_review` — pick or combine. |
 | **Shared workspace** | Members read and write real files (code, reports, data) to a host directory. |
-| **Agent tool use** | 19 built-in tools (Python, Bash, web search, file I/O, memory, beliefs, decisions, delegation); `tool_mode: text` (fenced blocks) or `tool_mode: native` (OpenAI/Ollama function-calling API with JSON Schema); extend with custom skills. |
+| **Agent tool use** | 25 built-in tools across 8 MCP servers (`code`, `web`, `workspace`, `memory`, `beliefs`, `decisions`, `federation`, `expert`); `tool_mode: text` (fenced blocks, JSON body) or `tool_mode: native` (OpenAI/Ollama function-calling API); connect any external MCP server over stdio or Streamable HTTP. |
 | **Predefined persona library** | 16 ready-made personas (`@pi`, `@engineer`, `@reviewer` …) stored as individual YAML files in `personas/`; extend with your own via `TEAM_PERSONA_DIR`. |
 | **Per-agent persistent memory** | SQLite-backed memory that survives between runs; agents `remember` and `recall` across sessions. |
 | **Shared team belief board** | Structured collective knowledge with confidence scores, voting, and consensus tracking. |
@@ -123,7 +123,7 @@ Reviewer — and pick a workflow that matches how the work should flow:
 - [Human-in-the-loop intervention](#human-in-the-loop-intervention)
 - [Agent mode and tool use](#agent-mode-and-tool-use)
   - [Available built-in tools](#available-built-in-tools)
-  - [Custom skill plugins](#custom-skill-plugins)
+  - [Connecting MCP servers](#connecting-mcp-servers)
 - [Shared institutional context](#shared-institutional-context)
 - [Decision log](#decision-log)
 - [Structured JSON output](#structured-json-output)
@@ -384,11 +384,11 @@ members:
 | `api_key` | string | unset | API key for `openai_compat` backend; supports `"env:VAR"`. |
 | `context_strategy` | string | `none` | Context management: `"none"`, `"sliding_window"`, `"truncate"`, `"summarize"`. |
 | `context_budget` | int | `0` | Budget for context management: max turns (`sliding_window`) or approx token count (`truncate`/`summarize`). |
-| `tools` | list | `[]` | Built-in tools enabled for all members by default. |
+| `tools` | list | `[]` | Tools enabled for all members by default, as qualified `server/tool` or `server/*` patterns (e.g. `code/*`, `workspace/read_file`). |
 | `max_tool_rounds` | int | `10` | Maximum agentic tool-call rounds per member turn. |
 | `tool_timeout` | int | `300` | Seconds budget per individual tool execution (generous default to allow package installs). |
-| `tool_mode` | string | `"text"` | Tool invocation mode: `"text"` (fenced blocks) or `"native"` (LLM function-calling API). |
-| `skills` | list | `[]` | Skill plugin sources (local paths or remote URLs) available to all members. |
+| `tool_mode` | string | `"text"` | Tool invocation mode: `"text"` (fenced blocks, JSON body) or `"native"` (LLM function-calling API). |
+| `extra_context` | list | `[]` | Markdown files (paths relative to the team YAML) injected into every member's system prompt. |
 | `ollama_url` | string | unset | Route **all** members to an existing Ollama instance at this URL instead of starting Docker containers. Per-member `ollama_url` overrides this. See [Apple Silicon / no-Docker](#apple-silicon--no-docker-ollama). |
 | `keep_alive` | string | `"-1"` | How long Ollama keeps a model loaded in RAM after a request. `"-1"` (default) means keep forever — models stay resident between turns. Accepts any Ollama duration string (`"5m"`, `"1h"`) or `"0"` to unload immediately after each call. |
 
@@ -434,11 +434,11 @@ workflow:
 | `api_key` | no | API key; supports `"env:VAR"` to read from an environment variable. |
 | `context_strategy` | no | Per-member override of context management strategy. |
 | `context_budget` | no | Per-member override of context budget. |
-| `tools` | no | List of tool names this member may use (e.g. `[web_search, run_python]`). |
+| `tools` | no | Qualified tool patterns this member may use (e.g. `[web/web_search, code/run_python]`). |
 | `max_tool_rounds` | no | Per-member override of the tool-round limit. |
 | `tool_timeout` | no | Per-member override of the per-tool execution timeout (seconds, default 300). |
 | `tool_mode` | no | Per-member override: `"text"` or `"native"` (default inherits from `defaults.tool_mode`). |
-| `skills` | no | Member-specific skill sources merged with `defaults.skills`. |
+| `extra_context` | no | Member-specific Markdown context files (override `defaults.extra_context`). |
 | `keep_alive` | no | Per-member override for Ollama model retention (e.g. `"5m"`, `"-1"`). Inherits from `defaults.keep_alive` when absent. |
 
 ---
@@ -1309,29 +1309,45 @@ Two invocation modes are supported:
 
 ### Enabling tools
 
+Tools are named `server/tool` (or `server/*` to enable a whole server):
+
 ```yaml
 defaults:
-  tools: [web_search, run_python]  # enable globally
-  max_tool_rounds: 10              # max tool-call rounds per turn (default: 10)
-  tool_timeout: 300                # seconds per tool execution (default: 300)
-  tool_mode: text                  # "text" (default) or "native"
+  tools: [web/web_search, code/run_python]  # enable globally
+  max_tool_rounds: 10                       # max tool-call rounds per turn (default: 10)
+  tool_timeout: 300                         # seconds per tool execution (default: 300)
+  tool_mode: text                           # "text" (default) or "native"
 
 members:
   - name: researcher
-    tools: [web_search, read_url]  # per-member override
-    tool_mode: native              # this member uses function-calling API
+    tools: [web/*, workspace/read_file]     # per-member override
+    tool_mode: native                       # this member uses function-calling API
   - name: data_scientist
-    tools: [run_python, run_bash, read_file, write_file, append_file, list_files]
+    tools: [code/*, workspace/*]
 ```
+
+The 25 built-in tools live on 8 reserved servers: `code` (run_python,
+run_bash), `web` (web_search, read_url), `workspace` (read_file, write_file,
+append_file, list_files), `memory`, `beliefs`, `decisions`, `federation`, and
+`expert`.
 
 ### Tool invocation syntax — `text` mode
 
-A member invokes a tool by emitting a fenced block with a `tool:<name>`
-info-string:
+A member invokes a tool by emitting a fenced block whose info-string is the
+tool's wire name (`server__tool`) and whose body is a JSON object of arguments:
 
 ````
-```tool:web_search
-query: IPCC AR6 key findings 2024
+```tool:web__web_search
+{"query": "IPCC AR6 key findings 2024"}
+```
+````
+
+For a tool with a single required string argument (e.g. `code__run_python`), the
+raw body is also accepted verbatim — handy for small models:
+
+````
+```tool:code__run_python
+print("hello")
 ```
 ````
 
@@ -1343,9 +1359,8 @@ function-calling format) instead of text fenced blocks.  The orchestrator
 executes the tools and passes results back via `tool` role messages — no
 text parsing required.
 
-Every built-in tool has a corresponding JSON Schema automatically provided
-to the model.  Custom skill tools that lack a schema receive a minimal
-`input: string` schema.
+Every tool — built-in or from an external MCP server — advertises a JSON Schema
+that is passed to the model automatically.
 
 > **Model requirements**: native mode requires a model that supports
 > function calling.  For Ollama, use `llama3.1:8b` or newer, `qwen2.5:7b`,
@@ -1354,9 +1369,9 @@ to the model.  Custom skill tools that lack a schema receive a minimal
 > parameter, it will fall back to producing a text reply (no tool calls).
 
 ````
-```tool:run_python
+```tool:code__run_python
 import pandas as pd
-df = pd.read_csv('/workspace/shared/data.csv')
+df = pd.read_csv('data.csv')
 print(df.describe())
 ```
 ````
@@ -1398,57 +1413,51 @@ transcript as usual.
 
 ### Available built-in tools
 
-| tool | description |
-| --- | --- |
-| `run_python` | Execute Python code; cwd is the shared workspace directory. |
-| `run_bash` | Execute a bash command; cwd is the shared workspace directory. |
-| `web_search` | Search the web via the DuckDuckGo instant-answer API (no key required). |
-| `read_url` | Fetch and return the plain-text content of a URL. |
-| `read_file` | Read a file from the shared workspace by relative path. |
-| `write_file` | Write (create or overwrite) a file in the shared workspace. |
-| `append_file` | Append text to a file in the shared workspace. |
-| `list_files` | List files in the shared workspace with an optional glob filter. |
-| `remember` | Store a memory in the member's **persistent cross-session** memory store. |
-| `recall` | Search the member's persistent memory by keyword. |
-| `forget` | Delete a memory by key from the persistent store. |
-| `list_memories` | List stored memories (optionally filtered by tag). |
-| `assert_belief` | Add a claim to the team's **shared belief board** with confidence score. |
-| `contest_belief` | Contest an existing belief (moves it to contested status). |
-| `accept_belief` | Cast an accept vote for an existing belief. |
-| `list_beliefs` | List the shared belief board (optionally filtered by status). |
-| `delegate_task` | Delegate a sub-task to a remote bridge server and wait for results. Use `peer:` for named peers or `url:` for direct addressing. |
-| `list_peers` | List all configured peer teams and their live health status (pending/running counts). |
-| `broadcast_task` | Fan out the same goal to multiple peer teams concurrently and collect all results. |
-| `cancel_remote_task` | Cancel a queued or running task on a remote bridge server by task ID. |
-| `delegate_to_expert` | Send a prompt to an external cloud LLM (OpenAI, Anthropic, Google) for expert assistance when the task exceeds local capabilities. |
-| `log_decision` | Append a timestamped decision entry to `decisions.md` in the shared workspace. |
-| `read_decisions` | Read the full decision log (`decisions.md`) from the shared workspace. |
-| `query_registry` | Query a team registry to discover teams matching capability tags or a keyword; returns names, URLs, and tags. |
-| `sync_beliefs` | Synchronize the team belief board with a remote team cluster (pull, push, or both directions). |
+Tools are enabled by qualified `server/tool` name (or `server/*`).
 
-**`write_file` and `append_file` body format**
+| server | tool | description |
+| --- | --- | --- |
+| `code` | `run_python` | Execute Python code; cwd is the shared workspace directory. |
+| `code` | `run_bash` | Execute a bash command; cwd is the shared workspace directory. |
+| `web` | `web_search` | Search the web via the DuckDuckGo instant-answer API (no key required). |
+| `web` | `read_url` | Fetch and return the plain-text content of a URL. |
+| `workspace` | `read_file` | Read a file from the shared workspace by relative path. |
+| `workspace` | `write_file` | Write (create or overwrite) a file in the shared workspace. |
+| `workspace` | `append_file` | Append text to a file in the shared workspace. |
+| `workspace` | `list_files` | List files in the shared workspace with an optional glob filter. |
+| `memory` | `remember` | Store a memory in the member's **persistent cross-session** memory store. |
+| `memory` | `recall` | Search the member's persistent memory by keyword. |
+| `memory` | `forget` | Delete a memory by key from the persistent store. |
+| `memory` | `list_memories` | List stored memories (optionally filtered by tag). |
+| `beliefs` | `assert_belief` | Add a claim to the team's **shared belief board** with confidence score. |
+| `beliefs` | `contest_belief` | Contest an existing belief (moves it to contested status). |
+| `beliefs` | `accept_belief` | Cast an accept vote for an existing belief. |
+| `beliefs` | `list_beliefs` | List the shared belief board (optionally filtered by status). |
+| `federation` | `delegate_task` | Delegate a sub-task to a remote bridge server and wait for results. Use `peer` for named peers or `url` for direct addressing. |
+| `federation` | `list_peers` | List all configured peer teams and their live health status (pending/running counts). |
+| `federation` | `broadcast_task` | Fan out the same goal to multiple peer teams concurrently and collect all results. |
+| `federation` | `cancel_remote_task` | Cancel a queued or running task on a remote bridge server by task ID. |
+| `federation` | `query_registry` | Query a team registry to discover teams matching capability tags or a keyword. |
+| `federation` | `sync_beliefs` | Synchronize the team belief board with a remote team cluster (pull, push, or both). |
+| `decisions` | `log_decision` | Append a timestamped decision entry to `decisions.md` in the shared workspace. |
+| `decisions` | `read_decisions` | Read the full decision log (`decisions.md`) from the shared workspace. |
+| `expert` | `delegate_to_expert` | Send a prompt to an external cloud LLM (OpenAI, Anthropic, Google) for expert assistance. |
 
-Both tools use a two-part body separated by a `---` line:
+**Tool arguments**
 
+In `text` mode a tool block's body is a JSON object of arguments. For example
+`workspace/write_file` takes `path` and `content`:
+
+````
+```tool:workspace__write_file
+{"path": "report/intro.md", "content": "# Introduction\n..."}
 ```
-path: relative/path/to/file.txt
----
-File content goes here.
-Multiple lines are fine.
-```
+````
 
-The path is relative to the shared workspace root.  Parent directories are
-created automatically.  `write_file` replaces any existing content;
-`append_file` adds to the end of the file (creating it if it does not exist).
-
-**`list_files` body format**
-
-The body is optional.  If omitted, all workspace files are listed.  Use a
-`pattern:` key to filter by glob pattern:
-
-```
-pattern: **/*.py
-```
+Paths are relative to the shared workspace root; parent directories are created
+automatically. `list_files` takes an optional `pattern` (e.g.
+`{"pattern": "**/*.py"}`); an empty body lists all files. In `native` mode the
+model supplies the same arguments through the function-calling API.
 
 ### Security note
 
@@ -1485,25 +1494,18 @@ Enable the tool for a member in the YAML:
 members:
   - name: analyst
     model: llama3.2:3b
-    tools: [delegate_to_expert, read_file, write_file]
+    tools: [expert/delegate_to_expert, workspace/read_file, workspace/write_file]
 ```
 
 #### Usage
 
-**Multi-line prompt (recommended for complex requests)**:
+The tool body is a JSON object with `provider` and `prompt` (plus optional
+`model`, `max_tokens`, `temperature`):
 
 ````
-```tool:delegate_to_expert
-provider: openai
-model: gpt-4o
-max_tokens: 4096
-temperature: 0.2
----
-You are a statistics expert.
-Given the following regression output, identify any violations
-of linear regression assumptions and suggest remedies.
-
-Residuals: …
+```tool:expert__delegate_to_expert
+{"provider": "openai", "model": "gpt-4o", "max_tokens": 4096,
+ "prompt": "You are a statistics expert. Identify any violations of linear regression assumptions in the residuals below and suggest remedies. Residuals: ..."}
 ```
 ````
 
@@ -1521,11 +1523,9 @@ prompt: What is the time complexity of Dijkstra's algorithm with a binary heap?
 | --- | --- | --- | --- |
 | `provider` | ✓ | — | `openai`, `anthropic`, or `google` |
 | `model` | | provider default | Model name accepted by the provider API |
-| `prompt` | ✓* | — | Prompt text (single-line form; ignored when `---` body is present) |
+| `prompt` | ✓ | — | Prompt text to send to the expert model |
 | `max_tokens` | | `2048` | Maximum tokens in the response |
 | `temperature` | | `0.2` | Sampling temperature 0–2 |
-
-\* Required unless a `---` body separator is used.
 
 **Provider defaults**: `gpt-4o` (OpenAI), `claude-opus-4-5` (Anthropic),
 `gemini-1.5-pro` (Google).
@@ -1543,19 +1543,19 @@ agents should be able to do anything a human researcher or engineer can do.
 In particular, agents can install software at will:
 
 ````
-```tool:run_bash
-pip install scikit-learn seaborn --quiet
+```tool:code__run_bash
+{"command": "pip install scikit-learn seaborn --quiet"}
 ```
 ````
 
 ````
-```tool:run_bash
-apt-get install -y ffmpeg
+```tool:code__run_bash
+{"command": "apt-get install -y ffmpeg"}
 ```
 ````
 
 ````
-```tool:run_python
+```tool:code__run_python
 import subprocess, sys
 subprocess.run([sys.executable, "-m", "pip", "install", "biopython"], check=True)
 import Bio
@@ -1616,156 +1616,110 @@ Based on the search, the key findings are…
 
 ---
 
-### Custom skill plugins
+### Connecting MCP servers
 
-The built-in tool set is a starting point.  You can extend it with any
-Python file — local or fetched from a URL — and make those tools
-available to any member.  This gives agents effectively **unlimited**
-capabilities depending on what skills you provide.
-
-#### Skill file format
-
-A skill file must expose tools in one of two formats:
-
-**Single-tool format** (`TOOL_NAME` + `execute`):
-
-```python
-# skills/my_calculator.py
-TOOL_NAME = "my_calculator"
-TOOL_DESCRIPTION = "Evaluate a Python arithmetic expression."
-
-def execute(body, *, workspace_path=None, timeout=30, **kwargs):
-    try:
-        return str(eval(body.strip(), {"__builtins__": {}}, {}))
-    except Exception as exc:
-        return f"ERROR: {exc}"
-```
-
-**Multi-tool format** (`TOOLS` dict + optional `TOOL_DESCRIPTIONS`):
-
-```python
-# skills/db_tools.py
-import sqlite3
-
-def _query(body, *, workspace_path=None, **kwargs):
-    db_path = workspace_path / "data.sqlite"
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(body.strip()).fetchall()
-    conn.close()
-    return "\n".join(str(r) for r in rows)
-
-def _schema(body, *, workspace_path=None, **kwargs):
-    db_path = workspace_path / "data.sqlite"
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table'").fetchall()
-    conn.close()
-    return "\n".join(f"{r[0]}: {r[1]}" for r in rows)
-
-TOOLS = {"sql_query": _query, "sql_schema": _schema}
-TOOL_DESCRIPTIONS = {
-    "sql_query":  "Run an SQL SELECT on the shared SQLite database.",
-    "sql_schema": "Return the schema of all tables in the shared SQLite database.",
-}
-```
-
-Both formats can coexist in the same file.
-
-#### Configuring skills
-
-Add skill sources under `defaults.skills` (inherited by all members) or
-`members[*].skills` (member-specific, merged with defaults on top):
+The built-in tool set is a starting point. `team` speaks the
+[Model Context Protocol](https://modelcontextprotocol.io), so you can connect
+**any** MCP server — the thousands of community servers, a vendor's hosted
+server, or one you write yourself — and its tools become available to members
+exactly like built-ins. Declare servers under `mcp_servers:`; enable their
+tools with `server/tool` patterns.
 
 ```yaml
-defaults:
-  skills:
-    - path: ./skills/my_calculator.py     # local path (relative to CWD)
-    - path: ./skills/db_tools.py
-    - url: https://example.com/skill.py   # remote URL (see security note below)
-      checksum: sha256:e3b0c44298fc…      # optional integrity check
-    - ./skills/shorthand.py               # plain string = auto-detect local/remote
-
-  tools: [web_search, my_calculator, sql_query, sql_schema]  # opt-in by name
+mcp_servers:
+  github:                                   # external stdio server
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env: { GITHUB_PERSONAL_ACCESS_TOKEN: "env:GITHUB_TOKEN" }   # env:VAR expansion
+  kb:                                       # remote Streamable HTTP server
+    transport: http
+    url: https://kb.example.com/mcp
+    headers: { Authorization: "env:KB_TOKEN" }
+  helpers:                                  # a server script in your repo
+    transport: stdio
+    command: python
+    args: ["examples/mcp/team_helpers_server.py"]
 
 members:
-  - name: analyst
-    tools: [sql_query, sql_schema, run_python]   # member-specific tool set
-    skills:
-      - ./skills/analyst_helpers.py              # member-specific extra skill
+  - name: researcher
+    tools: [web/*, workspace/read_file, github/search_repositories, helpers/*]
 ```
 
-Tool names from skills are used exactly like built-in tool names everywhere
-(`tools:` lists, `tool:` fenced blocks, system prompts).
+Server names must match `^[a-z][a-z0-9-]*$` and may not collide with the 8
+reserved built-in servers.
 
-#### Checksum verification
+#### Writing your own server
 
-For any skill (local or remote) you can supply a checksum to verify
-integrity before execution:
-
-```yaml
-skills:
-  - url: https://example.com/skill.py
-    checksum: sha256:<hex-digest>
-  - path: ./skills/local.py
-    checksum: sha256:<hex-digest>
-```
-
-Supported algorithms: any name accepted by Python's `hashlib` (e.g.
-`sha256`, `sha512`, `md5`).  `team` raises an error and refuses to load
-the skill if the digest does not match.
-
-#### Markdown skills — context injection
-
-Skills do not have to be executable code.  A Markdown file (`.md`) loaded
-as a skill has its content injected verbatim into the member's **system
-prompt** at startup — no tool call required.  Use this for guidelines,
-checklists, templates, and domain rules that should always be visible.
-
-```yaml
-defaults:
-  skills:
-    - path: ./skills/review_checklist.md    # injected into system prompt
-    - path: ./skills/task_board.py          # callable tool as usual
-```
-
-A Python skill can also inject context by setting the `INJECT_INTO_CONTEXT`
-variable to a non-empty string — the text is injected *and* the tool
-remains callable:
+Any MCP server works, so the simplest path is a small
+[FastMCP](https://github.com/modelcontextprotocol/python-sdk) stdio script:
 
 ```python
-TOOL_NAME = "style_guide"
-INJECT_INTO_CONTEXT = "## Style guide\n- Use snake_case for all variables.\n..."
+# servers/lab_tools.py
+import os
+from pathlib import Path
+from mcp.server.fastmcp import FastMCP
 
-def execute(body, **kwargs):
-    return INJECT_INTO_CONTEXT   # also callable on demand
+mcp = FastMCP("lab")
+WORKSPACE = Path(os.environ["TEAM_WORKSPACE"])   # injected by the orchestrator
+
+@mcp.tool()
+def normalize_counts(path: str, method: str = "tpm") -> str:
+    """Normalize a counts matrix from the shared workspace."""
+    ...
+    return "wrote normalized.csv"
+
+if __name__ == "__main__":
+    mcp.run()
 ```
 
-#### Bundled team-specific skills
+Stdio servers run as a subprocess of `team` and receive the shared workspace
+path via the `TEAM_WORKSPACE` environment variable (the run transcript is one
+level up at `TEAM_WORKSPACE/../transcript.jsonl`). The function signature and
+docstring become the tool's schema automatically, so it is a first-class typed
+tool in both `text` and `native` mode. The same file works unmodified in any
+other MCP client (Claude Desktop, Cursor, the MCP Inspector).
 
-The `skills/` directory in this repository contains a set of skills designed
-for multi-agent collaboration — things that have no use outside a team run
-and would never appear in a general-purpose skill library.
+`examples/mcp/team_helpers_server.py` is a complete example bundling the
+team-process helpers (`task_add`/`task_done`/`task_list`, `search_transcript`,
+`progress_snapshot`, `request_critique`/`pick_critique`/`list_critiques`).
 
-| File | Type | Description |
-|---|---|---|
-| `review_checklist.md` | Markdown | Structured peer-review checklist injected into reviewer personas. |
-| `escalation_rules.md` | Markdown | When to proceed, flag a risk, or escalate to the manager. |
-| `decision_record_format.md` | Markdown | ADR-style template for writing `log_decision` entries. |
-| `task_board.py` | Python | `task_add` / `task_done` / `task_list` — shared TASKS.md board. |
-| `search_transcript.py` | Python | `search_transcript` — keyword search over the run transcript. |
-| `critique_request.py` | Python | `request_critique` / `pick_critique` / `list_critiques` — async peer-review queue. |
-| `progress_snapshot.py` | Python | `progress_snapshot` — write (or read) PROGRESS.md in the workspace. |
+#### Packaged servers via entry points
 
-Reference them by path in your team YAML:
+A pip-installable extension can register in-process servers under the
+`team.mcp_servers` entry-point group; reference them with
+`transport: entry_point`:
+
+```yaml
+mcp_servers:
+  bioblend:
+    transport: entry_point
+    entry_point: bioblend        # a name registered by an installed package
+```
+
+`team forge <name>` scaffolds a `team-*` extension package with a `servers/`
+directory pre-wired to this entry-point group.
+
+### Standing context — `extra_context`
+
+For guidelines, checklists, templates, and domain rules that should always be
+visible (rather than looked up via a tool), list Markdown files under
+`extra_context:`. Their content is injected verbatim into each member's system
+prompt on every turn. Paths are relative to the team YAML's directory.
 
 ```yaml
 defaults:
-  skills:
-    - path: ./skills/review_checklist.md
-    - path: ./skills/escalation_rules.md
-    - path: ./skills/task_board.py
-    - path: ./skills/search_transcript.py
-  tools: [task_add, task_done, task_list, search_transcript]
+  extra_context:
+    - context/review_checklist.md
+    - context/escalation_rules.md
+
+members:
+  - name: reviewer
+    extra_context: [context/reviewer_playbook.md]   # overrides the default list
 ```
+
+The `examples/context/` directory contains ready-to-use files
+(`review_checklist.md`, `escalation_rules.md`, `decision_record_format.md`).
 
 ## Shared institutional context
 
@@ -2021,7 +1975,7 @@ Enable memory tools for each member:
 ```yaml
 members:
   - name: alice
-    tools: [run_python, remember, recall, forget, list_memories]
+    tools: [code/run_python, memory/*]
 ```
 
 ### Memory tools
@@ -2112,7 +2066,7 @@ Enable belief tools for each member:
 ```yaml
 members:
   - name: alice
-    tools: [run_python, assert_belief, contest_belief, accept_belief, list_beliefs]
+    tools: [code/run_python, beliefs/*]
 ```
 
 ### Belief tools
@@ -2793,7 +2747,7 @@ not found or has already reached a terminal state.
 | `GET` | `/tasks` | List all tasks (add `?status=pending\|running\|complete\|error\|cancelled` to filter) |
 | `GET` | `/tasks/{id}` | Poll the status/result of a specific task |
 | `DELETE` | `/tasks/{id}` | Cancel a queued or running task |
-| `GET` | `/capabilities` | Advertise team name, models, personas, skills, and version |
+| `GET` | `/capabilities` | Advertise team name, models, personas, tools, MCP servers, and version |
 | `GET` | `/health` | Quick health check with pending/running counts |
 
 ### Bridge config reference
@@ -3127,8 +3081,10 @@ team/
 ├── workspace.py     # parse `file:` blocks, atomic writes, traversal guard, CheckpointManager
 ├── bus.py           # transcript with on-disk JSONL persistence and stats()
 ├── personas.py      # render the system prompt + collaboration protocol + tool section
-├── tools.py         # built-in agent tools: run_python, run_bash, web_search, read_url, read_file, write_file, append_file, list_files, delegate_task, delegate_to_expert, remember, recall, forget, list_memories, assert_belief, contest_belief, accept_belief, list_beliefs
-├── skills.py        # skill plugin loader: local files and remote URLs → tool registry
+├── mcp/             # MCP-native tool layer:
+│   ├── bus.py       #   MCPToolBus + MemberToolset (background loop, sessions, dispatch)
+│   ├── textmode.py  #   text-mode tool block parsing + prompt rendering
+│   └── builtin/     #   25 built-in tools as 8 in-process MCP servers
 ├── memory.py        # AgentMemory: per-agent SQLite-backed persistent cross-session memory
 ├── beliefs.py       # BeliefBoard: shared JSON-backed team belief board with voting/consensus
 ├── persona_library.py # lazy loader for personas/ YAML files + TEAM_PERSONA_DIR support
