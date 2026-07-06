@@ -519,7 +519,7 @@ class TestSyncBeliefsTool:
     """Unit tests for the sync_beliefs tool using a mocked BridgeClient."""
 
     def _run(self, body: str, beliefs=None, workspace_path=None) -> str:
-        from team.tools import execute_tool
+        from tests._tool_compat import execute_tool
         return execute_tool(
             "sync_beliefs",
             body,

@@ -14,8 +14,7 @@ from team.config import MemberConfig, TeamConfig, resolve_member_setting
 from team.container import MemberRuntime
 from team.ollama_client import ChatMessage, OllamaClient, OllamaError, OpenAICompatClient, ToolCall
 from team.personas import render_system_prompt
-from team.skills import load_skills
-from team.tools import TOOL_DESCRIPTIONS, TOOL_SCHEMAS, TOOLS, _VALID_TOOL_SANDBOXES, args_to_body, execute_tool, parse_tool_blocks
+from team.mcp.textmode import parse_tool_blocks, parse_tool_body
 from team.workspace import SharedWorkspace, list_dir_files
 
 # Optional feature imports — guarded so the modules are only required when enabled.
@@ -23,6 +22,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from team.memory import AgentMemory
     from team.beliefs import BeliefBoard
+    from team.mcp.bus import MemberToolset
 
 log = logging.getLogger(__name__)
 
@@ -96,12 +96,14 @@ class Member:
         runtime: MemberRuntime,
         memory: "AgentMemory | None" = None,
         beliefs: "BeliefBoard | None" = None,
+        toolset: "MemberToolset | None" = None,
     ):
         self.team = team
         self.config = config
         self.runtime = runtime
         self.memory = memory
         self.beliefs = beliefs
+        self.toolset = toolset
 
         # Pick the right LLM client based on the effective backend setting.
         backend = resolve_member_setting(config, team.defaults, "backend") or "ollama"
@@ -124,65 +126,51 @@ class Member:
                 retry_backoff=eff_retry_backoff,
             )
 
-        # Resolve skill sources (member override → defaults) and load them.
-        member_skill_sources = (
-            config.skills if config.skills is not None else team.defaults.skills
-        )
-        skill_tools, skill_descs, skill_context = load_skills(member_skill_sources or [])
-
-        # Build the complete per-member tool registry (built-ins + skills).
-        self._member_tools: dict = {**TOOLS, **skill_tools}
-        self._member_tool_descs: dict[str, str] = {**TOOL_DESCRIPTIONS, **skill_descs}
-
-        # Resolve the effective tool list (member override → defaults).
-        raw_tools = config.tools if config.tools is not None else team.defaults.tools
-        self._enabled_tools: list[str] = [
-            t for t in (raw_tools or []) if t in self._member_tools
-        ]
-        unknown = [t for t in (raw_tools or []) if t not in self._member_tools]
-        if unknown:
-            log.warning("member %s: unknown tools ignored: %s", config.name, unknown)
+        # Tools come from the MemberToolset (built-in + external MCP servers),
+        # already filtered to this member's enabled patterns by the orchestrator.
+        enabled_tools = toolset.tools() if toolset is not None else []
 
         self._system_prompt = render_system_prompt(
             team,
             config,
-            enabled_tools=self._enabled_tools,
-            tool_descriptions=self._member_tool_descs,
-            injected_context=skill_context or None,
+            tools=enabled_tools,
+            injected_context=self._load_extra_context() or None,
         )
-
-        # Resolve and validate the effective sandbox mode.
-        _eff_sandbox = (
-            resolve_member_setting(config, team.defaults, "tool_sandbox") or "none"
-        )
-        if _eff_sandbox not in _VALID_TOOL_SANDBOXES:
-            log.warning(
-                "@%s: unknown tool_sandbox value %r; falling back to 'none'. "
-                "Valid values: %s",
-                config.name, _eff_sandbox, ", ".join(sorted(_VALID_TOOL_SANDBOXES)),
-            )
-            _eff_sandbox = "none"
-        self._tool_sandbox: str = _eff_sandbox
-
-        # Security advisory: code-execution tools running on the host without
-        # a sandbox are a significant risk — the LLM can read/write/delete any
-        # file the process can touch.  When the member is using a host Ollama
-        # server (no Docker) and dangerous tools are enabled, emit a clear
-        # warning so operators know they should set tool_sandbox.
-        _code_tools = {"run_python", "run_bash"}
-        _using_host_ollama = bool(config.ollama_url or team.defaults.ollama_url)
-        _has_code_tools = any(t in _code_tools for t in self._enabled_tools)
-        if _using_host_ollama and _has_code_tools and self._tool_sandbox == "none":
-            _active = [t for t in self._enabled_tools if t in _code_tools]
-            log.warning(
-                "SECURITY: @%s has %s enabled in host-Ollama mode (no Docker "
-                "isolation). Code will execute on the host with the privileges "
-                "of this process. Set tool_sandbox: firejail or "
-                "tool_sandbox: bubblewrap in your team YAML to limit exposure.",
-                config.name, _active,
-            )
 
         self._ready = False
+
+    def _load_extra_context(self) -> list[str]:
+        """Read the member's ``extra_context:`` files, relative to the team YAML dir.
+
+        Member setting overrides defaults.  Each file is truncated at 8192 chars
+        (matching context.md handling) and injected into the system prompt.
+        """
+        sources = (
+            self.config.extra_context
+            if self.config.extra_context is not None
+            else self.team.defaults.extra_context
+        )
+        if not sources:
+            return []
+        base = (
+            self.team.source_path.parent
+            if self.team.source_path is not None
+            else self.team.workspace
+        )
+        out: list[str] = []
+        limit = 8192
+        for rel in sources:
+            path = (base / rel).expanduser()
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                log.warning("@%s: could not read extra_context %r: %s", self.config.name, rel, exc)
+                continue
+            if len(text) > limit:
+                text = text[:limit] + f"\n[… {rel} truncated at {limit} chars]"
+            if text.strip():
+                out.append(text.strip())
+        return out
 
     @property
     def name(self) -> str:
@@ -452,7 +440,6 @@ class Member:
             if self.config.tool_timeout is not None
             else self.team.defaults.tool_timeout
         )
-        workspace_path = workspace.shared_dir
 
         total_prompt = 0
         total_completion = 0
@@ -466,37 +453,32 @@ class Member:
 
             # Check for tool invocations in the reply.
             tool_blocks = parse_tool_blocks(content)
-            enabled = set(self._enabled_tools)
-            active_blocks = [(n, b) for n, b in tool_blocks if n in enabled]
-
-            if not active_blocks:
+            if not tool_blocks:
                 # No tool calls — this is the final reply.
                 return content, total_prompt, total_completion
 
+            tools_by_wire = {t.wire_name: t for t in self.toolset.tools()}
+            enabled_list = ", ".join(sorted(tools_by_wire)) or "(none)"
+
             # Execute each tool and collect results.
             result_parts: list[str] = []
-            for tool_name, tool_body in active_blocks:
-                log.info("@%s round %d: invoking tool %s", self.name, round_num, tool_name)
+            for wire, tool_body in tool_blocks:
+                log.info("@%s round %d: invoking tool %s", self.name, round_num, wire)
                 if on_tool_call:
-                    on_tool_call(self.name, tool_name, tool_body)
-                result = execute_tool(
-                    tool_name,
-                    tool_body,
-                    tools=self._member_tools,
-                    workspace_path=workspace_path,
-                    timeout=tool_timeout,
-                    memory=self.memory,
-                    beliefs=self.beliefs,
-                    member_name=self.name,
-                    bridge_secret=self.team.bridge.secret,
-                    peers=self.team.bridge.peers or None,
-                    sandbox=self._tool_sandbox,
-                    registry_url=self.team.registry.url,
-                )
+                    on_tool_call(self.name, wire, tool_body)
+                tool = tools_by_wire.get(wire)
+                if tool is None:
+                    result = f"ERROR: unknown tool {wire!r}. Enabled tools: {enabled_list}"
+                else:
+                    args, err = parse_tool_body(tool_body, tool)
+                    if err is not None:
+                        result = err
+                    else:
+                        result = self.toolset.call(wire, args, tool_timeout)
                 if on_tool_result:
-                    on_tool_result(self.name, tool_name, result)
+                    on_tool_result(self.name, wire, result)
                 result_parts.append(
-                    f"Tool `{tool_name}` result:\n```\n{result}\n```"
+                    f"Tool `{wire}` result:\n```\n{result}\n```"
                 )
 
             # Inject the assistant's reply and the tool results back as messages.
@@ -538,30 +520,18 @@ class Member:
             if self.config.tool_timeout is not None
             else self.team.defaults.tool_timeout
         )
-        workspace_path = workspace.shared_dir
-
-        # Build the list of tool schemas for the enabled tools.
+        # Build tools-API schemas directly from the member's enabled ToolInfo.
         tool_schemas = [
-            TOOL_SCHEMAS[t] for t in self._enabled_tools if t in TOOL_SCHEMAS
+            {
+                "type": "function",
+                "function": {
+                    "name": t.wire_name,
+                    "description": t.description,
+                    "parameters": t.input_schema,
+                },
+            }
+            for t in self.toolset.tools()
         ]
-        # For custom skill tools not in TOOL_SCHEMAS, create a minimal schema.
-        for t in self._enabled_tools:
-            if t not in TOOL_SCHEMAS and t in self._member_tools:
-                desc = self._member_tool_descs.get(t, f"Custom tool: {t}")
-                tool_schemas.append({
-                    "type": "function",
-                    "function": {
-                        "name": t,
-                        "description": desc,
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "input": {"type": "string", "description": "Tool input body."}
-                            },
-                            "required": [],
-                        },
-                    },
-                })
 
         total_prompt = 0
         total_completion = 0
@@ -595,33 +565,16 @@ class Member:
 
             # Execute each tool and collect results as individual tool messages.
             for tc in tool_calls:
-                tool_name = tc.name
-                if tool_name not in set(self._enabled_tools):
-                    result = f"ERROR: tool {tool_name!r} is not enabled for this member"
-                else:
-                    body = args_to_body(tool_name, tc.arguments)
-                    log.info(
-                        "@%s round %d: native tool call %s(%s)",
-                        self.name, round_num, tool_name,
-                        str(tc.arguments)[:80],
-                    )
-                    if on_tool_call:
-                        on_tool_call(self.name, tool_name, str(tc.arguments))
-                    result = execute_tool(
-                        tool_name,
-                        body,
-                        tools=self._member_tools,
-                        workspace_path=workspace_path,
-                        timeout=tool_timeout,
-                        memory=self.memory,
-                        beliefs=self.beliefs,
-                        member_name=self.name,
-                        bridge_secret=self.team.bridge.secret,
-                        sandbox=self._tool_sandbox,
-                        registry_url=self.team.registry.url,
-                    )
+                wire = tc.name
+                log.info(
+                    "@%s round %d: native tool call %s(%s)",
+                    self.name, round_num, wire, str(tc.arguments)[:80],
+                )
+                if on_tool_call:
+                    on_tool_call(self.name, wire, str(tc.arguments))
+                result = self.toolset.call(wire, tc.arguments or {}, tool_timeout)
                 if on_tool_result:
-                    on_tool_result(self.name, tool_name, result)
+                    on_tool_result(self.name, wire, result)
                 # Ollama/OpenAI expect a "tool" role message for each call result.
                 running_messages.append(ChatMessage(role="tool", content=result))
 
@@ -659,15 +612,16 @@ class Member:
         messages = self._build_messages(transcript, workspace, prompt)
 
         tool_mode = resolve_member_setting(self.config, self.team.defaults, "tool_mode") or "text"
+        has_tools = bool(self.toolset is not None and self.toolset.tools())
 
-        if self._enabled_tools and tool_mode == "native":
+        if has_tools and tool_mode == "native":
             content, prompt_tokens, completion_tokens = self._run_native_agentic_turn(
                 messages,
                 workspace,
                 on_tool_call,
                 on_tool_result,
             )
-        elif self._enabled_tools:
+        elif has_tools:
             content, prompt_tokens, completion_tokens = self._run_agentic_turn(
                 messages,
                 workspace,

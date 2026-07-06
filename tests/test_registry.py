@@ -23,7 +23,7 @@ import pytest
 from team.registry import RegistryEntry, TeamRegistry, sign_request, verify_signature
 from team.registry_client import RegistryClient, RegistryClientError
 from team.registry_server import RegistryServer
-from team.tools import execute_tool
+from tests._tool_compat import execute_tool
 
 
 # --------------------------------------------------------------------------- #

@@ -159,16 +159,17 @@ def _capabilities_from_cfg(cfg_path: Path) -> dict:
     try:
         from team.config import load_team
         cfg = load_team(cfg_path)
-        skills: list[str] = []
+        tools: list[str] = []
         for m in cfg.members:
-            for s in m.skills or []:
-                if s not in skills:
-                    skills.append(s)
+            for t in (m.tools or cfg.defaults.tools or []):
+                if t not in tools:
+                    tools.append(t)
         return {
             "name": cfg.name,
             "models": list({m.model for m in cfg.members}),
             "personas": [m.name for m in cfg.members],
-            "skills": skills,
+            "tools": tools,
+            "mcp_servers": [s.name for s in cfg.mcp_servers],
         }
     except Exception:  # noqa: BLE001
         return {}

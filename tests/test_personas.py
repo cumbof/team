@@ -41,21 +41,34 @@ def test_protocol_mentions_private_workspace() -> None:
     assert "private workspace" in PROTOCOL.lower()
 
 
+def _ti(server, name, desc="A tool.", schema=None):
+    from team.mcp.bus import ToolInfo
+
+    return ToolInfo(
+        server=server,
+        name=name,
+        wire_name=f"{server}__{name}",
+        description=desc,
+        input_schema=schema or {"type": "object", "properties": {}, "required": []},
+    )
+
+
 def test_tool_section_included_when_tools_provided() -> None:
     team = _team()
-    out = render_system_prompt(team, team.members[0], enabled_tools=["web_search", "run_python"])
+    tools = [_ti("web", "web_search"), _ti("code", "run_python")]
+    out = render_system_prompt(team, team.members[0], tools=tools)
     assert "Tool use" in out
-    assert "web_search" in out
-    assert "run_python" in out
+    assert "web__web_search" in out
+    assert "code__run_python" in out
 
 
 def test_tool_section_absent_when_no_tools() -> None:
     team = _team()
-    out = render_system_prompt(team, team.members[0], enabled_tools=[])
+    out = render_system_prompt(team, team.members[0], tools=[])
     assert "Tool use" not in out
 
 
 def test_tool_section_absent_when_tools_none() -> None:
     team = _team()
-    out = render_system_prompt(team, team.members[0], enabled_tools=None)
+    out = render_system_prompt(team, team.members[0], tools=None)
     assert "Tool use" not in out

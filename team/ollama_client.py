@@ -456,11 +456,9 @@ class OllamaClient:
 
 def _resolve_api_key(api_key: str | None) -> str | None:
     """Resolve an API key value, expanding ``env:<VAR>`` references."""
-    if api_key is None:
-        return None
-    if api_key.startswith("env:"):
-        return os.environ.get(api_key[4:])
-    return api_key
+    from team.config import expand_env
+
+    return expand_env(api_key)
 
 
 class OpenAICompatClient:

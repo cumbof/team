@@ -253,3 +253,164 @@ def test_debate_workflow_valid(tmp_path: Path) -> None:
     assert cfg.workflow.options["pro"] == "alice"
     assert cfg.workflow.options["judge"] == "carol"
 
+
+
+# --------------------------------------------------------------------------- #
+# MCP servers + tool patterns + extra_context (v0.18)
+# --------------------------------------------------------------------------- #
+
+
+def test_mcp_servers_parsed(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        mcp_servers:
+          github:
+            transport: stdio
+            command: npx
+            args: ["-y", "@modelcontextprotocol/server-github"]
+            env: { GITHUB_TOKEN: "env:GH" }
+          kb:
+            transport: http
+            url: https://kb.example.com/mcp
+            headers: { Authorization: "env:KB" }
+          helper:
+            transport: entry_point
+            entry_point: mypkg.servers:build
+        members:
+          - name: a
+            role: W
+            model: m
+            persona: p
+        """,
+    )
+    cfg = load_team(p)
+    names = {s.name: s for s in cfg.mcp_servers}
+    assert set(names) == {"github", "kb", "helper"}
+    assert names["github"].transport == "stdio"
+    assert names["github"].command == "npx"
+    assert names["kb"].url.endswith("/mcp")
+    assert names["helper"].entry_point == "mypkg.servers:build"
+
+
+def test_mcp_server_reserved_name_rejected(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        mcp_servers:
+          code:
+            transport: stdio
+            command: foo
+        members:
+          - {name: a, role: W, model: m, persona: p}
+        """,
+    )
+    with pytest.raises(TeamConfigError, match="reserved"):
+        load_team(p)
+
+
+def test_mcp_server_missing_command(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        mcp_servers:
+          x:
+            transport: stdio
+        members:
+          - {name: a, role: W, model: m, persona: p}
+        """,
+    )
+    with pytest.raises(TeamConfigError, match="requires 'command'"):
+        load_team(p)
+
+
+def test_mcp_server_bad_transport(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        mcp_servers:
+          x:
+            transport: carrier-pigeon
+            command: foo
+        members:
+          - {name: a, role: W, model: m, persona: p}
+        """,
+    )
+    with pytest.raises(TeamConfigError, match="transport must be"):
+        load_team(p)
+
+
+def test_qualified_tool_patterns_accepted(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        defaults:
+          tools: [code/*, workspace/read_file]
+        members:
+          - name: a
+            role: W
+            model: m
+            persona: p
+            tools: [web/*, github/search_repositories]
+        """,
+    )
+    cfg = load_team(p)
+    assert cfg.defaults.tools == ["code/*", "workspace/read_file"]
+    assert cfg.members[0].tools == ["web/*", "github/search_repositories"]
+
+
+def test_bare_tool_name_rejected(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        defaults:
+          tools: [web_search]
+        members:
+          - {name: a, role: W, model: m, persona: p}
+        """,
+    )
+    with pytest.raises(TeamConfigError, match="web/web_search"):
+        load_team(p)
+
+
+def test_extra_context_parsed(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        name: t1
+        goal: g
+        defaults:
+          extra_context: [context/checklist.md]
+        members:
+          - name: a
+            role: W
+            model: m
+            persona: p
+            extra_context: [context/extra.md]
+        """,
+    )
+    cfg = load_team(p)
+    assert cfg.defaults.extra_context == ["context/checklist.md"]
+    assert cfg.members[0].extra_context == ["context/extra.md"]
+
+
+def test_expand_env(monkeypatch) -> None:
+    from team.config import expand_env
+
+    monkeypatch.setenv("MY_TOKEN", "secret")
+    assert expand_env("env:MY_TOKEN") == "secret"
+    assert expand_env("env:MISSING", default="") == ""
+    assert expand_env("literal") == "literal"
+    assert expand_env(None) is None

@@ -10,13 +10,42 @@ from pathlib import Path
 from typing import Callable
 
 from team.bus import Transcript
-from team.config import TeamConfig, resolve_member_setting
+from team.config import TeamConfig, expand_env, resolve_member_setting
 from team.container import ContainerManager
 from team.member import DONE_TOKEN, Member, TurnResult
+from team.mcp import MCPToolBus, MemberToolset
+from team.mcp.builtin import BUILTIN_SERVERS, BuiltinContext
 from team.workflows import get_workflow
 from team.workspace import CheckpointManager, SharedWorkspace
 
 log = logging.getLogger(__name__)
+
+
+def _resolve_entry_point(ref: str):
+    """Resolve an ``entry_point`` reference to a FastMCP server instance.
+
+    *ref* is either a ``module:attr`` path or a name registered under the
+    ``team.mcp_servers`` entry-point group.  The referenced object is a zero-arg
+    callable returning a ``FastMCP`` (or a ``FastMCP`` directly).
+    """
+    factory = None
+    if ":" in ref:
+        import importlib
+
+        module_path, attr = ref.split(":", 1)
+        factory = getattr(importlib.import_module(module_path), attr)
+    else:
+        from importlib.metadata import entry_points
+
+        for ep in entry_points(group="team.mcp_servers"):
+            if ep.name == ref:
+                factory = ep.load()
+                break
+        if factory is None:
+            raise ValueError(
+                f"entry_point {ref!r} is not registered under the 'team.mcp_servers' group"
+            )
+    return factory() if callable(factory) else factory
 
 
 class TurnTimeoutError(RuntimeError):
@@ -56,6 +85,8 @@ class Orchestrator:
         self._token_totals: dict[str, dict[str, int]] = {}
         # Shared belief board (None when beliefs.enabled is False).
         self.beliefs = None
+        # MCP tool bus (started in up(), stopped in down()).
+        self.tool_bus = MCPToolBus()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -74,6 +105,10 @@ class Orchestrator:
             )
             log.info("beliefs: board enabled at %s", beliefs_path)
 
+        # Start the MCP tool bus and connect any external servers (shared).
+        self.tool_bus.start()
+        self._connect_external_servers()
+
         runtimes = self.containers.start_all()
         for rt in runtimes:
             # Optionally create a per-member persistent memory store.
@@ -89,15 +124,98 @@ class Orchestrator:
                 member_memory = AgentMemory(mem_path)
                 log.info("memory: enabled for @%s at %s", rt.member.name, mem_path)
 
+            toolset = self._build_member_toolset(rt.member, member_memory)
+
             self.members[rt.member.name] = Member(
                 self.team, rt.member, rt,
                 memory=member_memory,
                 beliefs=self.beliefs,
+                toolset=toolset,
             )
 
         for m in self.members.values():
             m.prepare(deadline_seconds=prepare_deadline_seconds)
         self._kickoff()
+
+    # ------------------------------------------------------------------ #
+    # Tool bus wiring
+    # ------------------------------------------------------------------ #
+
+    def _connect_external_servers(self) -> None:
+        """Connect the team's declared ``mcp_servers`` as shared bus servers.
+
+        A connection failure is logged and the server is marked dead (its tools
+        return an error string) but never aborts startup.
+        """
+        base = (
+            self.team.source_path.parent
+            if self.team.source_path is not None
+            else self.team.workspace
+        )
+        for sc in self.team.mcp_servers:
+            try:
+                if sc.transport == "stdio":
+                    env = {k: expand_env(v, default="") for k, v in sc.env.items()}
+                    env["TEAM_WORKSPACE"] = str(self.team.workspace)
+                    self.tool_bus.add_stdio_server(
+                        sc.name, sc.command, sc.args, env=env, cwd=str(base)
+                    )
+                elif sc.transport == "http":
+                    headers = {k: expand_env(v, default="") for k, v in sc.headers.items()}
+                    self.tool_bus.add_http_server(sc.name, sc.url, headers=headers)
+                elif sc.transport == "entry_point":
+                    server = _resolve_entry_point(sc.entry_point)
+                    self.tool_bus.add_inprocess_server(sc.name, server)
+            except Exception as exc:  # noqa: BLE001 — a bad server must not abort startup
+                log.error("mcp server %r failed to connect: %s", sc.name, exc)
+
+    def _build_member_toolset(self, member, member_memory) -> MemberToolset:
+        """Register the built-in servers a member references and return its toolset."""
+        patterns = (
+            member.tools if member.tools is not None else self.team.defaults.tools
+        ) or []
+        referenced = {p.split("/", 1)[0] for p in patterns}
+
+        # Resolve + validate the effective sandbox mode.
+        from team.mcp.builtin.code import VALID_TOOL_SANDBOXES
+
+        sandbox = resolve_member_setting(member, self.team.defaults, "tool_sandbox") or "none"
+        if sandbox not in VALID_TOOL_SANDBOXES:
+            log.warning(
+                "@%s: unknown tool_sandbox value %r; falling back to 'none'. Valid: %s",
+                member.name, sandbox, ", ".join(sorted(VALID_TOOL_SANDBOXES)),
+            )
+            sandbox = "none"
+
+        # Security advisory: code execution on the host with no sandbox.
+        using_host_ollama = bool(member.ollama_url or self.team.defaults.ollama_url)
+        if "code" in referenced and using_host_ollama and sandbox == "none":
+            log.warning(
+                "SECURITY: @%s has code tools enabled in host-Ollama mode (no Docker "
+                "isolation). Code will execute on the host with the privileges of this "
+                "process. Set tool_sandbox: firejail or tool_sandbox: bubblewrap in your "
+                "team YAML to limit exposure.",
+                member.name,
+            )
+
+        tool_timeout = resolve_member_setting(member, self.team.defaults, "tool_timeout") or 300
+        ctx = BuiltinContext(
+            workspace_path=self.team.workspace,
+            member_name=member.name,
+            memory=member_memory,
+            beliefs=self.beliefs,
+            bridge_secret=self.team.bridge.secret,
+            peers=dict(self.team.bridge.peers or {}),
+            registry_url=self.team.registry.url,
+            sandbox=sandbox,
+            tool_timeout=tool_timeout,
+        )
+        for name in referenced:
+            if name in BUILTIN_SERVERS:
+                self.tool_bus.add_inprocess_server(
+                    name, BUILTIN_SERVERS[name](ctx), owner=member.name
+                )
+        return MemberToolset(self.tool_bus, member.name, patterns)
 
     def _kickoff(self) -> None:
         if self.transcript.turns:
@@ -119,6 +237,12 @@ class Orchestrator:
         )
 
     def down(self, *, remove_volumes: bool = False) -> None:
+        try:
+            self._down_body(remove_volumes=remove_volumes)
+        finally:
+            self.tool_bus.stop()
+
+    def _down_body(self, *, remove_volumes: bool = False) -> None:
         # For local-Ollama members (no Docker container), optionally evict the
         # loaded model from memory so it doesn't linger after the run.
         for member in self.members.values():
