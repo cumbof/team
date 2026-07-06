@@ -62,6 +62,16 @@ def test_tool_section_included_when_tools_provided() -> None:
     assert "code__run_python" in out
 
 
+def test_tool_section_absent_in_native_mode() -> None:
+    # Native mode gets schemas via the function-calling API; the text-mode
+    # fenced-block protocol must NOT be injected (it would mislead the model).
+    team = _team()
+    tools = [_ti("web", "web_search"), _ti("code", "run_python")]
+    out = render_system_prompt(team, team.members[0], tools=tools, tool_mode="native")
+    assert "Tool use" not in out
+    assert "```tool:" not in out
+
+
 def test_tool_section_absent_when_no_tools() -> None:
     team = _team()
     out = render_system_prompt(team, team.members[0], tools=[])

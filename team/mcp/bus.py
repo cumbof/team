@@ -56,6 +56,11 @@ logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
 #: Maximum characters returned by any tool call (mirrors the old tools._MAX_OUTPUT).
 _MAX_OUTPUT = 8192
 
+#: Wall-clock bound for connecting an external (stdio/http) server, so a server
+#: that accepts the connection but never completes ``initialize``/``list_tools``
+#: cannot wedge the manager task (and thus startup and shutdown) forever.
+_CONNECT_TIMEOUT = 30.0
+
 
 def wire_name(server: str, tool: str) -> str:
     """Build the model-visible tool name from *server* and *tool*."""
@@ -149,9 +154,16 @@ class MCPToolBus:
                 cmd = await self._cmd_queue.get()
                 if cmd is None:  # shutdown sentinel
                     break
-                fn, fut = cmd
+                fn, fut, connect_timeout = cmd
                 try:
-                    fut.set_result(await fn(stack))
+                    if connect_timeout is not None:
+                        # Bound the connect *inside the manager task* so a hung
+                        # server is cancelled and cannot block later commands
+                        # (including the shutdown sentinel).
+                        result = await asyncio.wait_for(fn(stack), connect_timeout)
+                    else:
+                        result = await fn(stack)
+                    fut.set_result(result)
                 except Exception as exc:  # noqa: BLE001
                     fut.set_exception(exc)
             # aclose happens on __aexit__ of `async with`, in this same task.
@@ -192,15 +204,21 @@ class MCPToolBus:
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return fut.result(timeout=timeout)
 
-    def _submit(self, opener: Any, timeout: float | None = None) -> Any:
-        """Run *opener(stack)* inside the manager task and return its result."""
+    def _submit(self, opener: Any, connect_timeout: float | None = None) -> Any:
+        """Run *opener(stack)* inside the manager task and return its result.
+
+        When *connect_timeout* is set the opener is bounded inside the manager;
+        the caller waits slightly longer so the inner ``wait_for`` fires first.
+        """
+        result_timeout = (connect_timeout + 5) if connect_timeout is not None else None
+
         async def _enqueue() -> Any:
             assert self._loop is not None and self._cmd_queue is not None
             fut = self._loop.create_future()
-            await self._cmd_queue.put((opener, fut))
+            await self._cmd_queue.put((opener, fut, connect_timeout))
             return await fut
 
-        return self._run(_enqueue(), timeout=timeout)
+        return self._run(_enqueue(), timeout=result_timeout)
 
     # ------------------------------------------------------------------ #
     # Server registration
@@ -241,7 +259,7 @@ class MCPToolBus:
             await session.initialize()
             return await self._build_conn(name, None, session)
 
-        self._register(name, None, _open)
+        self._register(name, None, _open, connect_timeout=_CONNECT_TIMEOUT)
 
     def add_http_server(
         self, name: str, url: str, headers: dict[str, str] | None = None
@@ -258,13 +276,19 @@ class MCPToolBus:
             await session.initialize()
             return await self._build_conn(name, None, session)
 
-        self._register(name, None, _open)
+        self._register(name, None, _open, connect_timeout=_CONNECT_TIMEOUT)
 
-    def _register(self, name: str, owner: str | None, opener: Any) -> None:
+    def _register(
+        self, name: str, owner: str | None, opener: Any, *, connect_timeout: float | None = None
+    ) -> None:
         """Open a connection (via *opener*) and store it; failures mark it dead."""
         key = (owner, name)
         try:
-            conn = self._submit(opener)
+            conn = self._submit(opener, connect_timeout=connect_timeout)
+        except (TimeoutError, asyncio.TimeoutError):
+            log.error("MCP server %r timed out while connecting", name)
+            self._conns[key] = _Conn(name=name, owner=owner, dead=True, cause="connection timed out")
+            return
         except Exception as exc:  # noqa: BLE001 — a bad server must not abort startup
             log.error("MCP server %r failed to connect: %s", name, exc)
             self._conns[key] = _Conn(name=name, owner=owner, dead=True, cause=str(exc))
@@ -306,7 +330,10 @@ class MCPToolBus:
         """Return every tool visible to *owner* (its own servers + shared servers)."""
         out: list[ToolInfo] = []
         seen: set[str] = set()
-        for (conn_owner, _name), conn in self._conns.items():
+        # Snapshot: list_tools runs on caller threads while stop() may clear
+        # _conns from another thread — iterate a copy to avoid "dict changed
+        # size during iteration".
+        for (conn_owner, _name), conn in list(self._conns.items()):
             if conn_owner not in (None, owner):
                 continue
             for ti in conn.tools:
@@ -338,7 +365,7 @@ class MCPToolBus:
         if not any(ti.name == _tool for ti in conn.tools):
             return f"ERROR: unknown tool {name!r}. Enabled tools: {self._enabled_names(owner)}"
 
-        read_timeout = timedelta(seconds=timeout) if timeout else None
+        read_timeout = timedelta(seconds=timeout) if timeout is not None else None
 
         async def _call() -> Any:
             return await conn.session.call_tool(
@@ -346,13 +373,13 @@ class MCPToolBus:
             )
 
         # Guard against a hung transport that ignores the protocol-level timeout.
-        wall = (timeout + 5) if timeout else None
+        wall = (timeout + 5) if timeout is not None else None
         try:
             result = self._run(_call(), timeout=wall)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return f"ERROR: tool {name!r} timed out after {timeout}s"
         except Exception as exc:  # noqa: BLE001
-            if timeout and "timed out" in str(exc).lower():
+            if timeout is not None and "timed out" in str(exc).lower():
                 return f"ERROR: tool {name!r} timed out after {timeout}s"
             return f"ERROR: tool {name!r} failed: {exc}"
         return _result_to_str(result)

@@ -8,7 +8,7 @@ from typing import Annotated
 from pydantic import Field
 
 from team.mcp.builtin import BuiltinContext
-from team.mcp.builtin._util import truncate
+from team.mcp.builtin._util import offload, truncate
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ def build(ctx: BuiltinContext) -> "object":
     memory = ctx.memory
 
     @srv.tool()
+    @offload
     def remember(
         key: Annotated[str, Field(description="Unique memory key.")],
         value: Annotated[str, Field(description="Value to store (multi-line text allowed).")],
@@ -39,6 +40,7 @@ def build(ctx: BuiltinContext) -> "object":
         return memory.remember(key.strip(), value.strip(), tags=tag_list, importance=importance)
 
     @srv.tool()
+    @offload
     def recall(
         query: Annotated[str, Field(description="Keywords to search for.")],
         limit: Annotated[int, Field(description="Maximum results to return (default 5).")] = 5,
@@ -59,6 +61,7 @@ def build(ctx: BuiltinContext) -> "object":
         return truncate("\n".join(lines))
 
     @srv.tool()
+    @offload
     def forget(
         key: Annotated[str, Field(description="Key of the memory to delete.")],
     ) -> str:
@@ -72,6 +75,7 @@ def build(ctx: BuiltinContext) -> "object":
         return f"Deleted memory: {k!r}" if deleted else f"No memory found with key: {k!r}"
 
     @srv.tool()
+    @offload
     def list_memories(
         tag: Annotated[str, Field(description="Filter by tag (optional).")] = "",
         limit: Annotated[int, Field(description="Maximum entries to return (default 20).")] = 20,

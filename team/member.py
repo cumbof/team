@@ -130,11 +130,13 @@ class Member:
         # already filtered to this member's enabled patterns by the orchestrator.
         enabled_tools = toolset.tools() if toolset is not None else []
 
+        eff_tool_mode = resolve_member_setting(config, team.defaults, "tool_mode") or "text"
         self._system_prompt = render_system_prompt(
             team,
             config,
             tools=enabled_tools,
             injected_context=self._load_extra_context() or None,
+            tool_mode=eff_tool_mode,
         )
 
         self._ready = False

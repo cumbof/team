@@ -10,7 +10,7 @@ import requests
 from pydantic import Field
 
 from team.mcp.builtin import BuiltinContext
-from team.mcp.builtin._util import truncate
+from team.mcp.builtin._util import offload, truncate
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +92,7 @@ def build(ctx: BuiltinContext) -> "object":
     timeout = ctx.tool_timeout
 
     @srv.tool()
+    @offload
     def delegate_to_expert(
         provider: Annotated[
             str, Field(description="Cloud provider: openai | anthropic | google.")

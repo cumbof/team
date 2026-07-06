@@ -9,7 +9,7 @@ from typing import Annotated
 from pydantic import Field
 
 from team.mcp.builtin import BuiltinContext
-from team.mcp.builtin._util import truncate
+from team.mcp.builtin._util import offload, truncate
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ def build(ctx: BuiltinContext) -> "object":
     workspace_path = ctx.workspace_path
 
     @srv.tool()
+    @offload
     def read_file(
         path: Annotated[str, Field(description="Relative path inside the shared workspace.")],
     ) -> str:
@@ -54,6 +55,7 @@ def build(ctx: BuiltinContext) -> "object":
             return f"ERROR reading file: {exc}"
 
     @srv.tool()
+    @offload
     def write_file(
         path: Annotated[str, Field(description="Relative path inside the shared workspace.")],
         content: Annotated[str, Field(description="File content to write.")],
@@ -75,6 +77,7 @@ def build(ctx: BuiltinContext) -> "object":
             return f"ERROR writing file: {exc}"
 
     @srv.tool()
+    @offload
     def append_file(
         path: Annotated[str, Field(description="Relative path inside the shared workspace.")],
         content: Annotated[str, Field(description="Text to append.")],
@@ -97,6 +100,7 @@ def build(ctx: BuiltinContext) -> "object":
             return f"ERROR appending to file: {exc}"
 
     @srv.tool()
+    @offload
     def list_files(
         pattern: Annotated[
             str, Field(description="Glob pattern, e.g. **/*.py. Omit to list all.")

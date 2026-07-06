@@ -8,7 +8,7 @@ from typing import Annotated
 from pydantic import Field
 
 from team.mcp.builtin import BuiltinContext
-from team.mcp.builtin._util import truncate
+from team.mcp.builtin._util import offload, truncate
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ def build(ctx: BuiltinContext) -> "object":
     member_name = ctx.member_name
 
     @srv.tool()
+    @offload
     def assert_belief(
         claim: Annotated[str, Field(description="The claim text.")],
         confidence: Annotated[float, Field(description="Confidence 0–1 (default 0.5).")] = 0.5,
@@ -44,6 +45,7 @@ def build(ctx: BuiltinContext) -> "object":
         )
 
     @srv.tool()
+    @offload
     def contest_belief(
         id: Annotated[str, Field(description="Belief ID to contest.")],
         reason: Annotated[
@@ -67,6 +69,7 @@ def build(ctx: BuiltinContext) -> "object":
         )
 
     @srv.tool()
+    @offload
     def accept_belief(
         id: Annotated[str, Field(description="Belief ID to accept.")],
     ) -> str:
@@ -86,6 +89,7 @@ def build(ctx: BuiltinContext) -> "object":
         )
 
     @srv.tool()
+    @offload
     def list_beliefs(
         status: Annotated[
             str,

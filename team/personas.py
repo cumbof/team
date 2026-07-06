@@ -78,6 +78,7 @@ def render_system_prompt(
     member: MemberConfig,
     tools: "list[ToolInfo] | None" = None,
     injected_context: list[str] | None = None,
+    tool_mode: str = "text",
 ) -> str:
     """Render the complete system prompt for *member*.
 
@@ -147,6 +148,10 @@ def render_system_prompt(
                 + schema_hint
             ),
         ])
-    if tools:
+    # Only inject the text-mode fenced-block protocol in text mode. In native
+    # mode the model receives tool schemas through the function-calling API, so
+    # teaching it to emit ```tool:...``` blocks would be actively misleading
+    # (such blocks are not parsed on the native path).
+    if tools and tool_mode != "native":
         parts.extend(["", _render_tool_section(tools)])
     return "\n".join(parts)

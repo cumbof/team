@@ -10,7 +10,7 @@ import requests
 from pydantic import Field
 
 from team.mcp.builtin import BuiltinContext
-from team.mcp.builtin._util import _MAX_SEARCH_OUTPUT, truncate
+from team.mcp.builtin._util import offload, _MAX_SEARCH_OUTPUT, truncate
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ def build(ctx: BuiltinContext) -> "object":
     timeout = ctx.tool_timeout
 
     @srv.tool()
+    @offload
     def web_search(
         query: Annotated[str, Field(description="Search terms.")],
     ) -> str:
@@ -60,6 +61,7 @@ def build(ctx: BuiltinContext) -> "object":
         return truncate("\n".join(parts), _MAX_SEARCH_OUTPUT)
 
     @srv.tool()
+    @offload
     def read_url(
         url: Annotated[str, Field(description="URL to fetch.")],
     ) -> str:

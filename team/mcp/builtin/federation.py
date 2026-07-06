@@ -14,7 +14,7 @@ from typing import Annotated
 from pydantic import Field
 
 from team.mcp.builtin import BuiltinContext
-from team.mcp.builtin._util import truncate
+from team.mcp.builtin._util import offload, truncate
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ def build(ctx: BuiltinContext) -> "object":
     timeout = ctx.tool_timeout
 
     @srv.tool()
+    @offload
     def delegate_task(
         goal: Annotated[str, Field(description="What the remote team should accomplish.")],
         url: Annotated[str, Field(description="Remote bridge server URL (alternative to peer).")] = "",
@@ -112,6 +113,7 @@ def build(ctx: BuiltinContext) -> "object":
         return truncate("\n".join(parts))
 
     @srv.tool()
+    @offload
     def broadcast_task(
         goal: Annotated[str, Field(description="What all remote teams should accomplish.")],
         peers_list: Annotated[str, Field(description="Comma-separated peer names or URLs to broadcast to.")],
@@ -177,6 +179,7 @@ def build(ctx: BuiltinContext) -> "object":
         return truncate("\n".join(result_parts))
 
     @srv.tool()
+    @offload
     def list_peers() -> str:
         """List all configured peer teams and their live health status."""
         from team.bridge_client import BridgeClient, BridgeClientError
@@ -197,6 +200,7 @@ def build(ctx: BuiltinContext) -> "object":
         return "\n".join(lines)
 
     @srv.tool()
+    @offload
     def cancel_remote_task(
         task_id: Annotated[str, Field(description="Task UUID to cancel (returned by delegate_task).")],
         url: Annotated[str, Field(description="Remote bridge server URL (alternative to peer).")] = "",
@@ -223,6 +227,7 @@ def build(ctx: BuiltinContext) -> "object":
             return f"ERROR: {exc}"
 
     @srv.tool()
+    @offload
     def query_registry(
         url: Annotated[str, Field(description="Registry server URL (optional if registry.url is configured).")] = "",
         tags: Annotated[list[str], Field(description="Required capability tags (AND logic).")] = [],
@@ -269,6 +274,7 @@ def build(ctx: BuiltinContext) -> "object":
         return truncate("\n".join(lines))
 
     @srv.tool()
+    @offload
     def sync_beliefs(
         url: Annotated[str, Field(description="Bridge URL of the remote team.")] = "",
         peer: Annotated[str, Field(description="Named peer (resolved from bridge.peers config).")] = "",

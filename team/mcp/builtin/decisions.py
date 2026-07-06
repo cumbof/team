@@ -9,7 +9,7 @@ from typing import Annotated
 from pydantic import Field
 
 from team.mcp.builtin import BuiltinContext
-from team.mcp.builtin._util import truncate
+from team.mcp.builtin._util import offload, truncate
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ def build(ctx: BuiltinContext) -> "object":
     member_name = ctx.member_name
 
     @srv.tool()
+    @offload
     def log_decision(
         title: Annotated[str, Field(description="Short decision title.")],
         rationale: Annotated[str, Field(description="Why this decision was made (optional).")] = "",
@@ -56,6 +57,7 @@ def build(ctx: BuiltinContext) -> "object":
             return f"ERROR writing decisions.md: {exc}"
 
     @srv.tool()
+    @offload
     def read_decisions() -> str:
         """Read the full decision log (decisions.md) from the shared workspace."""
         if workspace_path is None:

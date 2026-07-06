@@ -12,7 +12,7 @@ from typing import Annotated
 from pydantic import Field
 
 from team.mcp.builtin import BuiltinContext
-from team.mcp.builtin._util import truncate
+from team.mcp.builtin._util import offload, truncate
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +86,7 @@ def build(ctx: BuiltinContext) -> "object":
     timeout = ctx.tool_timeout
 
     @srv.tool()
+    @offload
     def run_python(
         code: Annotated[str, Field(description="Python source code to execute.")],
     ) -> str:
@@ -125,6 +126,7 @@ def build(ctx: BuiltinContext) -> "object":
                 pass
 
     @srv.tool()
+    @offload
     def run_bash(
         command: Annotated[str, Field(description="Bash command to execute.")],
     ) -> str:

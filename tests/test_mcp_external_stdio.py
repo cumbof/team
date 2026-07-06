@@ -47,6 +47,27 @@ def test_stdio_child_reaped_on_stop():
     assert not remaining, f"stdio child(ren) not reaped: {remaining}"
 
 
+def test_hung_server_marked_dead_not_wedged(monkeypatch):
+    """A stdio server that never speaks MCP is bounded, marked dead, and does not
+    prevent later servers from connecting or the bus from stopping."""
+    import team.mcp.bus as busmod
+
+    monkeypatch.setattr(busmod, "_CONNECT_TIMEOUT", 1.0)
+    b = MCPToolBus()
+    b.start()
+    try:
+        # `sleep` launches but never responds to the MCP initialize handshake.
+        b.add_stdio_server("hung", "sleep", ["30"])
+        # A good server added afterwards must still connect (manager not wedged).
+        b.add_stdio_server("echo", sys.executable, [str(_ECHO)])
+        assert b.call_tool("echo__echo", {"text": "ok"}) == "ok"
+        # The hung server's tools resolve to a clear error, not a hang.
+        out = b.call_tool("hung__anything", {}, timeout=2)
+        assert out.startswith("ERROR:")
+    finally:
+        b.stop()  # must return promptly despite the hung child
+
+
 def _child_pids() -> set[int]:
     """Best-effort set of this process's child PIDs via pgrep."""
     import subprocess

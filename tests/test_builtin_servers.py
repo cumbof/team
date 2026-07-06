@@ -343,6 +343,32 @@ EXPECTED_SCHEMAS = {
 }
 
 
+def test_offloaded_tools_do_not_block_the_loop(bus):
+    """A slow built-in tool must not stall concurrent tool calls (the tools are
+    offloaded to worker threads, keeping the single bus loop responsive)."""
+    import threading
+    import time
+
+    slow_done = threading.Event()
+
+    def _slow():
+        # run_bash sleeps ~1s; offload should keep the loop free meanwhile.
+        _call(bus, "code__run_bash", command="sleep 1")
+        slow_done.set()
+
+    t = threading.Thread(target=_slow)
+    t.start()
+    time.sleep(0.1)  # let the slow call get in flight
+    # A fast call must return well before the slow one finishes.
+    start = time.monotonic()
+    out = _call(bus, "workspace__list_files")
+    elapsed = time.monotonic() - start
+    assert not slow_done.is_set(), "slow tool already finished — test timing too loose"
+    assert elapsed < 0.5, f"fast call blocked by slow tool ({elapsed:.2f}s)"
+    assert not out.startswith("ERROR")
+    t.join()
+
+
 def test_schema_regression(bus):
     tools = {t.wire_name: t for t in bus.list_tools(owner="m1")}
     assert set(tools) == set(EXPECTED_SCHEMAS), "tool set drifted"
