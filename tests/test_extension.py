@@ -2,7 +2,7 @@
 
 Covers:
 - Returned group name, description, and version option
-- All four subcommands: init, scenarios, servers, personas
+- All five subcommands: init, scenarios, servers, skills, personas
 - Persona YAML loading (_persona_info helper)
 """
 
@@ -26,28 +26,32 @@ from team.extension import _persona_info, make_extension_commands
 
 @pytest.fixture()
 def ext_dirs(tmp_path: Path):
-    """Create minimal servers/, personas/, and examples/ directories."""
+    """Create minimal servers/, skills/, personas/, and examples/ directories."""
     sd = tmp_path / "servers"
+    kd = tmp_path / "skills"
     pd = tmp_path / "personas"
     ed = tmp_path / "examples"
     sd.mkdir()
+    kd.mkdir()
     pd.mkdir()
     ed.mkdir()
-    return sd, pd, ed
+    return sd, kd, pd, ed
 
 
 @pytest.fixture()
 def simple_group(ext_dirs):
     """A make_extension_commands group with minimal config."""
-    sd, pd, ed = ext_dirs
+    sd, kd, pd, ed = ext_dirs
     return make_extension_commands(
         package_name="team-test",
         group_name="mytest",
         description="Test extension.",
         servers_dir=lambda: sd,
+        skills_dir=lambda: kd,
         personas_dir=lambda: pd,
         examples_dir=lambda: ed,
         server_descriptions={"tool_a": "Tool A.", "ctx_b": "Context B."},
+        skill_descriptions={"checklist": "Review checklist.", "escalation": "Escalation rules."},
         scenario_descriptions={"scenario-x": "Scenario X."},
     )
 
@@ -98,10 +102,13 @@ class TestGroupMetadata:
         assert "init" in simple_group.commands
         assert "scenarios" in simple_group.commands
         assert "servers" in simple_group.commands
+        assert "skills" in simple_group.commands
         assert "personas" in simple_group.commands
 
     def test_no_extra_subcommands(self, simple_group):
-        assert set(simple_group.commands.keys()) == {"init", "scenarios", "servers", "personas"}
+        assert set(simple_group.commands.keys()) == {
+            "init", "scenarios", "servers", "skills", "personas",
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -111,12 +118,13 @@ class TestGroupMetadata:
 
 class TestScenariosCmd:
     def test_lists_yaml_stems(self, ext_dirs):
-        sd, pd, ed = ext_dirs
+        sd, kd, pd, ed = ext_dirs
         (ed / "alpha.yaml").write_text("name: alpha\n")
         (ed / "beta.yaml").write_text("name: beta\n")
         grp = make_extension_commands(
             package_name="team-t", group_name="t", description="T",
-            servers_dir=lambda: sd, personas_dir=lambda: pd, examples_dir=lambda: ed,
+            servers_dir=lambda: sd, skills_dir=lambda: kd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
         )
         result = CliRunner().invoke(grp, ["scenarios"])
         assert result.exit_code == 0
@@ -124,21 +132,23 @@ class TestScenariosCmd:
         assert "beta" in result.output
 
     def test_shows_descriptions(self, ext_dirs):
-        sd, pd, ed = ext_dirs
+        sd, kd, pd, ed = ext_dirs
         (ed / "alpha.yaml").write_text("name: alpha\n")
         grp = make_extension_commands(
             package_name="team-t", group_name="t", description="T",
-            servers_dir=lambda: sd, personas_dir=lambda: pd, examples_dir=lambda: ed,
+            servers_dir=lambda: sd, skills_dir=lambda: kd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
             scenario_descriptions={"alpha": "Does alpha things."},
         )
         result = CliRunner().invoke(grp, ["scenarios"])
         assert "Does alpha things" in result.output
 
     def test_empty_examples_dir(self, ext_dirs):
-        sd, pd, ed = ext_dirs
+        sd, kd, pd, ed = ext_dirs
         grp = make_extension_commands(
             package_name="team-t", group_name="t", description="T",
-            servers_dir=lambda: sd, personas_dir=lambda: pd, examples_dir=lambda: ed,
+            servers_dir=lambda: sd, skills_dir=lambda: kd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
         )
         result = CliRunner().invoke(grp, ["scenarios"])
         assert result.exit_code == 0
@@ -162,13 +172,58 @@ class TestServersCmd:
         assert "Context B." in result.output
 
     def test_empty_server_descriptions(self, ext_dirs):
-        sd, pd, ed = ext_dirs
+        sd, kd, pd, ed = ext_dirs
         grp = make_extension_commands(
             package_name="team-t", group_name="t", description="T",
-            servers_dir=lambda: sd, personas_dir=lambda: pd, examples_dir=lambda: ed,
+            servers_dir=lambda: sd, skills_dir=lambda: kd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
         )
         result = CliRunner().invoke(grp, ["servers"])
         assert result.exit_code == 0
+
+
+# --------------------------------------------------------------------------- #
+# skills subcommand
+# --------------------------------------------------------------------------- #
+
+
+class TestSkillsCmd:
+    def test_lists_all_registered_skills(self, simple_group):
+        result = CliRunner().invoke(simple_group, ["skills"])
+        assert result.exit_code == 0
+        assert "checklist" in result.output
+        assert "escalation" in result.output
+
+    def test_shows_descriptions(self, simple_group):
+        result = CliRunner().invoke(simple_group, ["skills"])
+        assert "Review checklist." in result.output
+        assert "Escalation rules." in result.output
+
+    def test_empty_skill_descriptions(self, ext_dirs):
+        sd, kd, pd, ed = ext_dirs
+        grp = make_extension_commands(
+            package_name="team-t", group_name="t", description="T",
+            servers_dir=lambda: sd, skills_dir=lambda: kd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
+        )
+        result = CliRunner().invoke(grp, ["skills"])
+        assert result.exit_code == 0
+
+    def test_skills_dir_optional(self, ext_dirs):
+        sd, kd, pd, ed = ext_dirs
+        grp = make_extension_commands(
+            package_name="team-t", group_name="t", description="T",
+            servers_dir=lambda: sd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
+            skill_descriptions={"checklist": "A checklist."},
+        )
+        result = CliRunner().invoke(grp, ["skills"])
+        assert result.exit_code == 0
+        assert "checklist" in result.output
+
+    def test_usage_hint_shows_extra_context(self, simple_group):
+        result = CliRunner().invoke(simple_group, ["skills"])
+        assert "extra_context" in result.output
 
 
 # --------------------------------------------------------------------------- #
@@ -178,13 +233,14 @@ class TestServersCmd:
 
 class TestPersonasCmd:
     def test_lists_persona_yamls(self, ext_dirs):
-        sd, pd, ed = ext_dirs
+        sd, kd, pd, ed = ext_dirs
         (pd / "wizard.yaml").write_text(
             "role: Wizard\ndescription: A wizard.\npersona: You are a wizard.\n"
         )
         grp = make_extension_commands(
             package_name="team-t", group_name="t", description="T",
-            servers_dir=lambda: sd, personas_dir=lambda: pd, examples_dir=lambda: ed,
+            servers_dir=lambda: sd, skills_dir=lambda: kd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
         )
         result = CliRunner().invoke(grp, ["personas"])
         assert result.exit_code == 0
@@ -192,10 +248,11 @@ class TestPersonasCmd:
         assert "Wizard" in result.output
 
     def test_empty_personas_dir(self, ext_dirs):
-        sd, pd, ed = ext_dirs
+        sd, kd, pd, ed = ext_dirs
         grp = make_extension_commands(
             package_name="team-t", group_name="t", description="T",
-            servers_dir=lambda: sd, personas_dir=lambda: pd, examples_dir=lambda: ed,
+            servers_dir=lambda: sd, skills_dir=lambda: kd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
         )
         result = CliRunner().invoke(grp, ["personas"])
         assert result.exit_code == 0
@@ -208,7 +265,7 @@ class TestPersonasCmd:
 
 class TestInitCmd:
     def _grp_with_scenario(self, ext_dirs):
-        sd, pd, ed = ext_dirs
+        sd, kd, pd, ed = ext_dirs
         (ed / "demo.yaml").write_text(textwrap.dedent("""\
             name: demo
             goal: test
@@ -222,7 +279,8 @@ class TestInitCmd:
         """))
         return make_extension_commands(
             package_name="team-t", group_name="t", description="T",
-            servers_dir=lambda: sd, personas_dir=lambda: pd, examples_dir=lambda: ed,
+            servers_dir=lambda: sd, skills_dir=lambda: kd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
         )
 
     def test_creates_yaml_file(self, ext_dirs, tmp_path):
@@ -255,10 +313,11 @@ class TestInitCmd:
         assert (tmp_path / "demo.yaml").read_text() != "existing"
 
     def test_missing_scenario_exits_nonzero(self, ext_dirs, tmp_path):
-        sd, pd, ed = ext_dirs
+        sd, kd, pd, ed = ext_dirs
         grp = make_extension_commands(
             package_name="team-t", group_name="t", description="T",
-            servers_dir=lambda: sd, personas_dir=lambda: pd, examples_dir=lambda: ed,
+            servers_dir=lambda: sd, skills_dir=lambda: kd,
+            personas_dir=lambda: pd, examples_dir=lambda: ed,
         )
         # No scenarios exist — Choice validator will reject it
         result = CliRunner().invoke(grp, ["init", "--scenario", "nonexistent", "--output-dir", str(tmp_path)])

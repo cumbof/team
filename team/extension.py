@@ -1,12 +1,13 @@
 """Extension factory for ``team-*`` plugin packages.
 
 This module provides :func:`make_extension_commands`, a factory that returns a
-fully-wired :class:`click.Group` with the four standard subcommands expected of
+fully-wired :class:`click.Group` with the five standard subcommands expected of
 every ``team-*`` extension package:
 
 * ``init``      — copy a scenario YAML template into the user's working directory
 * ``scenarios`` — list available scenario templates
 * ``servers``   — list the package's MCP servers with descriptions
+* ``skills``    — list the package's Markdown skills (``team.skills`` entries)
 * ``personas``  — list available persona YAML files
 
 Extension authors call the factory once in their ``commands.py`` and register
@@ -14,10 +15,13 @@ the returned group via the ``team.commands`` entry-point group::
 
     # myext/commands.py
     from team.extension import make_extension_commands
-    from myext import examples_dir, personas_dir, servers_dir
+    from myext import examples_dir, personas_dir, servers_dir, skills_dir
 
     _SERVER_DESCRIPTIONS = {
         "my_server": "Exposes some useful tools.",
+    }
+    _SKILL_DESCRIPTIONS = {
+        "my_checklist": "Context injected into review-type personas.",
     }
     _SCENARIO_DESCRIPTIONS = {
         "my-scenario": "Runs a multi-step analysis.",
@@ -28,9 +32,11 @@ the returned group via the ``team.commands`` entry-point group::
         group_name="myext",
         description="myext extensions for the team multi-agent framework.",
         servers_dir=servers_dir,
+        skills_dir=skills_dir,
         personas_dir=personas_dir,
         examples_dir=examples_dir,
         server_descriptions=_SERVER_DESCRIPTIONS,
+        skill_descriptions=_SKILL_DESCRIPTIONS,
         scenario_descriptions=_SCENARIO_DESCRIPTIONS,
     )
 
@@ -84,7 +90,9 @@ def make_extension_commands(
     servers_dir: Callable[[], Path],
     personas_dir: Callable[[], Path],
     examples_dir: Callable[[], Path],
+    skills_dir: Callable[[], Path] | None = None,
     server_descriptions: dict[str, str] | None = None,
+    skill_descriptions: dict[str, str] | None = None,
     scenario_descriptions: dict[str, str] | None = None,
 ) -> click.Group:
     """Build and return a Click command group for a ``team-*`` extension.
@@ -108,9 +116,18 @@ def make_extension_commands(
     examples_dir:
         Zero-argument callable returning the :class:`~pathlib.Path` to the
         extension's ``examples/`` directory.
+    skills_dir:
+        Zero-argument callable returning the :class:`~pathlib.Path` to the
+        extension's ``skills/`` directory (Markdown files registered under
+        the ``team.skills`` entry-point group).  Omit if the extension
+        bundles no skills — the ``skills`` subcommand still lists any
+        registered *names*, it just won't be able to point at bundled files.
     server_descriptions:
         Mapping of registered MCP server *name* → short description string.
         Used by the ``servers`` subcommand table.  Defaults to ``{}``.
+    skill_descriptions:
+        Mapping of registered skill *name* → short description string.  Used
+        by the ``skills`` subcommand table.  Defaults to ``{}``.
     scenario_descriptions:
         Mapping of scenario *stem* (YAML filename without extension) →
         short description string.  Used by the ``scenarios`` subcommand
@@ -120,11 +137,12 @@ def make_extension_commands(
     -------
     click.Group
         A fully-wired Click group with ``init``, ``scenarios``, ``servers``,
-        and ``personas`` subcommands.  Assign the return value to a
-        module-level variable whose name matches *group_name*; that variable
-        is what the ``team.commands`` entry point should reference.
+        ``skills``, and ``personas`` subcommands.  Assign the return value to
+        a module-level variable whose name matches *group_name*; that
+        variable is what the ``team.commands`` entry point should reference.
     """
     _server_descs: dict[str, str] = server_descriptions or {}
+    _skill_descs: dict[str, str] = skill_descriptions or {}
     _scenario_descs: dict[str, str] = scenario_descriptions or {}
     _console = Console()
 
@@ -227,9 +245,30 @@ def make_extension_commands(
         _console.print(table)
         _console.print("")
         _console.print(
-            "Use in YAML:  [bold]mcp_servers:\\n  "
-            f"{next(iter(_server_descs), 'my_server')}:\\n    transport: entry_point\\n"
+            "Use in YAML:  [bold]mcp_servers:\n  "
+            f"{next(iter(_server_descs), 'my_server')}:\n    transport: entry_point\n"
             f"    entry_point: {next(iter(_server_descs), 'my_server')}[/bold]"
+        )
+
+    # ------------------------------------------------------------------ #
+    # skills
+    # ------------------------------------------------------------------ #
+
+    @_group.command("skills")
+    def _skills() -> None:
+        """List the package's Markdown skills (team.skills entries)."""
+        table = Table(title=f"Available {package_name} skills", show_lines=True)
+        table.add_column("Name", style="bold cyan")
+        table.add_column("Description")
+
+        for name, desc in sorted(_skill_descs.items()):
+            table.add_row(name, desc)
+
+        _console.print(table)
+        _console.print("")
+        _console.print(
+            "Use in YAML:  [bold]extra_context:\n  "
+            f"- {next(iter(_skill_descs), 'my_skill')}[/bold]"
         )
 
     # ------------------------------------------------------------------ #

@@ -146,6 +146,10 @@ class Member:
 
         Member setting overrides defaults.  Each file is truncated at 8192 chars
         (matching context.md handling) and injected into the system prompt.
+
+        Each entry is tried as a relative path first; if no such file exists,
+        it falls back to a name registered via the ``team.skills`` entry-point
+        group (see :mod:`team.skills`).
         """
         sources = (
             self.config.extra_context
@@ -165,9 +169,14 @@ class Member:
             path = (base / rel).expanduser()
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                log.warning("@%s: could not read extra_context %r: %s", self.config.name, rel, exc)
-                continue
+            except OSError:
+                from team.skills import SkillLoadError, resolve_skill
+                try:
+                    path = Path(resolve_skill(rel))
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except (SkillLoadError, OSError) as exc:
+                    log.warning("@%s: could not resolve extra_context %r: %s", self.config.name, rel, exc)
+                    continue
             if len(text) > limit:
                 text = text[:limit] + f"\n[… {rel} truncated at {limit} chars]"
             if text.strip():

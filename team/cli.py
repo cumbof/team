@@ -2242,6 +2242,9 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         "[project.entry-points.\"team.mcp_servers\"]\n"
         f'# my_server = "{pkg_name}.servers.my_server:build"\n'
         "\n"
+        "[project.entry-points.\"team.skills\"]\n"
+        f'# my_skill = "{pkg_name}.skills.my_skill"\n'
+        "\n"
         "[project.entry-points.\"team.commands\"]\n"
         f'{ext_name} = "{pkg_name}.commands:{ext_name}"\n'
         "\n"
@@ -2259,7 +2262,7 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         "exclude = [\"tests*\", \"examples*\"]\n"
         "\n"
         "[tool.setuptools.package-data]\n"
-        f'{pkg_name} = ["servers/*.py", "context/*.md", "personas/*.yaml", "examples/*.yaml"]\n'
+        f'{pkg_name} = ["servers/*.py", "skills/*.md", "personas/*.yaml", "examples/*.yaml"]\n'
     )
 
     init_py = (
@@ -2269,6 +2272,9 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         "---------------------------\n"
         "``team.mcp_servers``\n"
         "    Named MCP servers usable in a team YAML via ``transport: entry_point``.\n"
+        "\n"
+        "``team.skills``\n"
+        "    Named Markdown context bundles usable in a team YAML's ``extra_context:``.\n"
         "\n"
         "``team.persona_dirs``\n"
         f'    Personas in ``{pkg_name}/personas/`` are auto-discovered with the ``@name`` shorthand.\n'
@@ -2287,6 +2293,11 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         "    return Path(__file__).parent / \"servers\"\n"
         "\n"
         "\n"
+        "def skills_dir() -> Path:\n"
+        f'    """Return the absolute path to the {pkg_name} skills directory."""\n'
+        "    return Path(__file__).parent / \"skills\"\n"
+        "\n"
+        "\n"
         "def personas_dir() -> Path:\n"
         f'    """Return the absolute path to the {pkg_name} personas directory."""\n'
         "    return Path(__file__).parent / \"personas\"\n"
@@ -2297,7 +2308,7 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         "    return Path(__file__).parent / \"examples\"\n"
         "\n"
         "\n"
-        "__all__ = [\"servers_dir\", \"personas_dir\", \"examples_dir\"]\n"
+        "__all__ = [\"servers_dir\", \"skills_dir\", \"personas_dir\", \"examples_dir\"]\n"
     )
 
     commands_py = (
@@ -2306,10 +2317,14 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         "from __future__ import annotations\n"
         "\n"
         "from team.extension import make_extension_commands\n"
-        f'from {pkg_name} import examples_dir, personas_dir, servers_dir\n'
+        f'from {pkg_name} import examples_dir, personas_dir, servers_dir, skills_dir\n'
         "\n"
         "_SERVER_DESCRIPTIONS: dict[str, str] = {\n"
         "    # \"my_server\": \"Exposes some useful tools.\",\n"
+        "}\n"
+        "\n"
+        "_SKILL_DESCRIPTIONS: dict[str, str] = {\n"
+        "    # \"my_skill\": \"Context injected into some persona.\",\n"
         "}\n"
         "\n"
         "_SCENARIO_DESCRIPTIONS: dict[str, str] = {\n"
@@ -2321,9 +2336,11 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         f'    group_name="{ext_name}",\n'
         f'    description="{ext_title} extensions for the team multi-agent framework.",\n'
         "    servers_dir=servers_dir,\n"
+        "    skills_dir=skills_dir,\n"
         "    personas_dir=personas_dir,\n"
         "    examples_dir=examples_dir,\n"
         "    server_descriptions=_SERVER_DESCRIPTIONS,\n"
+        "    skill_descriptions=_SKILL_DESCRIPTIONS,\n"
         "    scenario_descriptions=_SCENARIO_DESCRIPTIONS,\n"
         ")\n"
     )
@@ -2339,12 +2356,16 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         "import yaml\n"
         "from click.testing import CliRunner\n"
         "\n"
-        f'from {pkg_name} import examples_dir, personas_dir, servers_dir\n'
+        f'from {pkg_name} import examples_dir, personas_dir, servers_dir, skills_dir\n'
         f'from {pkg_name}.commands import {ext_name}\n'
         "\n"
         "\n"
         "def test_servers_dir_exists():\n"
         "    assert servers_dir().is_dir()\n"
+        "\n"
+        "\n"
+        "def test_skills_dir_exists():\n"
+        "    assert skills_dir().is_dir()\n"
         "\n"
         "\n"
         "def test_personas_dir_exists():\n"
@@ -2395,6 +2416,11 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         "    assert result.exit_code == 0\n"
         "\n"
         "\n"
+        "def test_cli_skills():\n"
+        f'    result = CliRunner().invoke({ext_name}, ["skills"])\n'
+        "    assert result.exit_code == 0\n"
+        "\n"
+        "\n"
         "def test_cli_personas():\n"
         f'    result = CliRunner().invoke({ext_name}, ["personas"])\n'
         "    assert result.exit_code == 0\n"
@@ -2437,6 +2463,14 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         f'    entry_point: {ext_name}_my_server   # registered via team.mcp_servers\n'
         "```\n"
         "\n"
+        "## Skills (Markdown context)\n"
+        "\n"
+        "```yaml\n"
+        "defaults:\n"
+        "  extra_context:\n"
+        "    - my_skill   # registered via team.skills\n"
+        "```\n"
+        "\n"
         "## Personas\n"
         "\n"
         "```yaml\n"
@@ -2450,6 +2484,7 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         "```\n"
         "team-core plugin API\n"
         f'|- team.mcp_servers     <- registered MCP servers\n'
+        f'|- team.skills          <- registered Markdown context bundles\n'
         f'|- team.persona_dirs    <- {pkg_name}/personas/ (auto-merged)\n'
         f'`- team.commands        <- team {ext_name} <subcommand>\n'
         "```\n"
@@ -2501,6 +2536,7 @@ def _forge_files(dir_name: str, pkg_name: str, ext_name: str) -> dict[str, str]:
         f"{pkg_name}/__init__.py": init_py,
         f"{pkg_name}/commands.py": commands_py,
         f"{pkg_name}/servers/.gitkeep": "",
+        f"{pkg_name}/skills/.gitkeep": "",
         f"{pkg_name}/personas/.gitkeep": "",
         f"{pkg_name}/examples/.gitkeep": "",
         "tests/__init__.py": "",
@@ -2533,9 +2569,10 @@ def forge(name: str, output_dir: str, force: bool) -> None:
     team-<name>/
       pyproject.toml          entry points pre-wired, version 0.1.0
       team_<name>/
-        __init__.py           servers_dir / personas_dir / examples_dir helpers
+        __init__.py           servers_dir / skills_dir / personas_dir / examples_dir helpers
         commands.py           make_extension_commands() call
         servers/              drop FastMCP server modules here
+        skills/               drop Markdown context files here
         personas/             drop persona YAML files here
         examples/             drop scenario YAML templates here
       tests/

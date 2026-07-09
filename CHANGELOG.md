@@ -2,10 +2,12 @@
 
 ## 0.18.0 — MCP-native tool architecture
 
-This release replaces `team`'s bespoke tool and skill systems with the
+This release replaces `team`'s bespoke tool system and the tool-loading half
+of its skill system with the
 [Model Context Protocol](https://modelcontextprotocol.io) (MCP) as the single,
 first-class tool layer. Built-in tools and external plugins are now
-indistinguishable — every tool call flows through one uniform bus.
+indistinguishable — every tool call flows through one uniform bus. The
+context-injection half of skills survives, narrowed to Markdown only.
 
 ### Breaking changes
 
@@ -36,25 +38,29 @@ indistinguishable — every tool call flows through one uniform bus.
 
   As a fallback for small models, a tool with exactly one required string
   argument (e.g. `code__run_python`) still accepts a raw body verbatim.
-- **The skills system is removed.** `team/skills.py`, the `team.skills`
-  entry-point group, and the `skills:` config key are gone, along with the
-  `exec()`-based (and remote-URL) skill loader.
+- **The skills system is now Markdown-only.** `team/skills.py` is rewritten:
+  the `exec()`-based (and remote-URL, checksum-verified) Python tool loader is
+  gone, along with the `skills:` config key.
   - Python tool skills → **MCP servers**: declare external `stdio`/`http`
-    servers under `mcp_servers:`, or register in-process servers via the new
+    servers under `mcp_servers:`, or register in-process servers via the
     `team.mcp_servers` entry-point group (`transport: entry_point`).
-  - Markdown context skills → the new **`extra_context:`** config key (a list
-    of Markdown file paths, relative to the team YAML, injected into the system
-    prompt).
-- **`team forge` scaffolds a `servers/` slot** and the `team.mcp_servers`
-  entry-point group instead of `skills/` / `team.skills`. The extension CLI's
-  `skills` subcommand is now `servers`.
+  - Markdown context skills → the **`extra_context:`** config key. Each entry
+    is tried as a relative path first, falling back to a name registered via
+    the (still-present, now Markdown-only) `team.skills` entry-point group —
+    a thin Python module pointing at a bundled `.md` file via `SKILL_FILE`,
+    same idea as before minus the tool-loading half.
+- **`team forge` scaffolds both a `servers/` slot** (`team.mcp_servers`) **and
+  a `skills/` slot** (`team.skills`, Markdown only). The extension CLI keeps
+  separate `servers` and `skills` subcommands — `skills` no longer lists
+  Python tools, only Markdown context bundles.
 
 ### Added
 
 - `mcp_servers:` config block — connect any MCP server over stdio or Streamable
   HTTP. Stdio servers receive the shared workspace path via a `TEAM_WORKSPACE`
   environment variable (injected automatically).
-- `extra_context:` config key on `defaults` and members.
+- `extra_context:` config key on `defaults` and members, resolving each entry
+  as a relative path or a registered `team.skills` name.
 - `examples/mcp/team_helpers_server.py` — an example stdio MCP server bundling
   the former task-board / transcript-search / progress / critique helpers.
 - `examples/mcp_team.yaml` — a runnable MCP-native team.

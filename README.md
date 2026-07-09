@@ -1705,7 +1705,8 @@ directory pre-wired to this entry-point group.
 For guidelines, checklists, templates, and domain rules that should always be
 visible (rather than looked up via a tool), list Markdown files under
 `extra_context:`. Their content is injected verbatim into each member's system
-prompt on every turn. Paths are relative to the team YAML's directory.
+prompt on every turn. Each entry is either a path relative to the team YAML's
+directory, or — see below — a name registered by an installed package.
 
 ```yaml
 defaults:
@@ -1720,6 +1721,44 @@ members:
 
 The `examples/context/` directory contains ready-to-use files
 (`review_checklist.md`, `escalation_rules.md`, `decision_record_format.md`).
+
+#### Packaged skills via entry points
+
+A pip-installable extension can register named Markdown context bundles —
+called **skills** — under the `team.skills` entry-point group, so any team
+YAML can reference them by name instead of a file path:
+
+```yaml
+defaults:
+  extra_context:
+    - review_checklist    # a name registered by an installed package
+    - ./context/local_notes.md    # a plain relative path still works
+```
+
+Each entry is tried as a relative path first; if no such file exists, it
+falls back to the `team.skills` registry. A skill is a thin Python module
+that points at its bundled Markdown file:
+
+```python
+# pyproject.toml
+[project.entry-points."team.skills"]
+review_checklist = "team_myext.skills.review_checklist"
+```
+
+```python
+# team_myext/skills/review_checklist.py
+from pathlib import Path
+SKILL_FILE = str(Path(__file__).parent / "review_checklist.md")
+```
+
+Skills are Markdown-only — a skill can never be executable code. If you want
+to ship a custom **tool**, write an MCP server (see
+[Connecting MCP servers](#connecting-mcp-servers)) and register it under
+`team.mcp_servers` instead.
+
+`team forge <name>` scaffolds a `team-*` extension package with a `skills/`
+directory pre-wired to this entry-point group; `team <name> skills` lists
+what a package bundles.
 
 ## Shared institutional context
 
