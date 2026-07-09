@@ -92,7 +92,11 @@ class Orchestrator:
     # Lifecycle
     # ------------------------------------------------------------------ #
 
-    def up(self, prepare_deadline_seconds: int = 300) -> None:
+    def up(
+        self,
+        prepare_deadline_seconds: int = 300,
+        on_progress: Callable[[dict], None] | None = None,
+    ) -> None:
         """Start containers and ensure all models are pulled."""
         # Optionally create the shared belief board.
         if self.team.beliefs.enabled:
@@ -109,7 +113,7 @@ class Orchestrator:
         self.tool_bus.start()
         self._connect_external_servers()
 
-        runtimes = self.containers.start_all()
+        runtimes = self.containers.start_all(on_progress=on_progress)
         for rt in runtimes:
             # Optionally create a per-member persistent memory store.
             member_memory = None
@@ -134,7 +138,7 @@ class Orchestrator:
             )
 
         for m in self.members.values():
-            m.prepare(deadline_seconds=prepare_deadline_seconds)
+            m.prepare(deadline_seconds=prepare_deadline_seconds, on_progress=on_progress)
         self._kickoff()
 
     # ------------------------------------------------------------------ #

@@ -180,12 +180,23 @@ class Member:
 
     # ----- lifecycle ---------------------------------------------------- #
 
-    def prepare(self, deadline_seconds: int = 180) -> None:
+    def prepare(
+        self,
+        deadline_seconds: int = 180,
+        on_progress: Callable[[dict], None] | None = None,
+    ) -> None:
         log.info("waiting for %s ollama at %s", self.name, self.runtime.base_url)
         self.client.wait_ready(deadline_seconds=deadline_seconds)
         log.info("pulling model %s for %s", self.config.model, self.name)
+
+        def _tag_member(event: dict) -> None:
+            if on_progress is not None:
+                on_progress({**event, "phase": "model", "member": self.name})
+
         self.client.ensure_model(
-            self.config.model, timeout=self.team.defaults.pull_timeout
+            self.config.model,
+            timeout=self.team.defaults.pull_timeout,
+            on_progress=_tag_member if on_progress is not None else None,
         )
         self._ready = True
 

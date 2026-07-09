@@ -320,6 +320,25 @@ def _apply_host_ollama(cfg, url: str) -> None:
     cfg.defaults.ollama_url = url
 
 
+def _format_progress(event: dict) -> str:
+    """Render one docker-image or ollama-model pull event as a status line."""
+    status = event.get("status") or ""
+    current = event.get("current", event.get("completed"))
+    total = event.get("total")
+    pct = f" {int(current / total * 100)}%" if current is not None and total else ""
+    member = event.get("member")
+    label = f"@{member}" if member else "docker image"
+    return f"[bold blue]starting containers and pulling models…[/bold blue] [dim]({label}: {status}{pct})[/dim]"
+
+
+def _up_with_progress(orch: Orchestrator, console: Console, prepare_timeout: int = 300) -> None:
+    """Run ``orch.up()`` under a status spinner that reflects live pull progress."""
+    with console.status("[bold blue]starting containers and pulling models…[/bold blue]") as status:
+        def on_progress(event: dict) -> None:
+            status.update(_format_progress(event))
+        orch.up(prepare_deadline_seconds=prepare_timeout, on_progress=on_progress)
+
+
 # --------------------------------------------------------------------------- #
 # up / down / status
 # --------------------------------------------------------------------------- #
@@ -356,7 +375,7 @@ def up(team_file: str, prepare_timeout: int, no_gpu: bool, host_ollama: str | No
     elif no_gpu:
         _apply_no_gpu(cfg)
     orch = Orchestrator(cfg)
-    orch.up(prepare_deadline_seconds=prepare_timeout)
+    _up_with_progress(orch, console, prepare_timeout)
     console.print("[green]team is up[/green]")
     _print_status(orch)
 
@@ -698,8 +717,7 @@ def run(team_file: str, no_up: bool, keep_up: bool, prepare_timeout: int, resume
     if interactive:
         _setup_interactive(orch, console)
     if not no_up:
-        with console.status("[bold blue]starting containers and pulling models…[/bold blue]"):
-            orch.up(prepare_deadline_seconds=prepare_timeout)
+        _up_with_progress(orch, console, prepare_timeout)
         console.print("[green]✓[/green] team is up\n")
     else:
         runtimes = orch.containers.start_all()
@@ -1657,8 +1675,7 @@ def test_cmd(
         console.print(_rh)
         console.print(Text("  " + "─" * _SEP, style="bright_blue dim"))
         console.print()
-        with console.status("[bold blue]starting containers and pulling models…[/bold blue]"):
-            orch.up()
+        _up_with_progress(orch, console)
         console.print("[green]✓[/green] team is up\n")
         try:
             orch.run()

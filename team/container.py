@@ -26,7 +26,7 @@ import socket
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import docker
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
@@ -153,13 +153,32 @@ class ContainerManager:
 
     # --- image / volume ------------------------------------------------- #
 
-    def ensure_image(self, image: str) -> None:
+    def ensure_image(
+        self, image: str, on_progress: Callable[[dict], None] | None = None
+    ) -> None:
         client = self._require_docker()
         try:
             client.images.get(image)
         except ImageNotFound:
             log.info("pulling image %s", image)
-            client.images.pull(image)
+            # Stream layer-by-layer progress via the low-level API instead of the
+            # high-level images.pull(), which blocks silently until fully done.
+            layers: dict[str, tuple[int, int]] = {}
+            for event in client.api.pull(image, stream=True, decode=True):
+                if on_progress is None:
+                    continue
+                layer_id = event.get("id")
+                detail = event.get("progressDetail") or {}
+                current, total = detail.get("current"), detail.get("total")
+                if layer_id and total:
+                    layers[layer_id] = (current or 0, total)
+                on_progress({
+                    "phase": "image",
+                    "member": None,
+                    "status": event.get("status", ""),
+                    "current": sum(c for c, _ in layers.values()) or None,
+                    "total": sum(t for _, t in layers.values()) or None,
+                })
 
     def ensure_volume(self, name: str) -> None:
         client = self._require_docker()
@@ -180,7 +199,9 @@ class ContainerManager:
         except NotFound:
             return None
 
-    def start_member(self, member: MemberConfig) -> MemberRuntime:
+    def start_member(
+        self, member: MemberConfig, on_progress: Callable[[dict], None] | None = None
+    ) -> MemberRuntime:
         # Remote Ollama (F10 / defaults.ollama_url): bypass all Docker management entirely.
         effective_ollama_url = self._effective_ollama_url(member)
         if effective_ollama_url:
@@ -218,7 +239,7 @@ class ContainerManager:
 
         defaults = self.team.defaults
         image = defaults.ollama_image
-        self.ensure_image(image)
+        self.ensure_image(image, on_progress=on_progress)
         net = self.ensure_network()
         vol = _volume_name(self.team.name, member.name)
         self.ensure_volume(vol)
@@ -327,10 +348,12 @@ class ContainerManager:
             base_url=f"http://127.0.0.1:{host_port}",
         )
 
-    def start_all(self) -> list[MemberRuntime]:
+    def start_all(
+        self, on_progress: Callable[[dict], None] | None = None
+    ) -> list[MemberRuntime]:
         runtimes: list[MemberRuntime] = []
         for m in self.team.members:
-            runtimes.append(self.start_member(m))
+            runtimes.append(self.start_member(m, on_progress=on_progress))
         return runtimes
 
     # --- teardown ------------------------------------------------------- #
