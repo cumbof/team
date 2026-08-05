@@ -1635,7 +1635,7 @@ mcp_servers:
   kb:                                       # remote Streamable HTTP server
     transport: http
     url: https://kb.example.com/mcp
-    headers: { Authorization: "env:KB_TOKEN" }
+    headers: { Authorization: "env:KB_TOKEN" }   # env:VAR resolves the WHOLE value; for Bearer auth set KB_TOKEN="Bearer <token>"
   helpers:                                  # a server script in your repo
     transport: stdio
     command: python

@@ -266,11 +266,24 @@ class MCPToolBus:
     ) -> None:
         """Connect an external MCP server over Streamable HTTP (shared)."""
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client.streamable_http import (
+            create_mcp_http_client,
+            streamable_http_client,
+        )
 
         async def _open(stack: AsyncExitStack) -> _Conn:
+            # streamable_http_client closes only an http client it creates
+            # itself; a caller-supplied one is our responsibility.  To attach
+            # headers we build one and enter it on the same stack, so it is
+            # closed on stop().  With no headers we pass None and let the SDK
+            # create and manage its own default client (recommended timeouts).
+            http_client = None
+            if headers:
+                http_client = await stack.enter_async_context(
+                    create_mcp_http_client(headers=headers)
+                )
             read, write, _ = await stack.enter_async_context(
-                streamablehttp_client(url, headers=headers or None)
+                streamable_http_client(url, http_client=http_client)
             )
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
