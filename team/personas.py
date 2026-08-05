@@ -15,8 +15,12 @@ following it (especially smaller models).  See :func:`render_system_prompt`.
 from __future__ import annotations
 
 from textwrap import dedent
+from typing import TYPE_CHECKING
 
 from team.config import MemberConfig, TeamConfig
+
+if TYPE_CHECKING:
+    from team.mcp.bus import ToolInfo
 
 PROTOCOL = dedent(
     """\
@@ -62,67 +66,19 @@ PROTOCOL = dedent(
     """
 )
 
-_TOOL_PROTOCOL_HEADER = dedent(
-    """\
-    ## Tool use
+def _render_tool_section(tools: "list[ToolInfo]") -> str:
+    from team.mcp.textmode import render_tool_protocol
 
-    You have access to external tools.  Invoke a tool by emitting a fenced
-    block with a ``tool:<name>`` info-string **as your entire reply or as
-    part of your reply**:
-
-        ```tool:web_search
-        query: your search query here
-        ```
-
-        ```tool:run_python
-        import math
-        print(math.sqrt(2))
-        ```
-
-    Rules:
-    * After each tool block the orchestrator executes the tool and sends
-      you the result as a follow-up message — you then continue reasoning.
-    * You may call multiple tools across several rounds; each round counts
-      against your turn budget.
-    * Once you are done gathering information, write your **final reply in
-      plain text** (no tool blocks) so it is recorded in the transcript.
-    * Never invent tool results — always wait for the actual output.
-    * **You have full system access.** If a library or CLI tool you need is
-      not installed, install it first:
-
-          ```tool:run_bash
-          pip install scikit-learn seaborn --quiet
-          ```
-
-      Then proceed with the code that uses it.  You may also use
-      ``apt-get install``, ``conda install``, ``npm install``, or any other
-      package manager available on the system.
-
-    Available tools:
-    """
-)
-
-
-def _render_tool_section(
-    tool_names: list[str],
-    tool_descriptions: dict[str, str] | None = None,
-) -> str:
-    from team.tools import TOOL_DESCRIPTIONS  # local import to avoid circular
-
-    descriptions = tool_descriptions if tool_descriptions is not None else TOOL_DESCRIPTIONS
-    lines = [_TOOL_PROTOCOL_HEADER]
-    for name in tool_names:
-        desc = descriptions.get(name, TOOL_DESCRIPTIONS.get(name, "(no description)"))
-        lines.append(f"    * ``{name}`` — {desc}")
-    return "\n".join(lines)
+    code_enabled = any(t.server == "code" for t in tools)
+    return render_tool_protocol(tools, code_enabled=code_enabled)
 
 
 def render_system_prompt(
     team: TeamConfig,
     member: MemberConfig,
-    enabled_tools: list[str] | None = None,
-    tool_descriptions: dict[str, str] | None = None,
+    tools: "list[ToolInfo] | None" = None,
     injected_context: list[str] | None = None,
+    tool_mode: str = "text",
 ) -> str:
     """Render the complete system prompt for *member*.
 
@@ -132,17 +88,13 @@ def render_system_prompt(
         The full team configuration.
     member:
         The member whose system prompt is being rendered.
-    enabled_tools:
-        Names of built-in or skill tools this member may use.  When
-        non-empty a tool-use protocol section is appended.  Pass ``None``
-        or ``[]`` to omit the section.
-    tool_descriptions:
-        Merged tool descriptions dict (built-ins + skill tools).  Defaults
-        to the built-in :data:`~team.tools.TOOL_DESCRIPTIONS` dict.
+    tools:
+        The :class:`~team.mcp.bus.ToolInfo` objects this member has enabled.
+        When non-empty a text-mode tool-use protocol section is appended.
+        Pass ``None`` or ``[]`` to omit the section.
     injected_context:
-        List of strings loaded from Markdown skills or ``INJECT_INTO_CONTEXT``
-        in Python skills.  Each entry is appended verbatim after the
-        collaboration protocol so the member has this background knowledge
+        Strings loaded from ``extra_context:`` files, appended verbatim after
+        the collaboration protocol so the member has this background knowledge
         in every turn without needing to call a tool.
     """
     # Build the teammate list excluding the member itself.
@@ -196,6 +148,10 @@ def render_system_prompt(
                 + schema_hint
             ),
         ])
-    if enabled_tools:
-        parts.extend(["", _render_tool_section(enabled_tools, tool_descriptions)])
+    # Only inject the text-mode fenced-block protocol in text mode. In native
+    # mode the model receives tool schemas through the function-calling API, so
+    # teaching it to emit ```tool:...``` blocks would be actively misleading
+    # (such blocks are not parsed on the native path).
+    if tools and tool_mode != "native":
+        parts.extend(["", _render_tool_section(tools)])
     return "\n".join(parts)

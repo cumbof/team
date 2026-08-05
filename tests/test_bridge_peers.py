@@ -14,7 +14,7 @@ import yaml
 from team.bridge import BridgeResult, BridgeTask
 from team.bridge_client import BridgeClientError
 from team.config import BridgeConfig, TeamConfigError, load_team
-from team.tools import execute_tool
+from tests._tool_compat import execute_tool
 
 
 # --------------------------------------------------------------------------- #

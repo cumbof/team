@@ -23,7 +23,7 @@ import pytest
 from team.bridge import BridgeResult, BridgeTask, TaskStore
 from team.bridge_client import BridgeClient, BridgeClientError
 from team.bridge_server import BridgeServer
-from team.tools import execute_tool
+from tests._tool_compat import execute_tool
 
 
 def _tcp_loopback_available() -> bool:

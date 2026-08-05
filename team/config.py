@@ -59,6 +59,18 @@ class TeamConfigError(ValueError):
     """Raised when a team YAML file is malformed."""
 
 
+def expand_env(value: Any, default: Any = None) -> Any:
+    """Expand an ``env:VAR`` reference against the environment.
+
+    Non-string values and plain strings pass through unchanged.  ``"env:VAR"``
+    resolves to ``os.environ["VAR"]`` (or *default* when the var is unset).
+    Used for API keys and for MCP server ``env:`` / ``headers:`` values.
+    """
+    if isinstance(value, str) and value.startswith("env:"):
+        return os.environ.get(value[4:], default)
+    return value
+
+
 # --------------------------------------------------------------------------- #
 # Dataclasses
 # --------------------------------------------------------------------------- #
@@ -94,8 +106,9 @@ class Defaults:
     max_tool_rounds: int = 10  # max agentic tool-call rounds per member turn
     tool_timeout: int = 300    # seconds budget per individual tool execution (generous for pip/apt)
     tool_mode: str = "text"    # "text" (fenced-block parsing) | "native" (LLM function-calling API)
-    # F4 skills: external tool plugins (local paths or remote URLs)
-    skills: list[Any] = field(default_factory=list)
+    # extra_context: Markdown files injected into every member's system prompt
+    # (paths relative to the team YAML's directory).  Replaces Markdown skills.
+    extra_context: list[str] = field(default_factory=list)
     # Host Ollama: if set, all members use this URL instead of Docker containers.
     # Per-member ollama_url overrides this value.  Useful for Apple Silicon / CPU-only
     # hosts where GPU passthrough to Docker is not available.
@@ -173,7 +186,7 @@ class MemberConfig:
     max_tool_rounds: int | None = None  # None = inherit from defaults
     tool_timeout: int | None = None     # None = inherit from defaults
     tool_mode: str | None = None        # None = inherit from defaults; "text" | "native"
-    skills: list[Any] | None = None     # None = inherit from defaults; [] = no skills
+    extra_context: list[str] | None = None  # None = inherit from defaults; [] = none
     # F11: structured JSON output
     output_format: str | None = None    # "json" to require valid JSON replies
     output_schema: dict | None = None   # optional JSON Schema to validate the reply against
@@ -206,6 +219,20 @@ class BridgeConfig:
     secret: str | None = None
     peers: dict[str, str] = field(default_factory=dict)
     task_ttl_seconds: float = 3600.0
+
+
+@dataclass
+class MCPServerConfig:
+    """An external (or entry-point) MCP server declared under ``mcp_servers:``."""
+
+    name: str                       # ^[a-z][a-z0-9-]*$, not a reserved builtin name
+    transport: str                  # "stdio" | "http" | "entry_point"
+    command: str | None = None
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)      # values support "env:VAR"
+    url: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)  # values support "env:VAR"
+    entry_point: str | None = None
 
 
 @dataclass
@@ -263,6 +290,7 @@ class TeamConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     beliefs: BeliefConfig = field(default_factory=BeliefConfig)
     registry: RegistryConfig = field(default_factory=RegistryConfig)
+    mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     tests: list[dict] = field(default_factory=list)
 
     # Convenience -------------------------------------------------------- #
@@ -315,6 +343,67 @@ def _parse_bridge(data: dict) -> BridgeConfig:
     if ttl is not None:
         b.task_ttl_seconds = float(ttl)
     return b
+
+
+_SERVER_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+#: A single ``tools:`` entry: server/tool or server/* (no bare legacy names).
+_TOOL_PATTERN_RE = re.compile(r"^[a-z][a-z0-9-]*/(\*|[A-Za-z0-9_-]+)$")
+
+
+def _parse_mcp_servers(data: dict | None) -> list[MCPServerConfig]:
+    """Parse the ``mcp_servers:`` mapping into a list of :class:`MCPServerConfig`."""
+    if not data:
+        return []
+    if not isinstance(data, dict):
+        raise TeamConfigError("mcp_servers: must be a mapping of name → server config")
+    from team.mcp.builtin import RESERVED_SERVER_NAMES
+
+    servers: list[MCPServerConfig] = []
+    for name, raw in data.items():
+        ctx = f"mcp_servers[{name!r}]"
+        if not isinstance(raw, dict):
+            raise TeamConfigError(f"{ctx}: must be a mapping")
+        if not _SERVER_NAME_RE.match(str(name)):
+            raise TeamConfigError(
+                f"{ctx}: invalid server name; must match {_SERVER_NAME_RE.pattern}"
+            )
+        if name in RESERVED_SERVER_NAMES:
+            raise TeamConfigError(
+                f"{ctx}: {name!r} is a reserved built-in server name; choose another"
+            )
+        transport = raw.get("transport")
+        if transport not in ("stdio", "http", "entry_point"):
+            raise TeamConfigError(
+                f"{ctx}: transport must be one of stdio | http | entry_point (got {transport!r})"
+            )
+        # Exactly one of command / url / entry_point, matching the transport.
+        required = {"stdio": "command", "http": "url", "entry_point": "entry_point"}[transport]
+        if not raw.get(required):
+            raise TeamConfigError(f"{ctx}: transport {transport!r} requires {required!r}")
+        servers.append(
+            MCPServerConfig(
+                name=str(name),
+                transport=transport,
+                command=raw.get("command"),
+                args=[str(a) for a in (raw.get("args") or [])],
+                env={str(k): str(v) for k, v in (raw.get("env") or {}).items()},
+                url=raw.get("url"),
+                headers={str(k): str(v) for k, v in (raw.get("headers") or {}).items()},
+                entry_point=raw.get("entry_point"),
+            )
+        )
+    return servers
+
+
+def _validate_tool_patterns(patterns: list | None, ctx: str) -> None:
+    """Validate ``tools:`` entries are qualified ``server/tool`` / ``server/*`` forms."""
+    for entry in patterns or []:
+        if not isinstance(entry, str) or not _TOOL_PATTERN_RE.match(entry):
+            raise TeamConfigError(
+                f"{ctx}: invalid tool pattern {entry!r}. Tools are now qualified as "
+                f"'server/tool' or 'server/*' (e.g. 'code/*', 'workspace/read_file'). "
+                f"Bare names like 'web_search' are no longer valid — use 'web/web_search'."
+            )
 
 
 def _parse_memory(data: dict) -> MemoryConfig:
@@ -501,7 +590,7 @@ def _parse_member(data: dict, defaults: Defaults) -> MemberConfig:
         max_tool_rounds=data.get("max_tool_rounds"),
         tool_timeout=data.get("tool_timeout"),
         tool_mode=data.get("tool_mode"),
-        skills=data.get("skills"),
+        extra_context=data.get("extra_context"),
         output_format=data.get("output_format"),
         output_schema=data.get("output_schema"),
         turn_timeout=data.get("turn_timeout"),
@@ -536,7 +625,11 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
     memory = _parse_memory(raw.get("memory", {}))
     beliefs = _parse_beliefs(raw.get("beliefs", {}))
     registry = _parse_registry(raw.get("registry", {}))
+    mcp_servers = _parse_mcp_servers(raw.get("mcp_servers"))
     tests = _parse_tests(raw.get("tests"))
+
+    # Validate tool patterns (defaults + per-member) are qualified server/tool forms.
+    _validate_tool_patterns(defaults.tools, "defaults.tools")
 
     members_raw = _require(raw, "members", "team")
     if not isinstance(members_raw, list) or not members_raw:
@@ -607,6 +700,9 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
                         f"members[{mc.name!r}].routes[{i}]: next={route.next!r} is not a declared member"
                     )
 
+    for mc in members:
+        _validate_tool_patterns(mc.tools, f"members[{mc.name!r}].tools")
+
     _VALID_TOOL_MODES = {"text", "native"}
     for mc in members:
         effective_mode = mc.tool_mode or defaults.tool_mode
@@ -631,6 +727,7 @@ def load_team(path: str | os.PathLike) -> TeamConfig:
         memory=memory,
         beliefs=beliefs,
         registry=registry,
+        mcp_servers=mcp_servers,
         tests=tests,
     )
 

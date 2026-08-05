@@ -18,7 +18,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 import requests
 
@@ -173,11 +173,17 @@ class OllamaClient:
                 except json.JSONDecodeError:
                     continue
 
-    def ensure_model(self, model: str, timeout: int | None = None) -> None:
+    def ensure_model(
+        self,
+        model: str,
+        timeout: int | None = None,
+        on_progress: Callable[[dict], None] | None = None,
+    ) -> None:
         if model in self.list_models():
             return
-        for _ in self.pull(model, timeout=timeout):
-            pass
+        for event in self.pull(model, timeout=timeout):
+            if on_progress is not None:
+                on_progress(event)
         if model not in self.list_models():
             raise OllamaError(f"failed to pull model {model!r}")
 
@@ -456,11 +462,9 @@ class OllamaClient:
 
 def _resolve_api_key(api_key: str | None) -> str | None:
     """Resolve an API key value, expanding ``env:<VAR>`` references."""
-    if api_key is None:
-        return None
-    if api_key.startswith("env:"):
-        return os.environ.get(api_key[4:])
-    return api_key
+    from team.config import expand_env
+
+    return expand_env(api_key)
 
 
 class OpenAICompatClient:
@@ -533,7 +537,12 @@ class OpenAICompatClient:
         data = r.json()
         return [m.get("id", "") for m in data.get("data", [])]
 
-    def ensure_model(self, model: str, timeout: int | None = None) -> None:
+    def ensure_model(
+        self,
+        model: str,
+        timeout: int | None = None,
+        on_progress: Callable[[dict], None] | None = None,
+    ) -> None:
         """Verify the model is available; cannot pull via OpenAI-compat endpoints."""
         try:
             available = self.list_models()
